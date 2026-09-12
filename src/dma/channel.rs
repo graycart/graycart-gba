@@ -2,8 +2,8 @@
 //!
 //! Cited: GBATEK -- GBA DMA Transfers
 //!   https://problemkaputt.de/gbatek-gba-dma-transfers.htm
-//! Note: programmer-visible SAD/DAD/CNT plus internal reload latches; Immediate
-//! start only in P2 (VBlank/HBlank/Special deferred to P5).
+//! Note: programmer-visible SAD/DAD/CNT plus internal reload latches.
+//! P5: Immediate / VBlank / HBlank / Special arming; Repeat finish; IRQ bit.
 
 /// Destination address control (DMAxCNT_H bits 5–6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub enum SrcControl {
     Increment = 0,
     Decrement = 1,
     Fixed = 2,
-    /// GBATEK: prohibited — latched as Fixed for P2 (no undefined walk).
+    /// GBATEK: prohibited — latched as Fixed (no undefined walk).
     Prohibited = 3,
 }
 
@@ -48,7 +48,7 @@ impl SrcControl {
     }
 }
 
-/// DMA start timing (DMAxCNT_H bits 12–13). P2 implements Immediate only.
+/// DMA start timing (DMAxCNT_H bits 12–13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum StartTiming {
@@ -121,6 +121,17 @@ impl ChannelId {
             0x07FF_FFFF
         }
     }
+
+    /// IE/IF bit for this channel's completion IRQ.
+    #[inline]
+    pub fn irq_bit(self) -> u16 {
+        match self {
+            ChannelId::Ch0 => crate::irq::IRQ_DMA0,
+            ChannelId::Ch1 => crate::irq::IRQ_DMA1,
+            ChannelId::Ch2 => crate::irq::IRQ_DMA2,
+            ChannelId::Ch3 => crate::irq::IRQ_DMA3,
+        }
+    }
 }
 
 impl TryFrom<usize> for ChannelId {
@@ -154,11 +165,14 @@ pub struct Channel {
     pub(crate) latched_sad: u32,
     /// Internal DAD latch.
     pub(crate) latched_dad: u32,
-    /// Remaining unit count for the active burst.
+    /// Remaining unit count for the active / pending burst.
     pub(crate) remaining: u32,
-    /// True while this channel owns the bus for an Immediate burst.
+    /// True while this channel owns the bus for a burst.
     pub(crate) active: bool,
-    /// Enable was seen 0→1 and Immediate is pending the 2-cycle startup (P2: applied on run).
+    /// Armed Immediate (or edge-triggered) burst waiting to drain.
+    ///
+    /// Kept as `pending_immediate` name for P2 test compatibility; used for all
+    /// start modes once an edge / Immediate arms the channel.
     pub(crate) pending_immediate: bool,
 }
 
@@ -227,7 +241,6 @@ impl Channel {
     }
 
     pub fn write_dad(&mut self, value: u32) {
-        // DAD for ch 0–2 is internal-memory only; still mask with channel mask.
         let mask = if self.id == ChannelId::Ch3 {
             0x0FFF_FFFF
         } else {
@@ -240,34 +253,70 @@ impl Channel {
         self.count = value & (self.id.count_mask() as u16);
     }
 
-    /// Write DMAxCNT_H. Rising enable + Immediate → arm pending Immediate start.
+    /// Write DMAxCNT_H. Rising enable reloads latches; Immediate arms pending.
     ///
-    /// Non-Immediate start modes are stored but **not** started in P2.
+    /// Non-Immediate modes stay enabled until a start edge / FIFO / capture hook
+    /// calls [`Self::request_start`].
     pub fn write_control(&mut self, value: u16) -> bool {
         let was_enabled = self.enabled();
         self.control = value;
         let now_enabled = self.enabled();
         let rising = !was_enabled && now_enabled;
 
-        if rising && self.start_timing() == StartTiming::Immediate {
-            self.arm_immediate();
-            true
-        } else {
-            if !now_enabled {
+        if rising {
+            self.reload_latches_full();
+            if self.start_timing() == StartTiming::Immediate {
+                self.pending_immediate = true;
                 self.active = false;
-                self.pending_immediate = false;
-                self.remaining = 0;
+                return true;
             }
-            false
+            self.pending_immediate = false;
+            self.active = false;
+            return false;
         }
+
+        if !now_enabled {
+            self.active = false;
+            self.pending_immediate = false;
+            self.remaining = 0;
+        }
+        false
     }
 
-    /// Reload internal latches from visible regs (Enable 0→1).
-    pub(crate) fn arm_immediate(&mut self) {
+    /// Reload SAD/DAD/CNT latches from visible regs (Enable 0→1).
+    pub(crate) fn reload_latches_full(&mut self) {
         self.latched_sad = self.sad;
         self.latched_dad = self.dad;
+        self.reload_count_latch();
+    }
+
+    /// Reload remaining from visible CNT (Repeat path).
+    pub(crate) fn reload_count_latch(&mut self) {
         let raw = u32::from(self.count) & self.id.count_mask();
         self.remaining = if raw == 0 { self.id.max_count() } else { raw };
+    }
+
+    /// Edge / FIFO / capture: mark channel pending if enabled for `timing`.
+    pub(crate) fn request_start(&mut self, timing: StartTiming) -> bool {
+        if !self.enabled() || self.active || self.pending_immediate {
+            return false;
+        }
+        if self.start_timing() != timing {
+            return false;
+        }
+        // DMA0 Special is illegal (GBATEK) — never arm.
+        if timing == StartTiming::Special && self.id == ChannelId::Ch0 {
+            return false;
+        }
+        self.pending_immediate = true;
+        true
+    }
+
+    /// FIFO Special: force 4×32-bit units; dest stays at latched DAD (fixed).
+    pub(crate) fn arm_fifo_burst(&mut self) {
+        self.remaining = 4;
+        // Force 32-bit for the burst regardless of CNT_H size bit.
+        self.control |= CONTROL_TRANSFER_TYPE;
         self.pending_immediate = true;
         self.active = false;
     }
@@ -277,12 +326,26 @@ impl Channel {
         self.active = true;
     }
 
-    pub(crate) fn finish(&mut self) {
+    /// Finish a burst. Returns whether CNT_H.IRQ should raise IF.
+    ///
+    /// Immediate always clears Enable (Repeat ignored). Other modes keep Enable
+    /// and reload CNT (and DAD if Inc+Reload) when Repeat is set.
+    pub(crate) fn finish(&mut self) -> bool {
+        let want_irq = self.irq_enable();
         self.active = false;
-        self.remaining = 0;
-        // Immediate: ignore Repeat — auto-clear Enable after the burst (NBA/GBATEK).
-        self.control &= !CONTROL_ENABLE;
         self.pending_immediate = false;
+
+        let immediate = self.start_timing() == StartTiming::Immediate;
+        if immediate || !self.repeat() {
+            self.control &= !CONTROL_ENABLE;
+            self.remaining = 0;
+        } else {
+            self.reload_count_latch();
+            if self.dest_control() == DestControl::IncrementReload {
+                self.latched_dad = self.dad;
+            }
+        }
+        want_irq
     }
 
     pub(crate) fn step_addrs(&mut self) {

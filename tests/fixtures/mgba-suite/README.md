@@ -22,6 +22,12 @@ Note: provenance stub only; no suite.gba in P0.
 Sub-suites of interest: shifter / carry / multiply-long (P1–P2), memory / DMA
 (P2–P7), timers / IRQ (P3→P7), timing (P7), BIOS math (P6), video (P4→P7).
 
+### P5 dma progress (G5-mgba-dma)
+
+| Date | Note |
+|------|------|
+| 2026-09-12 | P5 kickoff: `suite.gba` still absent; DMA unit gates (VBlank/HBlank/FIFO/capture/IRQ) land in-tree. Progress string: see `tests/roms/p5.rs` `MGBA_DMA_PROGRESS`. |
+
 Headless automation is TBD upstream (UI-driven today); prefer SRAM `savprintf`
 or mGBA debug `BEGIN`/`END` lines when wired.
 

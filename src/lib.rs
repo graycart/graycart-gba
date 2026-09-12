@@ -3,13 +3,14 @@
 //! Module map follows the graycart-gba implementation plan §2.2
 //! (Project store: `docs/graycart-gba/08-implementation-plan.md`).
 //!
-//! Cited: GBATEK — Memory Map / LCD I/O (DISPSTAT / VCOUNT)
+//! Cited: GBATEK — Memory Map / LCD I/O (DISPSTAT / VCOUNT) / DMA Transfers
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: graycart-gba test apparatus §4 (harness hooks)
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
 //! Note: cycle counts are crude (1 per insn) until waitstate scheduling.
 //! P3: timers / keypad / Halt wake / IRQ sample.
 //! P4: real PPU scanline timing replaces crude VBlank toggle.
+//! P5: DMA VBlank/HBlank/FIFO/capture starts hooked from PPU/APU edges.
 
 pub mod apu;
 pub mod bios;
@@ -122,6 +123,7 @@ impl Gba {
             input: &mut self.input,
             hw: &mut self.hw,
             ppu: &mut self.ppu,
+            dma: &mut self.dma,
         }
     }
 
@@ -138,6 +140,7 @@ impl Gba {
                 input,
                 hw,
                 ppu,
+                dma,
                 cpu,
                 ..
             } = self;
@@ -148,6 +151,7 @@ impl Gba {
                 input,
                 hw,
                 ppu,
+                dma,
             };
             cpu.pipeline.refill(&mut mem);
         }
@@ -157,7 +161,35 @@ impl Gba {
         true
     }
 
-    /// One machine step: PPU + timer/keypad/halt → IRQ sample → (optional) CPU.
+    /// Fire VBlank/HBlank/FIFO/capture starts from current PPU/APU edges, then drain.
+    fn service_dma_edges(&mut self) {
+        let vblank = self.ppu.timing.entered_vblank_edge();
+        let hblank = self.ppu.timing.entered_hblank_edge();
+        let hif = self.ppu.regs.hblank_interval_free();
+        let vcount = self.ppu.timing.vcount;
+        let fifo_req = self.apu.take_fifo_dma_request();
+
+        let Self { bus, irq, dma, .. } = self;
+        if vblank {
+            let _ = dma.on_vblank(bus, irq);
+        }
+        if hblank {
+            let _ = dma.on_hblank(bus, irq, hif);
+            let _ = dma.on_capture_hblank(bus, irq, vcount);
+        }
+        if fifo_req != 0 {
+            let _ = dma.on_fifo_request(bus, irq, fifo_req);
+        }
+        let _ = dma.run_pending(bus, irq);
+    }
+
+    /// Drain pending Immediate (or already-armed) bursts only — no edge re-fire.
+    fn drain_dma(&mut self) {
+        let Self { bus, irq, dma, .. } = self;
+        let _ = dma.run_pending(bus, irq);
+    }
+
+    /// One machine step: PPU → DMA edges → timer/keypad/halt → IRQ → (optional) CPU.
     pub fn step_instruction(&mut self) -> StepOutcome {
         const STEP_CYCLES: u64 = 1;
 
@@ -166,6 +198,8 @@ impl Gba {
             ppu.step(STEP_CYCLES as u32, bus, irq);
             ppu.mirror_status_to_io(bus);
         }
+
+        self.service_dma_edges();
 
         self.timer.step(STEP_CYCLES, &mut self.irq);
         self.input.poll_keypad_irq(&mut self.irq);
@@ -190,6 +224,7 @@ impl Gba {
                 input,
                 hw,
                 ppu,
+                dma,
                 cpu,
                 ..
             } = self;
@@ -200,9 +235,14 @@ impl Gba {
                 input,
                 hw,
                 ppu,
+                dma,
             };
             step(cpu, &mut mem, hle)
         };
+        // Immediate DMA may have been armed by the instruction's MMIO write.
+        if self.dma.is_busy() {
+            self.drain_dma();
+        }
         self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
         outcome
     }
@@ -231,11 +271,12 @@ impl Gba {
         self.bus.iwram.get(offset).copied().unwrap_or(0)
     }
 
-    /// Peek I/O halfword (e.g. DISPCNT / DISPSTAT / KEYINPUT / IE).
+    /// Peek I/O halfword (e.g. DISPCNT / DISPSTAT / KEYINPUT / IE / DMAxCNT_H).
     #[must_use]
     pub fn io16(&self, offset: usize) -> u16 {
         match offset {
             o if o <= 0x56 => self.ppu.read16(o),
+            o if (0xB0..0xE0).contains(&o) => self.dma.read_mmio16((o - 0xB0) as u32),
             o if (0x100..0x110).contains(&o) => self.timer.read_mmio16(o - 0x100),
             0x130 => self.input.read_keyinput(),
             0x132 => self.input.read_keycnt(),
@@ -386,5 +427,40 @@ mod tests {
         }
         assert_eq!(gba.ppu.regs.bg_mode(), 4);
         assert_eq!(gba.io16(0), 0x0404);
+    }
+
+    #[test]
+    fn vblank_dma_glue_copies_iwram() {
+        use crate::bus::CpuMem;
+        use crate::dma::{control_word, ChannelId, DestControl, SrcControl, StartTiming};
+        use crate::ppu::timing::CYCLES_PER_LINE;
+
+        let mut gba = Gba::new();
+        // Seed IWRAM via bus.
+        gba.bus.write16(0x0300_0100, 0x1234);
+        gba.bus.write16(0x0300_0102, 0x5678);
+        {
+            let mut mem = gba.machine_mem();
+            mem.write32(0x0400_00B0, 0x0300_0100); // DMA0 SAD
+            mem.write32(0x0400_00B4, 0x0300_0200); // DMA0 DAD
+            mem.write16(0x0400_00B8, 2); // count
+            let ctrl = control_word(
+                DestControl::Increment,
+                SrcControl::Increment,
+                StartTiming::VBlank,
+                false,
+                true,
+            );
+            mem.write16(0x0400_00BA, ctrl);
+        }
+        assert!(gba.dma.channel(ChannelId::Ch0).enabled());
+
+        // Advance into VBlank (line 160): 160 full lines.
+        let cycles = u64::from(CYCLES_PER_LINE) * 160;
+        gba.run_cycles(cycles);
+
+        assert!(!gba.dma.channel(ChannelId::Ch0).enabled());
+        assert_eq!(gba.bus.read16(0x0300_0200), 0x1234);
+        assert_eq!(gba.bus.read16(0x0300_0202), 0x5678);
     }
 }

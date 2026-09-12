@@ -18,6 +18,13 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P5 DMA full (shared `walter/p5-dma-full-980e`):** VBlank / HBlank starts (HBlank
+  Interval Free for OAM), DMA1/2 Special FIFO 4×32-bit refill, DMA3 Special
+  video-capture window stub (VCOUNT 2..=161), completion IRQs, DMA3 Game Pak
+  yes / SRAM never. `Gba` step hooks PPU edges + APU FIFO request stub; MMIO
+  routes `040000B0`–`DF`. Unit gates G5-*; mGBA dma progress logged
+  (`tests/roms/p5.rs`); alyosha DMA stubs `#[ignore]`. jsmolka
+  arm+thumb+memory stay default-CI PASS.
 - **P4 PPU (shared `dev/p4-ppu`):** scanline timing 1232×228; DISPSTAT
   VBlank/HBlank/VCounter + IRQs; LCD I/O register file; modes 0–5 + OBJ
   basics; windows/blend/affine functional; headless `--frames N --hash-out`
