@@ -26,15 +26,17 @@ pub fn usage() -> &'static str {
        graycart-gba --run                same as no args\n\
        graycart-gba <rom.gba>            windowed host with ROM\n\
        graycart-gba --frames <N> [--hash-out <path>] [--audio-out <path>] [rom.gba]\n\
-       graycart-gba --debug [--frames N] [rom.gba]\n\
+       graycart-gba --debug[=summary|trace] [--frames N] [rom.gba]\n\
        graycart-gba --trace [N] [rom.gba]\n\
        graycart-gba --quiet|--verbose …\n\
        graycart-gba --version\n\
        graycart-gba --help\n\
      \n\
      Debug (default quiet):\n\
-       --debug / GRAYCART_DEBUG=1   stderr breadcrumbs (rom/bios/cpu/ppu/irq/dma/stuck)\n\
-       --trace [N] / GRAYCART_TRACE  denser samples; N = headless insn dump (GB-style)\n\
+       --debug / --debug=summary / GRAYCART_DEBUG=1\n\
+         stderr summary: rom/bios, warn swi/openbus/stuck/halt/blank, dma·irq aggregates\n\
+       --debug=trace / --trace [N] / GRAYCART_DEBUG=trace / GRAYCART_TRACE\n\
+         denser DMA/IRQ/insn samples; N = headless insn dump (GB-style)\n\
        --quiet / --verbose           load/boot summary on stdout\n\
      Headless --frames does not require the window stack.\n\
      --hash-out writes final-frame SHA-256 of 240×160 RGB888.\n\
