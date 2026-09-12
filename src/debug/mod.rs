@@ -2,15 +2,18 @@
 //!
 //! Cited: graycart-gb CLI verbosity / `--trace` / runtime diag env flags
 //!   https://github.com/graycart/graycart-gb (src/main.rs, frontend/launch.rs)
-//! Cited: GBATEK — cartridge header / IRQ / DMA / LCD / memory map (field names only)
+//! Cited: graycart-gb Debug Monitor health / ApuDebug peaks (adapted for GBA console)
+//!   https://github.com/graycart/graycart-gb (src/frontend/debug/ui/health.rs, src/debug/machine.rs)
+//! Cited: GBATEK — cartridge header / IRQ / DMA / LCD / FIFO / memory map (field names only)
 //!   https://problemkaputt.de/gbatek.htm
-//! Note: Default quiet. `--debug` = summary (problems + aggregates), not DMA spam.
+//! Note: Default quiet. `--debug` = summary (problems + aggregates + AV health), not DMA spam.
 //!   `--debug=trace` / `--trace` for verbose DMA/IRQ/insn. Prefix `gba-debug:`.
 //!   No commercial ROMs required — validate with jsmolka / synthetic fixtures.
 
 #[cfg(test)]
 mod tests;
 
+use crate::apu::{fifo_route_label, pwm_rate_hz, ApuHealthPeriod, DC_WARN_ABS};
 use crate::bios::{BiosMode, HLE_IRQ_RETURN};
 use crate::bus::region::{self, Region};
 use crate::cart::detect::SaveKind;
@@ -18,6 +21,10 @@ use crate::cart::header::CartHeader;
 use crate::cpu::{cpsr, Mode};
 use crate::dma::{DmaRunReport, StartTiming};
 use crate::hw::PowerMode;
+use crate::ppu::health::{
+    analyze_framebuffer, backdrop_from_palette, blend_label, blend_mode, layer_enable_label,
+    layer_mask, mosaic_active, objwin_active,
+};
 use crate::ppu::FRAME_CYCLES;
 use crate::RomLaunchMode;
 use std::collections::BTreeMap;
@@ -32,13 +39,20 @@ pub const ENV_TRACE: &str = "GRAYCART_TRACE";
 /// Greppable stderr prefix for all breadcrumbs.
 pub const LOG_PREFIX: &str = "gba-debug:";
 
+/// VRAM+OAM writes in one period above this → write-storm one-liner.
+const VIDEO_WRITE_STORM: u64 = 8_000;
+/// FIFO empty drains in one period above this → loud warn.
+const FIFO_EMPTY_STORM: u64 = 64;
+/// Host ring underrun events in one report above this → warn.
+const HOST_UNDERRUN_WARN: u64 = 1;
+
 /// How chatty the breadcrumb stream is (independent of [`Verbosity`] load lines).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum DebugLevel {
     /// No breadcrumbs (default).
     #[default]
     Off,
-    /// Bring-up summary: rom/bios, loud faults, blanking, stuck, dma/irq aggregates.
+    /// Bring-up summary: rom/bios, loud faults, blanking, stuck, dma/irq aggregates, AV health.
     Debug,
     /// Summary plus per-event DMA/IRQ (rate-limited) and insn samples / `--trace N`.
     Trace,
@@ -248,6 +262,28 @@ pub struct DebugTracker {
     irq_trap_announced: bool,
     /// Remaining insn lines for headless `--trace N` (stdout).
     pub trace_remaining: Option<u64>,
+    // --- AV health (summary) ---
+    last_bg_mode: Option<u16>,
+    last_layer_mask: Option<u8>,
+    last_mosaic: Option<bool>,
+    last_blend: Option<u16>,
+    last_objwin: Option<bool>,
+    last_vram_writes: u64,
+    last_oam_writes: u64,
+    last_palette_writes: u64,
+    last_fifo_ua: u64,
+    last_fifo_ub: u64,
+    last_fifo_oa: u64,
+    last_fifo_ob: u64,
+    black_frames: u64,
+    backdrop_only_frames: u64,
+    black_announced: bool,
+    host_underruns: u64,
+    host_rate_hz: Option<u32>,
+    host_rate_announced: bool,
+    fifo_empty_announced: bool,
+    clip_announced: bool,
+    dc_announced: bool,
 }
 
 impl Default for DebugTracker {
@@ -286,6 +322,27 @@ impl DebugTracker {
             ie_nonzero_announced: false,
             irq_trap_frames: 0,
             irq_trap_announced: false,
+            last_bg_mode: None,
+            last_layer_mask: None,
+            last_mosaic: None,
+            last_blend: None,
+            last_objwin: None,
+            last_vram_writes: 0,
+            last_oam_writes: 0,
+            last_palette_writes: 0,
+            last_fifo_ua: 0,
+            last_fifo_ub: 0,
+            last_fifo_oa: 0,
+            last_fifo_ob: 0,
+            black_frames: 0,
+            backdrop_only_frames: 0,
+            black_announced: false,
+            host_underruns: 0,
+            host_rate_hz: None,
+            host_rate_announced: false,
+            fifo_empty_announced: false,
+            clip_announced: false,
+            dc_announced: false,
         }
     }
 
@@ -375,7 +432,7 @@ impl DebugTracker {
     /// Called once per retired instruction quantum with cycle delta.
     pub fn on_step(
         &mut self,
-        gba: &crate::Gba,
+        gba: &mut crate::Gba,
         step_cycles: u64,
         outcome: crate::cpu::StepOutcome,
     ) {
@@ -508,7 +565,7 @@ impl DebugTracker {
         }
     }
 
-    fn on_frame(&mut self, gba: &crate::Gba) {
+    fn on_frame(&mut self, gba: &mut crate::Gba) {
         self.frames = self.frames.saturating_add(1);
         let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
         if self.last_pc == Some(pc) {
@@ -534,6 +591,8 @@ impl DebugTracker {
         }
 
         self.watch_blanking(gba);
+        self.watch_video_regs(gba);
+        self.watch_frame_pixels(gba);
         self.watch_irq_trap(gba);
         self.watch_halt_forever(gba);
 
@@ -544,6 +603,8 @@ impl DebugTracker {
             self.log_dma_summary();
             self.log_irq_summary();
             self.log_swi_summary();
+            self.log_apu_health(gba);
+            self.log_ppu_health(gba);
         }
     }
 
@@ -573,6 +634,111 @@ impl DebugTracker {
                 ));
             }
         }
+    }
+
+    /// Mode / layer / mosaic / blend / OBJWIN edges (summary one-liners).
+    fn watch_video_regs(&mut self, gba: &crate::Gba) {
+        let regs = &gba.ppu.regs;
+        let mode = regs.bg_mode();
+        if self.last_bg_mode != Some(mode) {
+            let prev = self.last_bg_mode;
+            self.last_bg_mode = Some(mode);
+            if let Some(p) = prev {
+                log_line(&format!(
+                    "ppu mode {p}→{mode} dispcnt=0x{:04X} layers={}",
+                    regs.dispcnt,
+                    layer_enable_label(regs)
+                ));
+            }
+        }
+        let layers = layer_mask(regs.dispcnt);
+        if self.last_layer_mask != Some(layers) {
+            let prev = self.last_layer_mask;
+            self.last_layer_mask = Some(layers);
+            if prev.is_some() {
+                log_line(&format!(
+                    "ppu layers {} dispcnt=0x{:04X}",
+                    layer_enable_label(regs),
+                    regs.dispcnt
+                ));
+            }
+        }
+        let mosaic = mosaic_active(regs);
+        if self.last_mosaic != Some(mosaic) {
+            self.last_mosaic = Some(mosaic);
+            if mosaic {
+                log_line(&format!("ppu mosaic on mosaic=0x{:04X}", regs.mosaic));
+            }
+        }
+        let blend = blend_mode(regs);
+        if self.last_blend != Some(blend) {
+            let prev = self.last_blend;
+            self.last_blend = Some(blend);
+            if prev.is_some() || blend != 0 {
+                log_line(&format!(
+                    "ppu blend mode={} bldcnt=0x{:04X}",
+                    blend_label(blend),
+                    regs.bldcnt
+                ));
+            }
+        }
+        let objwin = objwin_active(regs);
+        if self.last_objwin != Some(objwin) {
+            self.last_objwin = Some(objwin);
+            if objwin {
+                log_line("ppu objwin on");
+            }
+        }
+    }
+
+    /// Backdrop-only / all-black heuristics once per frame (cheap subsample).
+    fn watch_frame_pixels(&mut self, gba: &crate::Gba) {
+        if gba.ppu.regs.forced_blank() {
+            return;
+        }
+        let bd = backdrop_from_palette(&gba.bus.palette);
+        let health = analyze_framebuffer(&gba.ppu.fb, bd);
+        if health.is_all_black() {
+            self.black_frames = self.black_frames.saturating_add(1);
+            if self.black_frames >= 30 && !self.black_announced {
+                self.black_announced = true;
+                log_line(&format!(
+                    "warn ppu all-black frames={} black_pct={}% layers={} mode={} dispcnt=0x{:04X} (silent black screen?)",
+                    self.black_frames,
+                    health.black_pct(),
+                    layer_enable_label(&gba.ppu.regs),
+                    gba.ppu.regs.bg_mode(),
+                    gba.ppu.regs.dispcnt
+                ));
+            }
+        } else {
+            self.black_frames = 0;
+            self.black_announced = false;
+        }
+        if health.is_backdrop_only() {
+            self.backdrop_only_frames = self.backdrop_only_frames.saturating_add(1);
+            if self.backdrop_only_frames == 60 {
+                log_line(&format!(
+                    "warn ppu backdrop-only frames={} bd=0x{bd:04X} layers={} mode={}",
+                    self.backdrop_only_frames,
+                    layer_enable_label(&gba.ppu.regs),
+                    gba.ppu.regs.bg_mode()
+                ));
+            }
+        } else {
+            self.backdrop_only_frames = 0;
+        }
+        // Trace-only denser frame pixel line.
+        if self.config.is_trace() && self.frames.is_multiple_of(60) {
+            log_line(&format!(
+                "ppu pixels black={}% backdrop={}% other={} samples={}",
+                health.black_pct(),
+                health.backdrop_pct(),
+                health.other,
+                health.samples
+            ));
+        }
+        let _ = health;
     }
 
     fn watch_irq_trap(&mut self, gba: &crate::Gba) {
@@ -642,14 +808,188 @@ impl DebugTracker {
             gba.hw.power
         );
         log_line(&buf);
+        let regs = &gba.ppu.regs;
         log_line(&format!(
-            "ppu frame={} mode={} vcount={} dispcnt=0x{:04X} forced_blank={}",
+            "ppu frame={} mode={} vcount={} dispcnt=0x{:04X} forced_blank={} layers={} mosaic={} blend={} objwin={}",
             self.frames,
-            gba.ppu.regs.bg_mode(),
+            regs.bg_mode(),
             gba.ppu.timing.vcount,
-            gba.ppu.regs.dispcnt,
-            gba.ppu.regs.forced_blank()
+            regs.dispcnt,
+            regs.forced_blank(),
+            layer_enable_label(regs),
+            mosaic_active(regs) as u8,
+            blend_label(blend_mode(regs)),
+            objwin_active(regs) as u8
         ));
+    }
+
+    fn log_apu_health(&mut self, gba: &mut crate::Gba) {
+        let mut period = gba.apu.health.take_period();
+        let ua = gba.apu.fifos.a.underruns;
+        let ub = gba.apu.fifos.b.underruns;
+        let oa = gba.apu.fifos.a.overruns;
+        let ob = gba.apu.fifos.b.overruns;
+        period.underrun_a = ua.saturating_sub(self.last_fifo_ua);
+        period.underrun_b = ub.saturating_sub(self.last_fifo_ub);
+        period.overrun_a = oa.saturating_sub(self.last_fifo_oa);
+        period.overrun_b = ob.saturating_sub(self.last_fifo_ob);
+        self.last_fifo_ua = ua;
+        self.last_fifo_ub = ub;
+        self.last_fifo_oa = oa;
+        self.last_fifo_ob = ob;
+        let regs = &gba.apu.regs;
+        let pwm = pwm_rate_hz(regs.pwm_resolution());
+        let master = regs.master_enabled() as u8;
+        let (dc_l, dc_r) = period.mean_dc();
+        let ch_on = regs.channel_on & 0x0F;
+        let psg_vol = regs.soundcnt_l & 0x77;
+        log_line(&format!(
+            "apu health frame={} master={master} pwm={pwm}Hz fifoA={} underrun={}/{} overrun={}/{} empty={}/{} lag={}/{} dma_req={}/{} peak=[{}..{}] dc≈[{dc_l},{dc_r}] clip={} extreme={} psg_on=0x{ch_on:X} psg_nr50=0x{psg_vol:02X} fifoB={}",
+            self.frames,
+            fifo_route_label(regs, true),
+            period.underrun_a,
+            period.underrun_b,
+            period.overrun_a,
+            period.overrun_b,
+            period.empty_drain_a,
+            period.empty_drain_b,
+            period.refill_lag_a,
+            period.refill_lag_b,
+            period.dma_req_a,
+            period.dma_req_b,
+            period.peak_min,
+            period.peak_max,
+            period.clip_hits,
+            period.extreme_hits,
+            fifo_route_label(regs, false),
+        ));
+        if let Some(host) = self.host_rate_hz {
+            let mismatch = if host == 0 {
+                "host=0".into()
+            } else {
+                format!(
+                    "host={host}Hz ratio={:.3}",
+                    f64::from(pwm) / f64::from(host)
+                )
+            };
+            log_line(&format!(
+                "apu host frame={} pwm={pwm}Hz {mismatch} underrun_events={}",
+                self.frames, self.host_underruns
+            ));
+        }
+        self.emit_apu_warns(period, regs.master_enabled(), ch_on, psg_vol);
+    }
+
+    fn emit_apu_warns(&mut self, period: ApuHealthPeriod, master: bool, ch_on: u8, psg_vol: u16) {
+        let empty = period.empty_drain_a + period.empty_drain_b;
+        let under = period.underrun_a + period.underrun_b;
+        if (empty >= FIFO_EMPTY_STORM || under >= FIFO_EMPTY_STORM) && !self.fifo_empty_announced {
+            self.fifo_empty_announced = true;
+            log_line(&format!(
+                "warn apu fifo empty-drain/underrun period empty={empty} underrun={under} lag={}/{} (held last sample — pops/silence/stuck tone)",
+                period.refill_lag_a, period.refill_lag_b
+            ));
+        } else if empty == 0 && under == 0 {
+            self.fifo_empty_announced = false;
+        }
+        if period.overrun_a + period.overrun_b > 0 {
+            log_line(&format!(
+                "warn apu fifo overrun A={} B={} (DMA too fast / Fixed-dest miss?)",
+                period.overrun_a, period.overrun_b
+            ));
+        }
+        if period.clip_hits > 0 && !self.clip_announced {
+            self.clip_announced = true;
+            log_line(&format!(
+                "warn apu clipping hits={} peak=[{}..{}] (loud saw/rumble risk)",
+                period.clip_hits, period.peak_min, period.peak_max
+            ));
+        } else if period.clip_hits == 0 {
+            self.clip_announced = false;
+        }
+        let (dc_l, dc_r) = period.mean_dc();
+        if (dc_l.unsigned_abs() >= DC_WARN_ABS as u32 || dc_r.unsigned_abs() >= DC_WARN_ABS as u32)
+            && !self.dc_announced
+        {
+            self.dc_announced = true;
+            log_line(&format!(
+                "warn apu dc bias L={dc_l} R={dc_r} (stuck latch / rumble)"
+            ));
+        } else if dc_l.unsigned_abs() < DC_WARN_ABS as u32
+            && dc_r.unsigned_abs() < DC_WARN_ABS as u32
+        {
+            self.dc_announced = false;
+        }
+        if !master && (period.dma_req_a + period.dma_req_b > 0 || under > 0) {
+            log_line(&format!(
+                "warn apu master=0 but fifo traffic dma_req={}/{} underrun={under} (SOUNDCNT_X off)",
+                period.dma_req_a, period.dma_req_b
+            ));
+        }
+        if master && psg_vol == 0 && ch_on != 0 {
+            log_line(&format!(
+                "warn apu psg channels on=0x{ch_on:X} but NR50 vol=0 (silent PSG)"
+            ));
+        }
+        if self.host_underruns >= HOST_UNDERRUN_WARN && self.frames.is_multiple_of(60) {
+            log_line(&format!(
+                "warn apu host underrun_events={} (cpal ring empty — pops)",
+                self.host_underruns
+            ));
+        }
+    }
+
+    fn log_ppu_health(&mut self, gba: &crate::Gba) {
+        let vram = gba
+            .bus
+            .vram_write_count
+            .saturating_sub(self.last_vram_writes);
+        let oam = gba.bus.oam_write_count.saturating_sub(self.last_oam_writes);
+        let pal = gba
+            .bus
+            .palette_write_count
+            .saturating_sub(self.last_palette_writes);
+        self.last_vram_writes = gba.bus.vram_write_count;
+        self.last_oam_writes = gba.bus.oam_write_count;
+        self.last_palette_writes = gba.bus.palette_write_count;
+
+        let bd = backdrop_from_palette(&gba.bus.palette);
+        let pixels = analyze_framebuffer(&gba.ppu.fb, bd);
+        let regs = &gba.ppu.regs;
+        log_line(&format!(
+            "ppu health frame={} mode={} layers={} blank={} mosaic={} blend={} objwin={} black={}% backdrop={}% writes vram={vram} oam={oam} pal={pal}",
+            self.frames,
+            regs.bg_mode(),
+            layer_enable_label(regs),
+            regs.forced_blank() as u8,
+            mosaic_active(regs) as u8,
+            blend_label(blend_mode(regs)),
+            objwin_active(regs) as u8,
+            pixels.black_pct(),
+            pixels.backdrop_pct(),
+        ));
+        if vram + oam >= VIDEO_WRITE_STORM {
+            log_line(&format!(
+                "warn ppu write-storm vram={vram} oam={oam} pal={pal} (tile/OBJ churn)"
+            ));
+        }
+    }
+
+    /// Host/frontend audio telemetry (cpal underruns + device rate).
+    pub fn on_host_audio(&mut self, host_hz: u32, underrun_events: u64, queue_frames: usize) {
+        if !self.enabled() {
+            return;
+        }
+        self.host_underruns = underrun_events;
+        if self.host_rate_hz != Some(host_hz) {
+            self.host_rate_hz = Some(host_hz);
+            if !self.host_rate_announced {
+                self.host_rate_announced = true;
+                log_line(&format!(
+                    "apu host rate={host_hz}Hz queue≈{queue_frames} (PWM resampled to device)"
+                ));
+            }
+        }
     }
 
     fn log_dma_summary(&mut self) {
@@ -752,6 +1092,64 @@ impl DebugTracker {
     pub fn trace_exhausted(&self) -> bool {
         matches!(self.trace_remaining, Some(0))
     }
+}
+
+/// GB-inspired structured AV frame report (stdout / agent greppable).
+#[must_use]
+pub fn format_av_report(gba: &crate::Gba, frames: u64) -> String {
+    let regs = &gba.ppu.regs;
+    let bd = backdrop_from_palette(&gba.bus.palette);
+    let pixels = analyze_framebuffer(&gba.ppu.fb, bd);
+    let pwm = pwm_rate_hz(gba.apu.regs.pwm_resolution());
+    let (dc_l, dc_r) = gba.apu.health.mean_dc();
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "=== graycart-gba AV report (frame={frames}) ===");
+    let _ = writeln!(
+        &mut out,
+        "PPU mode={} dispcnt=0x{:04X} blank={} layers={} mosaic=0x{:04X} blend={} objwin={}",
+        regs.bg_mode(),
+        regs.dispcnt,
+        regs.forced_blank(),
+        layer_enable_label(regs),
+        regs.mosaic,
+        blend_label(blend_mode(regs)),
+        objwin_active(regs)
+    );
+    let _ = writeln!(
+        &mut out,
+        "PPU pixels black={}% backdrop={}% other={} bd=0x{bd:04X} writes vram={} oam={} pal={}",
+        pixels.black_pct(),
+        pixels.backdrop_pct(),
+        pixels.other,
+        gba.bus.vram_write_count,
+        gba.bus.oam_write_count,
+        gba.bus.palette_write_count
+    );
+    let _ = writeln!(
+        &mut out,
+        "APU master={} pwm={pwm}Hz fifoA={} fifoB={} underrun={}/{} overrun={}/{} empty_drain={}/{} peak=[{}..{}] dc≈[{dc_l},{dc_r}] clip={}",
+        gba.apu.regs.master_enabled(),
+        fifo_route_label(&gba.apu.regs, true),
+        fifo_route_label(&gba.apu.regs, false),
+        gba.apu.fifos.a.underruns,
+        gba.apu.fifos.b.underruns,
+        gba.apu.fifos.a.overruns,
+        gba.apu.fifos.b.overruns,
+        gba.apu.health.empty_drain_a,
+        gba.apu.health.empty_drain_b,
+        if gba.apu.health.samples == 0 {
+            0
+        } else {
+            gba.apu.health.peak_min
+        },
+        if gba.apu.health.samples == 0 {
+            0
+        } else {
+            gba.apu.health.peak_max
+        },
+        gba.apu.health.clip_hits
+    );
+    out
 }
 
 /// Format a short stdout load summary (GB Quiet/Normal/Verbose parity).

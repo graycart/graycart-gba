@@ -86,7 +86,7 @@ Same posture as [graycart-gb `AGENTS.md`](https://github.com/graycart/graycart-g
 
 - `Cargo.toml` `[package].version` is the only product version (window title, About, any save-header version field).
 - Completed slices bump **patch** unless the change is a real 0.x **minor**.
-- Scaffold started at **`0.0.1`**; first tagged runnable milestone is **`0.1.0`** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 cutover **0.1.3**, console debug **0.1.4**.
+- Scaffold started at **`0.0.1`**; first tagged runnable milestone is **`0.1.0`** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 cutover **0.1.3**, console debug **0.1.4**, AV health summary **0.1.9**.
 - **Do not** ship `1.0.0` until native GBA (and agreed compat) are stable enough, installers/settings/save compatibility are trusted, and basic cross-platform play is trusted.
 - Git tag **`vX.Y.Z` must equal** the crate version. Release jobs should fail on mismatch.
 

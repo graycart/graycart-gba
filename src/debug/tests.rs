@@ -267,3 +267,121 @@ fn forced_blank_edge_is_logged() {
         "expected blank edge, got {lines:?}"
     );
 }
+
+#[test]
+fn fifo_underrun_surfaces_in_apu_health_summary() {
+    use crate::apu::{MASTER_ENABLE, OFF_SOUNDCNT_H, OFF_SOUNDCNT_X};
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    // Master on + FIFO A → L+R; never push samples → empty drains on timer.
+    gba.apu.write16(OFF_SOUNDCNT_X, MASTER_ENABLE);
+    gba.apu.write16(OFF_SOUNDCNT_H, 0x0300); // A left+right, TM0
+    for _ in 0..200 {
+        gba.apu.on_timer_overflows(1, 0);
+        gba.apu.step(512);
+    }
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("apu health") && l.contains("underrun=")),
+        "expected apu health summary, got {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn apu fifo") || l.contains("empty=")),
+        "expected fifo empty/underrun signal, got {lines:?}"
+    );
+}
+
+#[test]
+fn ppu_health_summary_includes_layers_and_writes() {
+    use crate::bus::CpuMem;
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    gba.ppu.regs.dispcnt = 0x1100; // mode 0, BG0+OBJ
+    for i in 0..100u32 {
+        gba.bus.write16(0x0600_0000 + i * 2, 0x1234);
+    }
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("ppu health") && l.contains("layers=BG0|OBJ")),
+        "expected ppu health with layers, got {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("writes vram=") && l.contains("vram=100")),
+        "expected vram write count in ppu health, got {lines:?}"
+    );
+}
+
+#[test]
+fn format_av_report_mentions_apu_and_ppu() {
+    let gba = Gba::new();
+    let report = format_av_report(&gba, 0);
+    assert!(report.contains("AV report"));
+    assert!(report.contains("PPU"));
+    assert!(report.contains("APU"));
+}
+
+#[test]
+fn dispcnt_mode_flip_is_logged() {
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 10_000,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    let mut rom = vec![0u8; 0x200];
+    rom[0..4].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+    gba.load_rom(&rom);
+    gba.reset_bios_hle();
+    gba.run_frames(1);
+    gba.ppu.regs.dispcnt = (gba.ppu.regs.dispcnt & !0x7) | 3; // mode 3
+    gba.run_frames(1);
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("ppu mode") && l.contains("→3")),
+        "expected mode flip, got {lines:?}"
+    );
+}

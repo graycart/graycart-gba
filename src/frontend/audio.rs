@@ -1,6 +1,6 @@
 //! Host audio — drain core PCM into a cpal output stream.
 //!
-//! Cited: graycart-gb `src/frontend/audio` posture (simplified ring)
+//! Cited: graycart-gb `src/frontend/audio` posture (simplified ring + underrun count)
 //!   https://github.com/graycart/graycart-gb/tree/main/src/frontend/audio
 //! Cited: cpal 0.15 — https://docs.rs/cpal/0.15.3
 //! Note: device open may fail in headless CI; callers treat that as soft-fail.
@@ -9,6 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use graycart_gba::apu::PcmFrame;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Interleaved stereo f32 ring shared with the cpal callback.
@@ -19,6 +20,7 @@ pub struct AudioOut {
     _stream: Stream,
     ring: SampleRing,
     pub sample_rate: u32,
+    underrun_events: Arc<AtomicU64>,
 }
 
 impl AudioOut {
@@ -37,11 +39,19 @@ impl AudioOut {
         let config: StreamConfig = supported.into();
         let ring: SampleRing = Arc::new(Mutex::new(VecDeque::with_capacity(8192)));
         let ring_cb = Arc::clone(&ring);
+        let underrun_events = Arc::new(AtomicU64::new(0));
+        let underrun_cb = Arc::clone(&underrun_events);
 
         let stream = match sample_format {
-            SampleFormat::F32 => build_stream::<f32>(&device, &config, channels, ring_cb)?,
-            SampleFormat::I16 => build_stream::<i16>(&device, &config, channels, ring_cb)?,
-            SampleFormat::U16 => build_stream::<u16>(&device, &config, channels, ring_cb)?,
+            SampleFormat::F32 => {
+                build_stream::<f32>(&device, &config, channels, ring_cb, underrun_cb)?
+            }
+            SampleFormat::I16 => {
+                build_stream::<i16>(&device, &config, channels, ring_cb, underrun_cb)?
+            }
+            SampleFormat::U16 => {
+                build_stream::<u16>(&device, &config, channels, ring_cb, underrun_cb)?
+            }
             other => return Err(format!("unsupported sample format: {other:?}")),
         };
         stream.play().map_err(|e| format!("stream.play: {e}"))?;
@@ -49,6 +59,7 @@ impl AudioOut {
             _stream: stream,
             ring,
             sample_rate,
+            underrun_events,
         })
     }
 
@@ -80,6 +91,16 @@ impl AudioOut {
             q.push_back(sample);
         }
     }
+
+    #[must_use]
+    pub fn underrun_events(&self) -> u64 {
+        self.underrun_events.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn queued_frames(&self) -> usize {
+        self.ring.lock().map(|q| q.len() / 2).unwrap_or(0)
+    }
 }
 
 fn i16_to_f32(s: i16) -> f32 {
@@ -91,6 +112,7 @@ fn build_stream<T>(
     config: &StreamConfig,
     channels: u16,
     ring: SampleRing,
+    underrun_events: Arc<AtomicU64>,
 ) -> Result<Stream, String>
 where
     T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
@@ -101,10 +123,12 @@ where
             config,
             move |data: &mut [T], _| {
                 let mut q = ring.lock().unwrap_or_else(|e| e.into_inner());
+                let mut starved = false;
                 for frame in data.chunks_mut(ch) {
                     let (l, r) = if q.len() >= 2 {
                         (q.pop_front().unwrap_or(0.0), q.pop_front().unwrap_or(0.0))
                     } else {
+                        starved = true;
                         (0.0, 0.0)
                     };
                     if !frame.is_empty() {
@@ -116,6 +140,9 @@ where
                     for s in frame.iter_mut().skip(2) {
                         *s = T::from_sample(0.0);
                     }
+                }
+                if starved {
+                    underrun_events.fetch_add(1, Ordering::Relaxed);
                 }
             },
             |err| eprintln!("cpal stream error: {err}"),

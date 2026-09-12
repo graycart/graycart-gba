@@ -317,6 +317,11 @@ impl GbaApp {
                         let src_hz = gba.audio_output_hz();
                         audio.push_frames(&self.pcm_scratch[..n], src_hz);
                     }
+                    gba.debug.on_host_audio(
+                        audio.sample_rate,
+                        audio.underrun_events(),
+                        audio.queued_frames(),
+                    );
                 }
                 self.pacer.after_present();
             }

@@ -34,9 +34,9 @@ pub fn usage() -> &'static str {
      \n\
      Debug (default quiet):\n\
        --debug / --debug=summary / GRAYCART_DEBUG=1\n\
-         stderr summary: rom/bios, warn swi/openbus/stuck/halt/blank, dma·irq aggregates\n\
+         stderr summary: rom/bios, warn faults, blanking, dma·irq, apu/ppu health\n\
        --debug=trace / --trace [N] / GRAYCART_DEBUG=trace / GRAYCART_TRACE\n\
-         denser DMA/IRQ/insn samples; N = headless insn dump (GB-style)\n\
+         denser DMA/IRQ/insn + pixel samples; N = headless insn dump (GB-style)\n\
        --quiet / --verbose           load/boot summary on stdout\n\
      Headless --frames does not require the window stack.\n\
      --hash-out writes final-frame SHA-256 of 240×160 RGB888.\n\

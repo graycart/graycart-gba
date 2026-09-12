@@ -11,6 +11,7 @@ pub mod bg;
 pub mod bitmap;
 pub mod blend;
 pub mod hash;
+pub mod health;
 pub mod obj;
 pub mod regs;
 pub mod render;
