@@ -10,9 +10,8 @@ Commercial carts stay under `carts/` (local only, gitignored). Nintendo BIOS /
 `gba_bios.bin` is **never** committed. Conformance fixtures live here.
 
 Shared runner + ignored matrices: [`tests/roms/`](../roms/) (`harness.rs`,
-`jsmolka.rs`). jsmolka arm/thumb/memory `.gba` are vendored; the stub runner
-still returns **SKIPPED** until load+oracle (D/E) — **no accuracy claim** from
-a green default `cargo test`.
+`jsmolka.rs`). jsmolka **thumb** + **memory** assert PASS in default CI; **arm**
+is `#[ignore]` known-red (fail #224) — **no fake green**.
 
 ## Licensing / provenance
 

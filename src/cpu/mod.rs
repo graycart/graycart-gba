@@ -12,6 +12,7 @@
 pub mod arm;
 mod mode;
 mod regs;
+pub mod step;
 pub mod thumb;
 
 pub mod exception;
@@ -27,6 +28,7 @@ pub use exception::{
 pub use mode::Mode;
 pub use pipeline::{align_pc, IsaState, Pipeline, PipelineSlot};
 pub use regs::{cpsr, Regs};
+pub use step::{soft_boot, step, StepHle, StepOutcome};
 
 /// ARM7TDMI core shell. ISA execute lives in [`arm`] / [`thumb`].
 #[derive(Debug, Default)]

@@ -146,6 +146,40 @@ impl Bus {
             *slot = value;
         }
     }
+
+    /// DISPCNT BG mode bits [2:0] for VRAM BG/OBJ split (video STRB policy).
+    #[inline]
+    fn dispcnt_bg_mode(&self) -> u8 {
+        self.io.first().copied().unwrap_or(0) & 0x7
+    }
+
+    /// Apply GBATEK video STRB rules (ignore OBJ/OAM; expand BG/palette).
+    fn write8_video(&mut self, target: VideoTarget, offset: usize, value: u8) {
+        match resolve_strb(target, value) {
+            VideoWriteAction::Ignore | VideoWriteAction::Reject | VideoWriteAction::Store => {}
+            VideoWriteAction::ExpandByteToHalfword { halfword } => {
+                let aligned = offset & !1;
+                match target {
+                    VideoTarget::Palette => {
+                        Self::write_slice(&mut self.palette, aligned, halfword as u8);
+                        Self::write_slice(&mut self.palette, aligned + 1, (halfword >> 8) as u8);
+                    }
+                    VideoTarget::BgVram => {
+                        Self::write_slice(&mut self.vram, aligned, halfword as u8);
+                        Self::write_slice(&mut self.vram, aligned + 1, (halfword >> 8) as u8);
+                    }
+                    VideoTarget::Oam | VideoTarget::ObjVram => {}
+                }
+            }
+        }
+    }
+
+    /// Direct halfword store into video RAM (not via [`Self::write8`] — STRB policy differs).
+    fn write16_video_raw(buf: &mut [u8], offset: usize, value: u16) {
+        let aligned = offset & !1;
+        Self::write_slice(buf, aligned, value as u8);
+        Self::write_slice(buf, aligned + 1, (value >> 8) as u8);
+    }
 }
 
 impl CpuMem for Bus {
@@ -180,9 +214,17 @@ impl CpuMem for Bus {
                     Self::write_slice(&mut self.io, i, value);
                 }
             }
-            Region::Palette => Self::write_slice(&mut self.palette, palette_offset(addr), value),
-            Region::Vram => Self::write_slice(&mut self.vram, vram_offset(addr), value),
-            Region::Oam => Self::write_slice(&mut self.oam, oam_offset(addr), value),
+            Region::Palette => {
+                self.write8_video(VideoTarget::Palette, palette_offset(addr), value);
+            }
+            Region::Vram => {
+                let off = vram_offset(addr);
+                if let Some(target) = classify_vram_offset(off as u32, self.dispcnt_bg_mode()) {
+                    self.write8_video(target, off, value);
+                }
+            }
+            // OAM STRB ignored (GBATEK video byte-store rules).
+            Region::Oam => {}
             // ROM writes ignored here (FlashROM commands are cart-owned, P7).
             Region::GamePakRomWs0 | Region::GamePakRomWs1 | Region::GamePakRomWs2 => {}
             Region::GamePakSram => {
@@ -203,14 +245,27 @@ impl CpuMem for Bus {
     }
 
     fn write16(&mut self, addr: u32, value: u16) {
-        if decode(addr) == Region::GamePakSram {
-            // Only the addressed byte is stored; value = LSB of (data ROR (addr*8)).
-            let rotated = value.rotate_right((addr & 1) * 8);
-            self.write8(addr, rotated as u8);
-            return;
+        match decode(addr) {
+            Region::GamePakSram => {
+                // Only the addressed byte is stored; value = LSB of (data ROR (addr*8)).
+                let rotated = value.rotate_right((addr & 1) * 8);
+                self.write8(addr, rotated as u8);
+            }
+            // Video: 16-bit stores are real halfwords — must not go through STRB write8.
+            Region::Palette => {
+                Self::write16_video_raw(&mut self.palette, palette_offset(addr), value);
+            }
+            Region::Vram => {
+                Self::write16_video_raw(&mut self.vram, vram_offset(addr), value);
+            }
+            Region::Oam => {
+                Self::write16_video_raw(&mut self.oam, oam_offset(addr), value);
+            }
+            _ => {
+                self.write8(addr, value as u8);
+                self.write8(addr.wrapping_add(1), (value >> 8) as u8);
+            }
         }
-        self.write8(addr, value as u8);
-        self.write8(addr.wrapping_add(1), (value >> 8) as u8);
     }
 
     fn read32(&mut self, addr: u32) -> u32 {
@@ -229,6 +284,7 @@ impl CpuMem for Bus {
             self.write8(addr, rotated as u8);
             return;
         }
+        // Two halfword stores — video path uses write16_video_raw via write16.
         self.write16(addr, value as u16);
         self.write16(addr.wrapping_add(2), (value >> 16) as u16);
     }
