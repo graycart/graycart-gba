@@ -18,6 +18,12 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P11 Compat accuracy (`walter/p11-compat-accuracy-398a`):** FastCgb launch on
+  `CompatMachine`; vendored Blargg cpu_instrs/dmg_sound/cgb_sound + Mooneye
+  acceptance/misc; P11 DMG/CGB ignored suite matrices + recorded thresholds;
+  frontend loads `.gb`/`.gbc` with 8-bit `.sav` UX; docs/conformance P11 board;
+  crate **0.1.2**. Unit gates G11-*; stretch HDMA/KEY1 ignored. jsmolka
+  arm+thumb+memory stay default-CI PASS. P12 supersede cutover still deferred.
 - **P10 DMG/CGB compat bring-up (`walter/p10-compat-8eeb`):** interim whole-crate
   `graycart` dep; WAITCNT.bit15 / load-path detect; Mode-8/HALTCNT handoff +
   CGB-AGB user-supplied boot slot; `CompatMachine` wrapper (load/run/FB/PCM/

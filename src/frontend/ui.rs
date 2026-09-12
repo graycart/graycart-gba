@@ -1,8 +1,8 @@
-//! Thin egui chrome — menu + empty ROM launcher (no 8-bit claims).
+//! Thin egui chrome — menu + empty ROM launcher (GBA + 8-bit).
 //!
 //! Cited: graycart-gb `src/frontend/ui` posture (lean subset)
 //!   https://github.com/graycart/graycart-gb/tree/main/src/frontend/ui
-//! Note: UX must not claim shipping DMG/CGB host (P10+).
+//! Note: P11 loads `.gba` / `.gb` / `.gbc`; supersede cutover remains P12.
 
 use egui::Ui;
 
@@ -49,7 +49,7 @@ pub fn menu_bar(ui: &mut Ui, rom_loaded: bool, paused: bool) -> Vec<UiAction> {
             });
             ui.menu_button("Help", |ui| {
                 ui.label(format!("graycart-gba {}", env!("CARGO_PKG_VERSION")));
-                ui.label("GBA native host (P9). DMG/CGB planned for later phases.");
+                ui.label("GBA native + DMG/CGB via compat (P11).");
             });
         });
     });
@@ -61,9 +61,9 @@ pub fn empty_rom_screen(ui: &mut Ui, actions: &mut Vec<UiAction>) {
     ui.vertical_centered(|ui| {
         ui.add_space(48.0);
         ui.heading("graycart-gba");
-        ui.label("Open a Game Boy Advance ROM (.gba) to play.");
+        ui.label("Open a ROM: .gba (native) or .gb / .gbc (compat).");
         ui.add_space(8.0);
-        ui.label("DMG/CGB carts are not available in this build (compat comes later).");
+        ui.label("8-bit carts run through the GBA HW compat wrapper (graycart cores).");
         ui.add_space(16.0);
         if ui.button("Open ROM…").clicked() {
             actions.push(UiAction::OpenRomDialog);

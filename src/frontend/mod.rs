@@ -4,7 +4,7 @@
 //!   Project store: `docs/graycart-gba/AGENTS.md`, `08-implementation-plan.md`
 //! Cited: graycart-gb frontend posture (lean port — not feature parity)
 //!   https://github.com/graycart/graycart-gb/tree/main/src/frontend
-//! Note: DMG/CGB cart UX is P10+ — do not claim shipping 8-bit host here.
+//! Note: P11 — `.gba` native + `.gb`/`.gbc` via compat.
 
 mod app;
 mod audio;
@@ -33,5 +33,5 @@ pub fn usage() -> &'static str {
      --hash-out writes final-frame SHA-256 of 240×160 RGB888.\n\
      --audio-out writes soft stereo WAV of the PCM snapshot.\n\
      Battery .sav is written beside the ROM on exit when a cart is loaded.\n\
-     DMG/CGB (.gb/.gbc) support is planned (compat P10+) — not shipping in P9."
+     DMG/CGB (.gb/.gbc) load through the compat wrapper (P11)."
 }

@@ -1,18 +1,40 @@
-//! graycart Cpu+Bus wrapper — P10 **G10-wrap** / **G10-api**.
+//! graycart Cpu+Bus wrapper — P10 wrap / P11 CGB silicon.
 //!
 //! Cited: graycart-gba `10-core-api-and-gb-reuse.md` §4
 //!   Project store: `docs/graycart-gba/10-core-api-and-gb-reuse.md`
 //! Cited: graycart-gb public machine surface (`Cpu`, `Bus`, `apply_fast`, …)
 //!   https://github.com/graycart/graycart-gb
 //! Note: whole-crate dep interim; no in-tree SM83. FastHle uses `apply_fast`.
+//! P11: FastCgb via `bus_from_cartridge` + `HostHardwarePref::GameBoyColor`.
 
 use super::boot::{require_boot, AgbBootFirmware, CompatBootMode, Mode8Handoff};
 use super::detect::{hint_from_extension, LoadPathHint, MachineProfile};
 use graycart::{
-    apply_fast, step, Bus, Cartridge, Cpu, ExecSession, GameBoyButton, RunOutcome, Shade,
-    StereoSample, SCREEN_HEIGHT, SCREEN_WIDTH,
+    apply_fast, bus_from_cartridge, step, Bus, Cartridge, Cpu, ExecSession, GameBoyButton,
+    HostHardwarePref, RunOutcome, Shade, StereoSample, SCREEN_HEIGHT, SCREEN_WIDTH,
 };
 use std::path::Path;
+
+/// SM83 silicon / launch preference for FastHle (P11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompatSilicon {
+    /// DMG silicon + [`apply_fast`] (Blargg cpu_instrs / dmg_sound / Mooneye GS).
+    #[default]
+    FastDmg,
+    /// Native CGB silicon + [`apply_fast`] (Blargg cgb_sound / Mooneye misc-C).
+    FastCgb,
+}
+
+impl CompatSilicon {
+    /// Infer from file extension: `.gbc` → FastCgb, else FastDmg.
+    #[must_use]
+    pub fn from_extension(ext: Option<&str>) -> Self {
+        match ext.map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("gbc") => Self::FastCgb,
+            _ => Self::FastDmg,
+        }
+    }
+}
 
 /// Headless DMG/CGB machine owned by the GBA compat wrapper.
 pub struct CompatMachine {
@@ -22,6 +44,7 @@ pub struct CompatMachine {
     boot_mode: CompatBootMode,
     firmware: AgbBootFirmware,
     handoff: Mode8Handoff,
+    silicon: CompatSilicon,
     /// Frames retired via [`Self::run_frames`].
     pub frames: u64,
 }
@@ -39,13 +62,14 @@ impl Default for CompatMachine {
             boot_mode: CompatBootMode::FastHle,
             firmware: AgbBootFirmware::empty(),
             handoff: Mode8Handoff::native(),
+            silicon: CompatSilicon::FastDmg,
             frames: 0,
         }
     }
 }
 
 impl CompatMachine {
-    /// Create an empty placeholder (FastHle, no real cart).
+    /// Create an empty placeholder (FastHle FastDmg, no real cart).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -61,6 +85,12 @@ impl CompatMachine {
     #[must_use]
     pub const fn profile(&self) -> MachineProfile {
         MachineProfile::CompatGb
+    }
+
+    /// Active FastHle silicon preference.
+    #[must_use]
+    pub const fn silicon(&self) -> CompatSilicon {
+        self.silicon
     }
 
     /// Mode-8 / HALT latch after entry.
@@ -81,25 +111,50 @@ impl CompatMachine {
         Ok(())
     }
 
-    /// Load `.gb` / `.gbc` from a filesystem path (DMG silicon + FastHle).
+    /// Force FastDmg / FastCgb for the next cart install (suite runners).
+    pub fn set_silicon(&mut self, silicon: CompatSilicon) {
+        self.silicon = silicon;
+    }
+
+    /// Load `.gb` / `.gbc` from a filesystem path.
+    ///
+    /// Extension selects silicon when not overridden: `.gbc` → FastCgb, else FastDmg.
+    /// Suite matrices that need CGB on a `.gb` file should call [`Self::set_silicon`] first
+    /// and then [`Self::load_rom_path_as`].
     pub fn load_rom_path(&mut self, path: &Path) -> Result<(), String> {
         let hint = hint_from_extension(path.extension().and_then(|e| e.to_str()));
         if hint == LoadPathHint::GbaRom {
             return Err("CompatMachine expects .gb/.gbc — use Gba for .gba".into());
         }
+        self.silicon = CompatSilicon::from_extension(path.extension().and_then(|e| e.to_str()));
+        let cart = Cartridge::load(path).map_err(|e| e.to_string())?;
+        self.install_cart(cart)
+    }
+
+    /// Load a path with an explicit silicon preference (Blargg `cgb_sound` uses `.gb` + FastCgb).
+    pub fn load_rom_path_as(&mut self, path: &Path, silicon: CompatSilicon) -> Result<(), String> {
+        let hint = hint_from_extension(path.extension().and_then(|e| e.to_str()));
+        if hint == LoadPathHint::GbaRom {
+            return Err("CompatMachine expects .gb/.gbc — use Gba for .gba".into());
+        }
+        self.silicon = silicon;
         let cart = Cartridge::load(path).map_err(|e| e.to_string())?;
         self.install_cart(cart)
     }
 
     /// Load ROM bytes via a temp file (graycart `Cartridge` is path-oriented).
     pub fn load_rom_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let ext = match self.silicon {
+            CompatSilicon::FastCgb => "gbc",
+            CompatSilicon::FastDmg => "gb",
+        };
         let path = std::env::temp_dir().join(format!(
-            "graycart-gba-compat-{}-{}.gb",
+            "graycart-gba-compat-{}-{}.{ext}",
             std::process::id(),
             self.frames
         ));
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        let result = self.load_rom_path(&path);
+        let result = self.load_rom_path_as(&path, self.silicon);
         let _ = std::fs::remove_file(&path);
         result
     }
@@ -109,7 +164,13 @@ impl CompatMachine {
         match self.boot_mode {
             CompatBootMode::FastHle => {
                 let mut cpu = Cpu::new();
-                let mut bus = Bus::new(cart);
+                let mut bus = match self.silicon {
+                    CompatSilicon::FastDmg => Bus::new(cart),
+                    CompatSilicon::FastCgb => {
+                        bus_from_cartridge(cart, HostHardwarePref::GameBoyColor)
+                            .map_err(|e| e.to_string())?
+                    }
+                };
                 apply_fast(&mut cpu, &mut bus);
                 self.cpu = cpu;
                 self.bus = bus;
@@ -119,7 +180,7 @@ impl CompatMachine {
                 Ok(())
             }
             CompatBootMode::BootRomLle => {
-                Err("BootRomLle SM83 overlay wiring is stretch — use FastHle for P10 smoke".into())
+                Err("BootRomLle SM83 overlay wiring is stretch — use FastHle for P11 suites".into())
             }
         }
     }
@@ -136,7 +197,7 @@ impl CompatMachine {
                 Ok(())
             }
             CompatBootMode::BootRomLle => {
-                Err("BootRomLle reset stretch — use FastHle for P10".into())
+                Err("BootRomLle reset stretch — use FastHle for P11".into())
             }
         }
     }
@@ -234,6 +295,7 @@ mod tests {
         let m = CompatMachine::new();
         assert_eq!(m.profile(), MachineProfile::CompatGb);
         assert_eq!(m.system_id(), "gb-compat");
+        assert_eq!(m.silicon(), CompatSilicon::FastDmg);
         assert_eq!(CompatMachine::screen_size(), (160, 144));
     }
 
@@ -268,5 +330,30 @@ mod tests {
         let mut m = CompatMachine::new();
         m.set_buttons(&[GameBoyButton::A, GameBoyButton::Start]);
         m.set_buttons(&[]);
+    }
+
+    #[test]
+    fn silicon_from_extension() {
+        assert_eq!(
+            CompatSilicon::from_extension(Some("gbc")),
+            CompatSilicon::FastCgb
+        );
+        assert_eq!(
+            CompatSilicon::from_extension(Some("GB")),
+            CompatSilicon::FastDmg
+        );
+        assert_eq!(CompatSilicon::from_extension(None), CompatSilicon::FastDmg);
+    }
+
+    #[test]
+    fn fast_cgb_install_rom_only() {
+        let c = Cartridge::rom_only(vec![0x00; 0x8000]);
+        let bytes = c.rom_bytes().to_vec();
+        let mut m = CompatMachine::new();
+        m.set_silicon(CompatSilicon::FastCgb);
+        m.load_rom_bytes(&bytes).unwrap();
+        assert_eq!(m.silicon(), CompatSilicon::FastCgb);
+        assert!(m.handoff().sm83_active);
+        m.run_frames(1).unwrap();
     }
 }

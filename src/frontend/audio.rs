@@ -54,11 +54,25 @@ impl AudioOut {
 
     /// Push core PCM frames into the host ring (nearest-neighbor, no resample).
     pub fn push_frames(&self, frames: &[PcmFrame]) {
+        let interleaved = pcm_to_f32_interleaved(frames);
+        self.push_interleaved_f32(&interleaved);
+    }
+
+    /// Push graycart compat stereo f32 samples (already host-rate-ish).
+    pub fn push_stereo_f32(&self, samples: &[(f32, f32)]) {
+        let mut interleaved = Vec::with_capacity(samples.len() * 2);
+        for &(l, r) in samples {
+            interleaved.push(l);
+            interleaved.push(r);
+        }
+        self.push_interleaved_f32(&interleaved);
+    }
+
+    fn push_interleaved_f32(&self, interleaved: &[f32]) {
         let Ok(mut q) = self.ring.lock() else {
             return;
         };
-        let interleaved = pcm_to_f32_interleaved(frames);
-        for sample in interleaved {
+        for &sample in interleaved {
             while q.len() > 32_000 {
                 q.pop_front();
             }

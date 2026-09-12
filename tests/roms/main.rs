@@ -6,11 +6,14 @@
 //!   Project store: `internal/graycart-gba/audit-test-harness.md`
 //! Note: default CI asserts jsmolka arm+thumb+memory PASS; mGBA/NBA rows stay ignored.
 
+mod compat_harness;
 mod harness;
 mod jsmolka;
 mod mgba_suite;
 mod nba_hw_test;
 mod p10;
+mod p11_cgb;
+mod p11_dmg;
 mod p3;
 mod p4;
 mod p5;
