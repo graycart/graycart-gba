@@ -5,11 +5,16 @@
 //! Cited: GBATEK — BIOS Halt Functions / Reset Functions
 //!   https://problemkaputt.de/gbatek.htm#bioshaltfunctions
 //!   https://problemkaputt.de/gbatek-bios-reset-functions.htm
+//! Cited: GBATEK — BIOS Decompression Functions (LZ77 / RL / Diff)
+//!   https://problemkaputt.de/gbatek.htm#biosdecompressionfunctions
 //! Cited: jsmolka/gba-tests — Div + Sqrt used by suite ROMs (MIT)
+//! Cross-check: mGBA `src/gba/bios.c` `_unLz77` / `_unRl` / `_unFilter` (secondary)
 //! Research: Project store `docs/graycart-gba/06-cart-bios-saves.md` §3
 //! Note: Div remains the arm/thumb fail-digit path; Sqrt needed for `bios.gba`.
 //!   Halt/IntrWait/VBlankIntrWait are required for commercial carts under BiosHle
 //!   (unhandled SWI vectors to empty BIOS `0x08` → permanent black screen).
+//!   LZ77 SWI `12h` is required after that fix — FireRed resumes but leaves
+//!   garbage tiles when VRAM decompress is stubbed.
 
 use crate::bus::CpuMem;
 use crate::cpu::{soft_boot, Cpu};
@@ -30,7 +35,30 @@ pub mod swi {
     pub const SQRT: u8 = 0x08;
     pub const CPU_SET: u8 = 0x0B;
     pub const CPU_FAST_SET: u8 = 0x0C;
+    /// LZ77UnCompReadNormalWrite8bit (WRAM byte stores).
+    pub const LZ77_UNCOMP_WRITE8: u8 = 0x11;
+    /// LZ77UnCompReadNormalWrite16bit (VRAM halfword stores).
+    pub const LZ77_UNCOMP_WRITE16: u8 = 0x12;
+    /// RLUnCompReadNormalWrite8bit.
+    pub const RL_UNCOMP_WRITE8: u8 = 0x14;
+    /// RLUnCompReadNormalWrite16bit.
+    pub const RL_UNCOMP_WRITE16: u8 = 0x15;
+    /// Diff8bitUnFilterWrite8bit.
+    pub const DIFF8_UNFILTER_WRITE8: u8 = 0x16;
+    /// Diff8bitUnFilterWrite16bit.
+    pub const DIFF8_UNFILTER_WRITE16: u8 = 0x17;
+    /// Diff16bitUnFilter.
+    pub const DIFF16_UNFILTER: u8 = 0x18;
     pub const CUSTOM_HALT: u8 = 0x27;
+}
+
+/// Destination write width for decompress SWIs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoreWidth {
+    /// Byte stores (WRAM variants).
+    Byte,
+    /// Halfword-buffered stores (VRAM variants).
+    Half,
 }
 
 /// Result of a BiosHle SWI attempt.
@@ -130,6 +158,34 @@ pub fn try_swi(cpu: &mut Cpu, bus: &mut impl CpuMem, number: u8) -> SwiHleResult
         }
         swi::CPU_SET | swi::CPU_FAST_SET => {
             hle_cpu_set(cpu, bus, number == swi::CPU_FAST_SET);
+            SwiHleResult::Done
+        }
+        swi::LZ77_UNCOMP_WRITE8 => {
+            hle_lz77(cpu, bus, StoreWidth::Byte);
+            SwiHleResult::Done
+        }
+        swi::LZ77_UNCOMP_WRITE16 => {
+            hle_lz77(cpu, bus, StoreWidth::Half);
+            SwiHleResult::Done
+        }
+        swi::RL_UNCOMP_WRITE8 => {
+            hle_rl(cpu, bus, StoreWidth::Byte);
+            SwiHleResult::Done
+        }
+        swi::RL_UNCOMP_WRITE16 => {
+            hle_rl(cpu, bus, StoreWidth::Half);
+            SwiHleResult::Done
+        }
+        swi::DIFF8_UNFILTER_WRITE8 => {
+            hle_diff(cpu, bus, /*in_half=*/ false, StoreWidth::Byte);
+            SwiHleResult::Done
+        }
+        swi::DIFF8_UNFILTER_WRITE16 => {
+            hle_diff(cpu, bus, /*in_half=*/ false, StoreWidth::Half);
+            SwiHleResult::Done
+        }
+        swi::DIFF16_UNFILTER => {
+            hle_diff(cpu, bus, /*in_half=*/ true, StoreWidth::Half);
             SwiHleResult::Done
         }
         _ => SwiHleResult::Unhandled,
@@ -309,4 +365,180 @@ fn hle_cpu_set(cpu: &mut Cpu, bus: &mut impl CpuMem, fast: bool) {
             }
         }
     }
+}
+
+/// Emit one decompressed byte with WRAM (byte) or VRAM (halfword-buffered) stores.
+fn store_decomp_byte(
+    bus: &mut impl CpuMem,
+    dest: &mut u32,
+    halfword: &mut u16,
+    width: StoreWidth,
+    byte: u8,
+) {
+    match width {
+        StoreWidth::Byte => {
+            bus.write8(*dest, byte);
+            *dest = dest.wrapping_add(1);
+        }
+        StoreWidth::Half => {
+            if (*dest & 1) != 0 {
+                *halfword |= u16::from(byte) << 8;
+                bus.write16(*dest ^ 1, *halfword);
+            } else {
+                *halfword = u16::from(byte);
+            }
+            *dest = dest.wrapping_add(1);
+        }
+    }
+}
+
+fn hle_lz77(cpu: &mut Cpu, bus: &mut impl CpuMem, width: StoreWidth) {
+    let mut source = cpu.regs.get(0);
+    let mut dest = cpu.regs.get(1);
+    let header = bus.read32(source);
+    // Size in bits 8–31; type nybble (10h) unchecked like commercial BIOS soft paths.
+    let mut remaining = header >> 8;
+    source = source.wrapping_add(4);
+    let mut blocks_remaining = 0u8;
+    let mut blockheader = 0u8;
+    let mut halfword = 0u16;
+    while remaining > 0 {
+        if blocks_remaining == 0 {
+            blockheader = bus.read8(source);
+            source = source.wrapping_add(1);
+            blocks_remaining = 8;
+            continue;
+        }
+        if blockheader & 0x80 != 0 {
+            // Compressed: 16-bit BE length/disp, then copy from sliding window.
+            let hi = u16::from(bus.read8(source));
+            let lo = u16::from(bus.read8(source.wrapping_add(1)));
+            source = source.wrapping_add(2);
+            let block = (hi << 8) | lo;
+            let mut disp = dest.wrapping_sub(u32::from(block & 0x0FFF)).wrapping_sub(1);
+            let mut bytes = usize::from((block >> 12) + 3);
+            while bytes > 0 {
+                bytes -= 1;
+                remaining = remaining.saturating_sub(1);
+                let byte = match width {
+                    StoreWidth::Byte => bus.read8(disp),
+                    StoreWidth::Half => {
+                        let hw = bus.read16(disp & !1);
+                        ((hw >> ((disp & 1) * 8)) & 0xFF) as u8
+                    }
+                };
+                store_decomp_byte(bus, &mut dest, &mut halfword, width, byte);
+                disp = disp.wrapping_add(1);
+            }
+        } else {
+            let byte = bus.read8(source);
+            source = source.wrapping_add(1);
+            store_decomp_byte(bus, &mut dest, &mut halfword, width, byte);
+            remaining = remaining.saturating_sub(1);
+        }
+        blockheader <<= 1;
+        blocks_remaining -= 1;
+    }
+    cpu.regs.set(0, source);
+    cpu.regs.set(1, dest);
+    cpu.regs.set(3, 0);
+}
+
+fn hle_rl(cpu: &mut Cpu, bus: &mut impl CpuMem, width: StoreWidth) {
+    let mut source = cpu.regs.get(0);
+    let mut dest = cpu.regs.get(1);
+    // RL header is read from word-aligned source (GBATEK / mGBA).
+    let header = bus.read32(source & !3);
+    let mut remaining = header >> 8;
+    let mut padding = (4u32.wrapping_sub(remaining)) & 3;
+    source = source.wrapping_add(4);
+    let mut halfword = 0u16;
+    while remaining > 0 {
+        let blockheader = bus.read8(source);
+        source = source.wrapping_add(1);
+        if blockheader & 0x80 != 0 {
+            let mut count = u32::from(blockheader & 0x7F) + 3;
+            let fill = bus.read8(source);
+            source = source.wrapping_add(1);
+            while count > 0 && remaining > 0 {
+                count -= 1;
+                remaining -= 1;
+                store_decomp_byte(bus, &mut dest, &mut halfword, width, fill);
+            }
+        } else {
+            let mut count = u32::from(blockheader) + 1;
+            while count > 0 && remaining > 0 {
+                count -= 1;
+                remaining -= 1;
+                let byte = bus.read8(source);
+                source = source.wrapping_add(1);
+                store_decomp_byte(bus, &mut dest, &mut halfword, width, byte);
+            }
+        }
+    }
+    // Pad destination to a multiple of 4 (BIOS behaviour).
+    if width == StoreWidth::Half {
+        if dest & 1 != 0 {
+            padding = padding.saturating_sub(1);
+            dest = dest.wrapping_add(1);
+        }
+        while padding > 0 {
+            bus.write16(dest, 0);
+            dest = dest.wrapping_add(2);
+            padding = padding.saturating_sub(2);
+        }
+    } else {
+        while padding > 0 {
+            bus.write8(dest, 0);
+            dest = dest.wrapping_add(1);
+            padding -= 1;
+        }
+    }
+    cpu.regs.set(0, source);
+    cpu.regs.set(1, dest);
+}
+
+fn hle_diff(cpu: &mut Cpu, bus: &mut impl CpuMem, in_half: bool, out: StoreWidth) {
+    let mut source = cpu.regs.get(0) & !3;
+    let mut dest = cpu.regs.get(1);
+    let header = bus.read32(source);
+    let mut remaining = header >> 8;
+    source = source.wrapping_add(4);
+    let mut old: u16 = 0;
+    let mut halfword: u16 = 0;
+    let in_step = if in_half { 2u32 } else { 1u32 };
+    while remaining > 0 {
+        let mut new = if in_half {
+            bus.read16(source)
+        } else {
+            u16::from(bus.read8(source))
+        };
+        new = new.wrapping_add(old);
+        match out {
+            StoreWidth::Byte => {
+                bus.write8(dest, new as u8);
+                dest = dest.wrapping_add(1);
+                remaining = remaining.saturating_sub(1);
+            }
+            StoreWidth::Half if !in_half => {
+                // Diff8 → Write16: accumulate two bytes into one halfword store.
+                halfword >>= 8;
+                halfword |= new << 8;
+                if source & 1 != 0 {
+                    bus.write16(dest, halfword);
+                    dest = dest.wrapping_add(2);
+                    remaining = remaining.saturating_sub(2);
+                }
+            }
+            StoreWidth::Half => {
+                bus.write16(dest, new);
+                dest = dest.wrapping_add(2);
+                remaining = remaining.saturating_sub(2);
+            }
+        }
+        old = new;
+        source = source.wrapping_add(in_step);
+    }
+    cpu.regs.set(0, source);
+    cpu.regs.set(1, dest);
 }
