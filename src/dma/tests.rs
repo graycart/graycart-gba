@@ -193,6 +193,7 @@ fn cpu_halted_while_active_transfer() {
     seed_halfwords(&mut mem.inner, 0x0300_0100, &[1, 2, 3]);
 
     let mut dma = Dma::new();
+    let irq = crate::irq::Irq::new();
     dma.write_sad(ChannelId::Ch1, 0x0300_0100);
     dma.write_dad(ChannelId::Ch1, 0x0300_0200);
     dma.write_count(ChannelId::Ch1, 3);
@@ -208,17 +209,31 @@ fn cpu_halted_while_active_transfer() {
     );
 
     assert!(!dma.cpu_halted());
-    // Drive one channel the same way `run_immediate` does, mirroring halt flag
-    // into the Cell so `CpuMem` accesses observe it.
+    // Manually begin_active then transfer units while mirroring halt into Cell.
     let idx = ChannelId::Ch1.index();
     dma.channels[idx].begin_active();
     halted.set(dma.cpu_halted());
     assert!(halted.get());
-    let units = dma.transfer_active_channel(idx, &mut mem);
+
+    let mut units = 0u32;
+    while dma.channels[idx].remaining > 0 {
+        let (sad, dad, word32) = {
+            let ch = &dma.channels[idx];
+            (ch.latched_sad, ch.latched_dad, ch.transfer32())
+        };
+        assert!(!word32);
+        let v = mem.read16(sad & !1);
+        mem.write16(dad & !1, v);
+        dma.channels[idx].step_addrs();
+        dma.channels[idx].remaining -= 1;
+        units += 1;
+    }
+    let _ = dma.channels[idx].finish();
     halted.set(dma.cpu_halted());
     assert_eq!(units, 3);
     assert!(saw.get(), "bus accesses must occur while CPU is halted");
     assert!(!dma.cpu_halted());
+    let _ = irq;
 }
 
 #[test]

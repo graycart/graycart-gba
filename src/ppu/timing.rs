@@ -56,6 +56,18 @@ impl Timing {
         self.vcount < VDRAW_LINES
     }
 
+    /// True if the last [`Self::step`] entered VBlank (edge).
+    #[must_use]
+    pub fn entered_vblank_edge(&self) -> bool {
+        self.entered_vblank
+    }
+
+    /// True if the last [`Self::step`] entered HBlank (edge).
+    #[must_use]
+    pub fn entered_hblank_edge(&self) -> bool {
+        self.entered_hblank
+    }
+
     /// Advance `cycles`. Returns the visible scanline to render when HBlank begins
     /// (at most one per call — callers should step ≤ line length for safety).
     pub fn step(&mut self, cycles: u32, regs: &LcdRegs) -> Option<u16> {
