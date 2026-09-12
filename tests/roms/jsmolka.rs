@@ -1,14 +1,17 @@
-//! jsmolka/gba-tests ignored matrix (apparatus only — no accuracy claim).
+//! jsmolka/gba-tests matrix — real BiosHle load + r12/idle oracle.
 //!
 //! Cited: jsmolka/gba-tests (MIT) — arm / thumb / memory gate ROMs
 //!   https://github.com/jsmolka/gba-tests
 //! Cited: graycart-gba test gates / apparatus (P1–P2 musts)
 //!   Project store: `docs/graycart-gba/12-test-gates.md`
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
-//! Note: default CI never runs these (`#[ignore]`). arm/thumb/memory `.gba`
-//! are vendored (workstream C); rows stay SKIPPED until load+oracle (D/E).
+//! Note: default CI runs thumb+memory (PASS today). arm stays `#[ignore]` as
+//! known-red (fail #224 — PC-as-shifted-register) until CPU coverage catches up.
+//! Never fake green.
 
-use crate::harness::{fixture_path, run_test_rom, GbaTestRom, Outcome, RomLaunchMode};
+use crate::harness::{
+    fixture_path, run_jsmolka, run_test_rom, GbaTestRom, Outcome, RomLaunchMode, RunBudget,
+};
 use std::path::Path;
 
 /// One jsmolka prebuilt under `tests/fixtures/jsmolka/`.
@@ -27,28 +30,31 @@ impl GbaTestRom for JsmolkaRom {
     }
 
     fn launch_mode(&self) -> RomLaunchMode {
-        // Soft-boot at cart base; HLE Div SWI needed later for fail-digit path.
         RomLaunchMode::BiosHle
+    }
+
+    fn run(&self, rom: &[u8]) -> Outcome {
+        run_jsmolka(rom, RunBudget::default())
     }
 }
 
-/// P1/P2 must rows (MIT prebuilts vendored; runner still stub → SKIPPED).
-const JSMOLKA_MUST: &[JsmolkaRom] = &[
-    JsmolkaRom {
-        id: "jsmolka/arm",
-        relative_path: "jsmolka/arm/arm.gba",
-    },
-    JsmolkaRom {
-        id: "jsmolka/thumb",
-        relative_path: "jsmolka/thumb/thumb.gba",
-    },
-    JsmolkaRom {
-        id: "jsmolka/memory",
-        relative_path: "jsmolka/memory/memory.gba",
-    },
-];
+const ARM: JsmolkaRom = JsmolkaRom {
+    id: "jsmolka/arm",
+    relative_path: "jsmolka/arm/arm.gba",
+};
+const THUMB: JsmolkaRom = JsmolkaRom {
+    id: "jsmolka/thumb",
+    relative_path: "jsmolka/thumb/thumb.gba",
+};
+const MEMORY: JsmolkaRom = JsmolkaRom {
+    id: "jsmolka/memory",
+    relative_path: "jsmolka/memory/memory.gba",
+};
 
-/// Placeholder suite identities (also not vendored; matrix documents the spine).
+/// P1/P2 must rows.
+const JSMOLKA_MUST: &[JsmolkaRom] = &[ARM, THUMB, MEMORY];
+
+/// Placeholder suite identities (LICENSE stubs only).
 const PLACEHOLDER_SUITES: &[(&str, &str)] = &[
     ("mgba-suite/suite.gba", "tests/fixtures/mgba-suite"),
     ("fuzzarm/ (GPL-3.0 ROMs)", "tests/fixtures/fuzzarm"),
@@ -120,35 +126,83 @@ fn jsmolka_license_and_path_stubs_present() {
     }
 }
 
+/// CI smoke: loader + soft-boot + a few steps (not a suite PASS claim).
 #[test]
-fn jsmolka_runner_skipped_until_oracle() {
-    for rom in JSMOLKA_MUST {
-        let outcome = run_test_rom(rom);
-        assert_eq!(
-            outcome.label(),
-            "SKIPPED",
-            "{} expected SKIPPED (stub runner until D/E), got {} ({})",
-            rom.id,
+fn jsmolka_arm_soft_boot_advances_past_header() {
+    let bytes = std::fs::read("tests/fixtures/jsmolka/arm/arm.gba").expect("arm.gba vendored");
+    let mut gba = graycart_gba::Gba::new();
+    gba.load_rom(&bytes);
+    gba.reset_bios_hle();
+    for _ in 0..8 {
+        gba.step_instruction();
+    }
+    let pc = gba.decode_pc().unwrap_or(0);
+    assert!(
+        pc >= 0x0800_00C0,
+        "expected soft-boot to leave header toward main, pc={pc:#010x}"
+    );
+}
+
+/// P1 gate (partial): thumb.gba must PASS under BiosHle + r12/idle oracle.
+#[test]
+fn jsmolka_thumb_suite_passes() {
+    let outcome = run_test_rom(&THUMB);
+    assert_eq!(
+        outcome.label(),
+        "PASS",
+        "jsmolka/thumb: expected PASS, got {} ({})",
+        outcome.label(),
+        outcome.detail()
+    );
+}
+
+/// P2 gate: memory.gba must PASS (mirrors + video STRB on bus write path).
+#[test]
+fn jsmolka_memory_suite_passes() {
+    let outcome = run_test_rom(&MEMORY);
+    assert_eq!(
+        outcome.label(),
+        "PASS",
+        "jsmolka/memory: expected PASS, got {} ({})",
+        outcome.label(),
+        outcome.detail()
+    );
+}
+
+/// P1 arm gate — known red: fail test 224 (PC as shifted register) until CPU fix.
+///
+/// Run: `cargo test -p graycart-gba --test roms jsmolka_arm -- --ignored --nocapture`
+#[test]
+#[ignore = "known-red: jsmolka/arm fails test 224 (mov r0, pc, lsl r0) — TODO un-ignore when PASS"]
+fn jsmolka_arm_suite_known_red() {
+    let outcome = run_test_rom(&ARM);
+    print_row(ARM.id, &outcome);
+    assert_ne!(
+        outcome.label(),
+        "SKIPPED",
+        "arm must score for real (FAIL/TIMEOUT), not SKIPPED"
+    );
+    // Document current tip expectation without locking FAIL forever once fixed.
+    if outcome.is_pass() {
+        eprintln!("jsmolka/arm unexpectedly PASS — remove #[ignore] and assert PASS in CI");
+    } else {
+        eprintln!(
+            "jsmolka/arm still red: {} ({}) — expected until PC-shifted-reg ALU is fixed",
             outcome.label(),
             outcome.detail()
-        );
-        assert!(
-            !outcome.is_pass(),
-            "{} must not claim PASS before execute+oracle",
-            rom.id
         );
     }
 }
 
-/// Opt-in matrix: prints SKIPPED rows until load+oracle (D/E) land.
+/// Opt-in full matrix printout (arm+thumb+memory).
 ///
-/// Run locally: `cargo test -p graycart-gba --test roms -- --ignored --nocapture`
+/// `cargo test -p graycart-gba --test roms -- --ignored --nocapture`
 #[test]
-#[ignore = "jsmolka arm/thumb/memory matrix; ROMs vendored — stub runner until D/E"]
+#[ignore = "full jsmolka matrix printout — thumb/memory also covered by default CI"]
 fn jsmolka_arm_thumb_memory_matrix() {
     eprintln!();
     eprintln!("{:<40} result", "ROM");
-    let mut counts = [0usize; 5]; // pass fail timeout unsupported skipped
+    let mut counts = [0usize; 5];
     for rom in JSMOLKA_MUST {
         let outcome = run_test_rom(rom);
         print_row(rom.id, &outcome);
@@ -159,10 +213,10 @@ fn jsmolka_arm_thumb_memory_matrix() {
             Outcome::Unsupported(_) => counts[3] += 1,
             Outcome::Skipped(_) => counts[4] += 1,
         }
-        // Soft contract for this PR: never claim PASS.
-        assert!(
-            !outcome.is_pass(),
-            "{} returned PASS before runner/oracle — unexpected",
+        assert_ne!(
+            outcome.label(),
+            "SKIPPED",
+            "{} still SKIPPED — loader/oracle regression",
             rom.id
         );
     }
@@ -171,5 +225,6 @@ fn jsmolka_arm_thumb_memory_matrix() {
         "summary: PASS={} FAIL={} TIMEOUT={} UNSUPPORTED={} SKIPPED={}",
         counts[0], counts[1], counts[2], counts[3], counts[4]
     );
-    eprintln!("(placeholders: mgba-suite + fuzzarm LICENSE stubs only — not scored)");
+    eprintln!("pass criteria: idle + DISPCNT Mode4|BG2 + r12==0 → PASS; r12==N → FAIL N;");
+    eprintln!("  IWRAM fail digits on fail path only; LCD glyphs secondary; else TIMEOUT.");
 }

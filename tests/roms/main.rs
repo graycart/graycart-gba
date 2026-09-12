@@ -1,18 +1,20 @@
-//! ROM / conformance harnesses (often `#[ignore]` — apparatus stub).
+//! ROM / conformance harnesses (often `#[ignore]` — load + oracle wired).
 //!
 //! Cited: graycart-gb `tests/roms/main.rs` layout
 //!   https://github.com/graycart/graycart-gb/blob/main/tests/roms/main.rs
-//! Cited: graycart-gba audit-test-harness §4 first PR slice
+//! Cited: graycart-gba audit-test-harness §4 / workstream D–E
 //!   Project store: `internal/graycart-gba/audit-test-harness.md`
 //! Note: default CI runs only non-ignored tests here; matrices stay opt-in.
 
 mod harness;
 mod jsmolka;
 
-use harness::{run_test_rom, GbaTestRom, Outcome, RomLaunchMode};
+use harness::{
+    jsmolka_r12_oracle, load_gba, run_test_rom, GbaTestRom, Outcome, RomLaunchMode, RunBudget,
+};
 use std::path::Path;
 
-/// Tiny stand-in so CI proves the trait default is Skipped (no fixture I/O).
+/// Tiny stand-in so CI proves the trait default is still Skipped.
 struct StubRom;
 
 impl GbaTestRom for StubRom {
@@ -46,12 +48,12 @@ fn harness_outcome_labels_include_skipped() {
 }
 
 #[test]
-fn runner_is_skipped_by_default() {
+fn runner_default_trait_is_skipped() {
     let outcome = run_test_rom(&StubRom);
     assert_eq!(
         outcome.label(),
         "SKIPPED",
-        "expected SKIPPED until cart load + oracle; got {} ({})",
+        "unimplemented suites stay Skipped; got {} ({})",
         outcome.label(),
         outcome.detail()
     );
@@ -75,4 +77,24 @@ fn fixtures_license_table_present() {
         text.contains("tests/roms") || text.contains("roms/"),
         "fixtures README should point at the shared roms/ harness"
     );
+}
+
+#[test]
+fn jsmolka_r12_oracle_pass_and_fail() {
+    let mut gba = graycart_gba::Gba::new();
+    gba.reset_bios_hle();
+    assert_eq!(jsmolka_r12_oracle(&gba).label(), "PASS");
+    gba.cpu.regs.set(12, 42);
+    let fail = jsmolka_r12_oracle(&gba);
+    assert_eq!(fail.label(), "FAIL");
+    assert!(fail.detail().contains("42"));
+}
+
+#[test]
+fn load_gba_bios_hle_maps_rom() {
+    let bytes = std::fs::read("tests/fixtures/jsmolka/thumb/thumb.gba").expect("thumb.gba");
+    let gba = load_gba(&bytes, RomLaunchMode::BiosHle).expect("BiosHle load");
+    assert!(!gba.bus.rom.is_empty());
+    assert_eq!(gba.cpu.regs.pc(), 0x0800_0000);
+    let _ = RunBudget::default();
 }

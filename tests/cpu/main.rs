@@ -106,16 +106,14 @@ fn harness_outcome_labels() {
     let _ = harness::RomLaunchMode::Multiboot;
 }
 
+/// Opt-in pointer to the shared roms harness (D/E). Prefer
+/// `cargo test --test roms -- --ignored` for the real matrix.
 #[test]
-#[ignore = "CPU execute + Mode 4 oracle not wired yet"]
+#[ignore = "use tests/roms jsmolka matrix — load+oracle live there"]
 fn jsmolka_arm_gate_placeholder() {
     let path = Path::new("tests/fixtures/jsmolka/arm/arm.gba");
-    if !path.is_file() {
-        // Prefer UNSUPPORTED over false FAIL when fixtures absent.
-        let outcome = harness::Outcome::Unsupported("arm.gba not vendored".into());
-        assert_eq!(outcome.label(), "UNSUPPORTED");
-        return;
-    }
-    let outcome = harness::Outcome::Unsupported("interpreter not ready".into());
-    assert_ne!(outcome.label(), "PASS");
+    assert!(
+        path.is_file(),
+        "arm.gba should be vendored; run roms::jsmolka matrix for PASS/FAIL/TIMEOUT"
+    );
 }

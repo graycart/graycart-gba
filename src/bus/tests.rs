@@ -154,6 +154,38 @@ fn bus_iwram_and_vram_mirrors() {
 }
 
 #[test]
+fn bus_video_strb_oam_ignored_palette_expands() {
+    let mut bus = Bus::new();
+    // OAM STRB discarded.
+    bus.write8(0x0700_0010, 0x01);
+    assert_eq!(bus.read32(0x0700_0010), 0);
+    // Halfword OAM store still works.
+    bus.write16(0x0700_0010, 0x1234);
+    assert_eq!(bus.read16(0x0700_0010), 0x1234);
+
+    // Palette STRB → data × 0x0101 at halfword align.
+    bus.write8(0x0500_0020, 0x01);
+    assert_eq!(bus.read16(0x0500_0020), 0x0101);
+}
+
+#[test]
+fn bus_video_strb_obj_vram_ignored_by_mode() {
+    let mut bus = Bus::new();
+    // Mode 0: OBJ VRAM base 0x10000 — STRB ignored.
+    bus.io[0] = 0;
+    bus.write8(0x0601_0010, 0x02);
+    assert_eq!(bus.read8(0x0601_0010), 0);
+    // BG VRAM STRB expands.
+    bus.write8(0x0600_0010, 0x02);
+    assert_eq!(bus.read16(0x0600_0010), 0x0202);
+
+    // Mode 3 bitmap: OBJ base 0x14000.
+    bus.io[0] = 3;
+    bus.write8(0x0601_4010, 0x03);
+    assert_eq!(bus.read8(0x0601_4010), 0);
+}
+
+#[test]
 fn bus_io_imc_mirror_and_primary() {
     let mut bus = Bus::new();
     bus.write8(0x0400_0004, 0x5A);

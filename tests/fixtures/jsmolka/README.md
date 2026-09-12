@@ -5,8 +5,9 @@ Note: MIT prebuilts vendored for P1/P2 gates; Graycart MIT does not cover these 
 -->
 # jsmolka/gba-tests fixtures
 
-**Status (workstream C):** MIT prebuilts for `arm` / `thumb` / `memory` are
-committed in-tree (small). Matrices stay `#[ignore]` until load+oracle (D/E).
+**Status (workstream D/E):** BiosHle load + step + r12/idle oracle are wired.
+**thumb** and **memory** PASS in default CI. **arm** is known-red (fail #224 —
+`mov r0, pc, lsl r0`) and stays `#[ignore]` until fixed — never fake green.
 
 | Field | Value |
 |-------|-------|
@@ -14,6 +15,29 @@ committed in-tree (small). Matrices stay `#[ignore]` until load+oracle (D/E).
 | License | MIT (Copyright 2019 Julian Smolka) — see [`LICENSE`](LICENSE) |
 | Pin | [`a7113b67e63f83a9b321696ddd7042ccfad6c881`](https://github.com/jsmolka/gba-tests/commit/a7113b67e63f83a9b321696ddd7042ccfad6c881) |
 | Role | Primary early ARM/Thumb functional suite; also memory, PPU smoke, BIOS, saves |
+
+## Pass criteria (exact)
+
+Aligned with apparatus §4.3 / upstream `lib/macros.inc` `m_test_eval`:
+
+| Signal | Meaning |
+|--------|---------|
+| **`r12 == 0` after idle** | **PASS** (authoritative). Aggregator clears `r12` then `m_exit` only on fail. |
+| **`r12 == N` after idle** | **FAIL** test `N` (ARM blocks start at 1/50/100/…; Thumb/memory use their own numbering). |
+| **IWRAM `[0],[4],[8]`** | Fail-path Div scratch (hundreds/tens/ones) — **not** a pass magic; only written when `r12 != 0` before drawing digits. Needs SWI `0x06` Div HLE. |
+| **I/O `DISPCNT`** | After `m_test_init` → Mode 4 + BG2 (`0x0404`). Harness requires this before scoring idle so early hangs are TIMEOUT. |
+| **LCD / Mode 4 VRAM** | Draws `"All tests passed"` or `"Failed test NNN"` via glyphs. Optional secondary: FB hash or glyph scan (not required while r12 works). |
+| **Budget exhaust** | **TIMEOUT** (honest red) — never SKIPPED once the ROM is present. |
+
+Launch: **BiosHle** soft entry `0x08000000` (no Nintendo BIOS in git). Fail-digit rendering needs Div HLE; the PASS path does not.
+
+## Suite status (this tip)
+
+| ROM | Default CI | Tip result |
+|-----|------------|------------|
+| `thumb/thumb.gba` | asserts **PASS** | executes end-to-end |
+| `memory/memory.gba` | asserts **PASS** | executes (needs bus video STRB) |
+| `arm/arm.gba` | `#[ignore]` known-red | **FAIL 224** (PC as shifted register) |
 
 ## Vendored binaries (P1/P2 musts)
 
@@ -38,8 +62,8 @@ jsmolka/
 └── memory/{README.md,memory.gba} # P2 exit
 ```
 
-Harness matrix: [`tests/roms/jsmolka.rs`](../../roms/jsmolka.rs) — `#[ignore]`;
-stub runner still returns **SKIPPED** (no accuracy claim until D/E).
+Harness matrix: [`tests/roms/jsmolka.rs`](../../roms/jsmolka.rs) — thumb/memory
+in default CI; arm `#[ignore]` until PASS. No fake green.
 
 Not vendored yet: `ppu/*`, `bios`, `save/*` (later phases). Do not claim
 Graycart MIT covers these ROMs. No Nintendo BIOS / commercial carts.
