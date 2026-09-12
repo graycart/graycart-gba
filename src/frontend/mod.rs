@@ -26,12 +26,20 @@ pub fn usage() -> &'static str {
        graycart-gba --run                same as no args\n\
        graycart-gba <rom.gba>            windowed host with ROM\n\
        graycart-gba --frames <N> [--hash-out <path>] [--audio-out <path>] [rom.gba]\n\
+       graycart-gba --debug [--frames N] [rom.gba]\n\
+       graycart-gba --trace [N] [rom.gba]\n\
+       graycart-gba --quiet|--verbose …\n\
        graycart-gba --version\n\
        graycart-gba --help\n\
      \n\
+     Debug (default quiet):\n\
+       --debug / GRAYCART_DEBUG=1   stderr breadcrumbs (rom/bios/cpu/ppu/irq/dma/stuck)\n\
+       --trace [N] / GRAYCART_TRACE  denser samples; N = headless insn dump (GB-style)\n\
+       --quiet / --verbose           load/boot summary on stdout\n\
      Headless --frames does not require the window stack.\n\
      --hash-out writes final-frame SHA-256 of 240×160 RGB888.\n\
      --audio-out writes soft stereo WAV of the PCM snapshot.\n\
      Battery .sav is written beside the ROM on exit when a cart is loaded.\n\
-     DMG/CGB (.gb/.gbc) load through the compat wrapper (shipping host, P12)."
+     DMG/CGB (.gb/.gbc) load through the compat wrapper (shipping host, P12).\n\
+     Use your own dumps locally — never commit commercial ROMs or BIOS blobs."
 }

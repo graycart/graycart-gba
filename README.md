@@ -10,7 +10,7 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 **GBA + DMG/CGB**. Dual-run → default-gba plan:
 [`docs/supersede-cutover.md`](./docs/supersede-cutover.md). Intentional
 whole-crate `graycart` dep remains (supersede the **app**, not the library).
-Crate **0.1.3**. Planned phase ladder **P0–P12** complete.
+Crate **0.1.4** (console debug). Planned phase ladder **P0–P12** complete.
 
 **P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
 FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
@@ -55,6 +55,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+### Console debug (local dumps)
+
+Default is quiet. To see what the emulator is doing on a black-screen cart
+(your own dump — never commit commercial ROMs or BIOS blobs):
+
+```bash
+# stderr breadcrumbs: rom/header/save, BiosHle entry, periodic PC/CPSR/IRQ/PPU, stuck PC
+cargo run --release -- --debug --frames 180 path/to/your.gba 2>gba-debug.log
+
+# denser insn samples / GB-style step dump
+cargo run --release -- --trace 64 path/to/your.gba
+GRAYCART_DEBUG=1 cargo run --release -- path/to/your.gba   # GUI + breadcrumbs
+
+# greppable prefix
+grep '^gba-debug:' gba-debug.log
+```
+
+Expect lines like `gba-debug: rom …`, `gba-debug: bios launch=BiosHle …`,
+`gba-debug: cpu frame=… pc=…`, `gba-debug: ppu …`, and on a hang
+`gba-debug: stuck pc=…`. `--quiet`/`--verbose` only affect the stdout load
+summary (GB parity).
+
 ### CI matrix (`.github/workflows/ci.yml`)
 
 | Job name | Runner | What it runs |
@@ -70,7 +92,7 @@ cargo test
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 

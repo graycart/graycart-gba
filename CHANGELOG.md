@@ -18,6 +18,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **Console debug (`walter/gba-console-debug-a3a2`):** GB-style breadcrumbs for
+  black-screen bring-up — `--debug` / `GRAYCART_DEBUG`, `--trace [N]` /
+  `GRAYCART_TRACE`, `--quiet`/`--verbose` load summary; `src/debug/` logs ROM
+  header/save, BiosHle vs Lle entry, periodic PC/CPSR/IME/IE/IF, PPU mode/
+  VCount, DMA/IRQ (rate-limited), halt/stop, stuck-PC detection. Default quiet.
+  Validated with synthetic + jsmolka fixtures only (no commercial ROMs). Crate
+  **0.1.4**.
+
 - **P12 Supersede cutover (`walter/p12-supersede-cutover-a164`):** dual-run →
   default-gba plan in `docs/supersede-cutover.md`; Dave-authorized product
   handoff (gb **app** leaves daily-target; `graycart` lib dep stays);

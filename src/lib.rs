@@ -16,6 +16,7 @@
 //! P8: prefetch FSM, Disable Bug latch, DMA 2-cycle startup, waitstate step.
 //! P9: host seam — buttons / framebuffer / PCM / battery `.sav` (GUI stays in `frontend/`).
 //! P10–P11: DMG/CGB compat wrapper via `graycart` (detect / Mode-8 / CompatMachine / suites).
+//! Console debug: `debug/` breadcrumbs (`--debug` / `GRAYCART_DEBUG`) for boot bring-up.
 
 pub mod apu;
 pub mod bios;
@@ -23,6 +24,7 @@ pub mod bus;
 pub mod cart;
 pub mod compat;
 pub mod cpu;
+pub mod debug;
 pub mod dma;
 pub mod hw;
 pub mod input;
@@ -65,6 +67,8 @@ pub struct Gba {
     pub bios: bios::Bios,
     pub hw: hw::Hw,
     pub compat: compat::Compat,
+    /// Console breadcrumbs (`--debug` / `GRAYCART_DEBUG`); default off.
+    pub debug: debug::DebugTracker,
     /// Instructions retired since last reset (crude cycle proxy).
     pub cycles: u64,
 }
@@ -80,6 +84,16 @@ impl Gba {
     pub fn load_rom(&mut self, bytes: &[u8]) {
         self.cart.load(bytes);
         self.bus.rom = self.cart.rom.clone();
+        self.debug.log_rom_load(
+            &self.cart.rom,
+            self.cart.header.as_ref(),
+            self.cart.save_kind(),
+        );
+    }
+
+    /// Install CLI/env debug config (host / headless).
+    pub fn set_debug_config(&mut self, config: debug::DebugConfig) {
+        self.debug.set_config(config);
     }
 
     /// Load a user-supplied BIOS image into the bus (LLE). Never called by CI.
@@ -103,7 +117,6 @@ impl Gba {
                 self.bus.cpu_pc = soft_boot::CART_ENTRY;
                 self.bus.force_next_fetch_n = true;
                 self.hw.write_postflg(self.hw.read_postflg() | 1);
-                Ok(())
             }
             RomLaunchMode::Multiboot => {
                 self.bios.mode = BiosMode::Hle;
@@ -112,20 +125,28 @@ impl Gba {
                 self.bus.cpu_pc = soft_boot::MULTIBOOT_ENTRY;
                 self.bus.force_next_fetch_n = true;
                 self.hw.write_postflg(self.hw.read_postflg() | 1);
-                Ok(())
             }
             RomLaunchMode::BiosLle => {
                 if self.bus.bios.is_empty() {
-                    return Err("BiosLle requires user-provided gba_bios.bin (never in git)".into());
+                    let err =
+                        String::from("BiosLle requires user-provided gba_bios.bin (never in git)");
+                    self.debug.log_error(&err);
+                    return Err(err);
                 }
                 self.bios.mode = BiosMode::Lle;
                 soft_boot::apply(&mut self.cpu, 0);
                 self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
                 self.bus.cpu_pc = 0;
                 self.bus.force_next_fetch_n = true;
-                Ok(())
             }
         }
+        self.debug.log_reset(
+            mode,
+            self.bios.mode,
+            self.cpu.regs.pc(),
+            self.cpu.regs.cpsr(),
+        );
+        Ok(())
     }
 
     /// Soft-boot convenience for BiosHle homebrew / jsmolka.
@@ -232,6 +253,11 @@ impl Gba {
             if let Some(d) = self.cpu.pipeline.decode {
                 self.cpu.regs.set_pc(d.addr);
             }
+            let handler_pc = self.cpu.regs.pc();
+            let ie = self.irq.read_ie();
+            let if_ = self.irq.read_if();
+            let ime = self.irq.ime();
+            self.debug.on_irq_serviced(handler_pc, ie, if_, ime);
             return true;
         }
         {
@@ -264,6 +290,11 @@ impl Gba {
         if let Some(d) = self.cpu.pipeline.decode {
             self.cpu.regs.set_pc(d.addr);
         }
+        let handler_pc = self.cpu.regs.pc();
+        let ie = self.irq.read_ie();
+        let if_ = self.irq.read_if();
+        let ime = self.irq.ime();
+        self.debug.on_irq_serviced(handler_pc, ie, if_, ime);
         true
     }
 
@@ -340,20 +371,30 @@ impl Gba {
         let fifo_req = self.apu.take_fifo_dma_request();
 
         let Self {
-            bus, irq, dma, apu, ..
+            bus,
+            irq,
+            dma,
+            apu,
+            debug,
+            ..
         } = self;
         let mut mem = BusApuMem { bus, apu };
         if vblank {
-            let _ = dma.on_vblank(&mut mem, irq);
+            let report = dma.on_vblank(&mut mem, irq);
+            debug.on_dma_report(&report, dma);
         }
         if hblank {
-            let _ = dma.on_hblank(&mut mem, irq, hif);
-            let _ = dma.on_capture_hblank(&mut mem, irq, vcount);
+            let report = dma.on_hblank(&mut mem, irq, hif);
+            debug.on_dma_report(&report, dma);
+            let report = dma.on_capture_hblank(&mut mem, irq, vcount);
+            debug.on_dma_report(&report, dma);
         }
         if fifo_req != 0 {
-            let _ = dma.on_fifo_request(&mut mem, irq, fifo_req);
+            let report = dma.on_fifo_request(&mut mem, irq, fifo_req);
+            debug.on_dma_report(&report, dma);
         }
-        let _ = dma.run_pending(&mut mem, irq);
+        let report = dma.run_pending(&mut mem, irq);
+        debug.on_dma_report(&report, dma);
     }
 
     /// Service FIFO DMA request bits only (after timer overflows) — no blanking re-fire.
@@ -363,11 +404,18 @@ impl Gba {
             return;
         }
         let Self {
-            bus, irq, dma, apu, ..
+            bus,
+            irq,
+            dma,
+            apu,
+            debug,
+            ..
         } = self;
         let mut mem = BusApuMem { bus, apu };
-        let _ = dma.on_fifo_request(&mut mem, irq, fifo_req);
-        let _ = dma.run_pending(&mut mem, irq);
+        let report = dma.on_fifo_request(&mut mem, irq, fifo_req);
+        debug.on_dma_report(&report, dma);
+        let report = dma.run_pending(&mut mem, irq);
+        debug.on_dma_report(&report, dma);
     }
 
     /// Advance PPU / timers / APU / DMA startup / IRQ delay / prefetch by `cycles`.
@@ -418,10 +466,16 @@ impl Gba {
     /// Returns true if any channel completed (caller may force next fetch N).
     fn drain_dma(&mut self) -> bool {
         let Self {
-            bus, irq, dma, apu, ..
+            bus,
+            irq,
+            dma,
+            apu,
+            debug,
+            ..
         } = self;
         let mut mem = BusApuMem { bus, apu };
         let report = dma.run_pending(&mut mem, irq);
+        debug.on_dma_report(&report, dma);
         !report.completed.is_empty()
     }
 
@@ -431,6 +485,9 @@ impl Gba {
         if self.bios.mode == BiosMode::Hle && self.try_hle_irq_return() {
             self.advance_subsystems(1);
             self.cycles = self.cycles.wrapping_add(1);
+            let mut dbg = std::mem::take(&mut self.debug);
+            dbg.on_step(self, 1, StepOutcome::Ok);
+            self.debug = dbg;
             return StepOutcome::Ok;
         }
 
@@ -465,11 +522,18 @@ impl Gba {
 
         if self.try_service_irq() {
             self.cycles = self.cycles.wrapping_add(step_cycles);
-            return StepOutcome::Exception(ExceptionKind::Irq);
+            let outcome = StepOutcome::Exception(ExceptionKind::Irq);
+            let mut dbg = std::mem::take(&mut self.debug);
+            dbg.on_step(self, step_cycles, outcome);
+            self.debug = dbg;
+            return outcome;
         }
 
         if self.hw.cpu_sleeping() {
             self.cycles = self.cycles.wrapping_add(step_cycles);
+            let mut dbg = std::mem::take(&mut self.debug);
+            dbg.on_step(self, step_cycles, StepOutcome::Ok);
+            self.debug = dbg;
             return StepOutcome::Ok;
         }
 
@@ -545,6 +609,9 @@ impl Gba {
             self.bus.force_next_fetch_n = true;
         }
         self.cycles = self.cycles.wrapping_add(step_cycles);
+        let mut dbg = std::mem::take(&mut self.debug);
+        dbg.on_step(self, step_cycles, outcome);
+        self.debug = dbg;
         outcome
     }
 
