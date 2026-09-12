@@ -1,12 +1,12 @@
 # Agent guidelines -- Graycart (`graycart-gba`)
 
-How to change this emulator. Product name **Graycart**; crate/binary target **`graycart-gba`**. Family: [graycart](https://github.com/graycart/graycart). Peer (interim DMG/CGB host): [graycart-gb](https://github.com/graycart/graycart-gb).
+How to change this emulator. Product name **Graycart**; crate/binary target **`graycart-gba`**. Family: [graycart](https://github.com/graycart/graycart). Peer library / maintenance host: [graycart-gb](https://github.com/graycart/graycart-gb).
 
 ## Project goal
 
 1. Run **native GBA software** (ARM7TDMI + GBA bus/PPU/APU/DMA/IRQ).
 2. Run **8-bit DMG/CGB cartridges** via the GBA hardware GB/CGB compatibility path -- **prefer reusing** graycart-gb / a future gb-core crate; do not reinvent SM83/PPU/APU for sport.
-3. Eventually **supersede** `graycart-gb` as the shipping **app** / host for 8-bit + GBA. GBA-native modules stay **greenfield** (do not port gb into ARM).
+3. **Supersede** `graycart-gb` as the shipping **app** / host for 8-bit + GBA (**P12 cutover** — see [`docs/supersede-cutover.md`](./docs/supersede-cutover.md)). Keep the `graycart` lib dep intentional. GBA-native modules stay **greenfield** (do not port gb into ARM).
 
 ### How agents should navigate
 
@@ -72,7 +72,7 @@ Align public host/core seams with the family-standard core API when that extract
 
 If something has its own state, rules, tests, or lifecycle, it gets its own module. Keep orchestration thin (`lib.rs` / machine glue, `bus`, `main.rs`). Do not dump PPU/timer/APU/DMA logic into the bus or CPU execute.
 
-Suggested nouns (scaffold): CPU -> Bus -> Cart / BIOS; DMA, Timer, PPU, APU, IRQ, input, `hw/`, later `compat/` for the GB/CGB path (prefer gb dependency).
+Suggested nouns: CPU -> Bus -> Cart / BIOS; DMA, Timer, PPU, APU, IRQ, input, `hw/`, `compat/` for the GB/CGB path (prefer gb dependency; host UI stays in `frontend/`).
 
 Tests: `src/<module>/tests.rs` via `#[cfg(test)] mod tests;` -- not inline in production files. Integration under `tests/` uses the public API. ROM harnesses live under `tests/roms/` with fixtures in `tests/fixtures/` (licenses + README per suite).
 
@@ -86,7 +86,7 @@ Same posture as [graycart-gb `AGENTS.md`](https://github.com/graycart/graycart-g
 
 - `Cargo.toml` `[package].version` is the only product version (window title, About, any save-header version field).
 - Completed slices bump **patch** unless the change is a real 0.x **minor**.
-- Scaffold started at **`0.0.1`**; first tagged runnable milestone is **`0.1.0`** (P9 playable host).
+- Scaffold started at **`0.0.1`**; first tagged runnable milestone is **`0.1.0`** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 cutover **0.1.3**.
 - **Do not** ship `1.0.0` until native GBA (and agreed compat) are stable enough, installers/settings/save compatibility are trusted, and basic cross-platform play is trusted.
 - Git tag **`vX.Y.Z` must equal** the crate version. Release jobs should fail on mismatch.
 
@@ -106,8 +106,8 @@ Do not weaken tests (drop asserts, skip without a reason, title-specific expecte
 
 ## Docs and research
 
-- In-repo: this file, [`ATTRIBUTION.md`](./ATTRIBUTION.md), `README.md`, `CONTRIBUTING.md`, and (when added) `docs/conformance.md` + BIOS obtain-your-own notes.
+- In-repo: this file, [`ATTRIBUTION.md`](./ATTRIBUTION.md), `README.md`, `CONTRIBUTING.md`, `docs/conformance.md`, [`docs/supersede-cutover.md`](./docs/supersede-cutover.md), + BIOS obtain-your-own notes.
 - Research (phases, GBATEK provenance, DMG/CGB compat, core API reuse): Graycart Project store `docs/graycart-gba/` -- especially `08-implementation-plan.md`, `PHASES.md`, `07-test-strategy.md`, `11-test-apparatus.md`, `12-test-gates.md`, `09-dmg-cgb-compatibility.md`, `10-core-api-and-gb-reuse.md`, and `provenance/`.
 - Family API: Project store `docs/graycart-family/` (`01-core-api.md`, `02-repo-layout.md`, `repos.md`).
 
-P1/P2 jsmolka gates are green on `main`. Do not start **P3+** until Project store `12-test-gates.md` freeze allows it and default CI stays honest-green.
+Planned phase ladder **P0–P12** is complete on the product path. Do not invent P13. Keep default CI honest-green (jsmolka arm+thumb+memory PASS).

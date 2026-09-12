@@ -1,9 +1,10 @@
-//! DMG/CGB-via-GBA hardware compat (P10 bring-up / P11 accuracy) — prefer graycart reuse.
+//! DMG/CGB-via-GBA hardware compat (P10–P12) — prefer graycart reuse.
 //!
-//! Cited: graycart-gba implementation plan §2.2 / §3.11–3.12 / PHASES P10–P11
+//! Cited: graycart-gba implementation plan §2.2 / §3.11–3.13 / PHASES P10–P12
 //!   Project store: `docs/graycart-gba/08-implementation-plan.md`
 //! Cited: `09-dmg-cgb-compatibility.md`, `10-core-api-and-gb-reuse.md`
 //! Note: wrapper around graycart SM83/PPU/APU — do not reinvent cores here.
+//!   P12: keep this dep intentional; no host UI crates in this module tree.
 
 mod boot;
 mod bridge;

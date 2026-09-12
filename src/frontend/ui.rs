@@ -2,7 +2,7 @@
 //!
 //! Cited: graycart-gb `src/frontend/ui` posture (lean subset)
 //!   https://github.com/graycart/graycart-gb/tree/main/src/frontend/ui
-//! Note: P11 loads `.gba` / `.gb` / `.gbc`; supersede cutover remains P12.
+//! Note: P12 — shipping GBA + DMG/CGB host (supersede cutover).
 
 use egui::Ui;
 
@@ -49,7 +49,7 @@ pub fn menu_bar(ui: &mut Ui, rom_loaded: bool, paused: bool) -> Vec<UiAction> {
             });
             ui.menu_button("Help", |ui| {
                 ui.label(format!("graycart-gba {}", env!("CARGO_PKG_VERSION")));
-                ui.label("GBA native + DMG/CGB via compat (P11).");
+                ui.label("Long-term host for GBA + DMG/CGB (P12 cutover).");
             });
         });
     });
@@ -63,7 +63,7 @@ pub fn empty_rom_screen(ui: &mut Ui, actions: &mut Vec<UiAction>) {
         ui.heading("graycart-gba");
         ui.label("Open a ROM: .gba (native) or .gb / .gbc (compat).");
         ui.add_space(8.0);
-        ui.label("8-bit carts run through the GBA HW compat wrapper (graycart cores).");
+        ui.label("Recommended play host for 8-bit and GBA cartridges.");
         ui.add_space(16.0);
         if ui.button("Open ROM…").clicked() {
             actions.push(UiAction::OpenRomDialog);

@@ -1,5 +1,5 @@
 <!--
-Cited: PHASES.md P8–P11; 07-test-strategy.md §6; 11-test-apparatus.md §2; mgba-emu/suite
+Cited: PHASES.md P8–P12; 07-test-strategy.md §6; 11-test-apparatus.md §2; mgba-emu/suite
 Note: living accuracy board — update thresholds when suite automation lands.
 -->
 # graycart-gba conformance board
@@ -72,4 +72,18 @@ cargo test --test roms g11_cgb_sound_matrix -- --ignored --nocapture
 cargo test --test roms g11_cgb_mooneye_matrix -- --ignored --nocapture
 ```
 
-jsmolka arm/thumb/memory remain default-CI PASS. P12 supersede cutover is next.
+jsmolka arm/thumb/memory remain default-CI PASS.
+
+## P12 Supersede cutover (2026-09-12)
+
+| Gate | Status | Notes |
+|------|--------|-------|
+| **G12-plan** | documented | [`supersede-cutover.md`](./supersede-cutover.md) dual-run → default-gba |
+| **G12-docs** | this board | README/AGENTS/CHANGELOG; crate **0.1.3** |
+| **G12-dave** | recorded | cites product decision 2026-09-12; gb **app** leaves daily-target |
+| **G12-frontend** | unit/copy green | Help/empty claim shipping 8-bit + GBA host |
+| **G12-audit-dep** | unit green | whole-crate `graycart` pin remains (`compat/dep.rs`) |
+| **G12-audit-ui** | unit green | no eframe/egui/cpal/rfd in lib cores / `compat/` |
+| **G12-stretch** | deferred | archive gb desktop binary; S12 `gb-core` extract |
+
+Planned phase ladder **P0–P12** ends here. Optional future work is not a new phase number.

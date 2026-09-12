@@ -18,12 +18,19 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P12 Supersede cutover (`walter/p12-supersede-cutover-a164`):** dual-run →
+  default-gba plan in `docs/supersede-cutover.md`; Dave-authorized product
+  handoff (gb **app** leaves daily-target; `graycart` lib dep stays);
+  frontend Help/empty claim shipping 8-bit + GBA host; G12 audit units
+  (dep pin + no UI coupling in lib/compat); docs/conformance P12 board;
+  crate **0.1.3**. Planned phases **P0–P12** complete. jsmolka
+  arm+thumb+memory stay default-CI PASS.
 - **P11 Compat accuracy (`walter/p11-compat-accuracy-398a`):** FastCgb launch on
   `CompatMachine`; vendored Blargg cpu_instrs/dmg_sound/cgb_sound + Mooneye
   acceptance/misc; P11 DMG/CGB ignored suite matrices + recorded thresholds;
   frontend loads `.gb`/`.gbc` with 8-bit `.sav` UX; docs/conformance P11 board;
   crate **0.1.2**. Unit gates G11-*; stretch HDMA/KEY1 ignored. jsmolka
-  arm+thumb+memory stay default-CI PASS. P12 supersede cutover still deferred.
+  arm+thumb+memory stay default-CI PASS.
 - **P10 DMG/CGB compat bring-up (`walter/p10-compat-8eeb`):** interim whole-crate
   `graycart` dep; WAITCNT.bit15 / load-path detect; Mode-8/HALTCNT handoff +
   CGB-AGB user-supplied boot slot; `CompatMachine` wrapper (load/run/FB/PCM/

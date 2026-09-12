@@ -1,8 +1,9 @@
-//! graycart (DMG/CGB) dependency pin note — P10 **G10-dep**.
+//! graycart (DMG/CGB) dependency pin note — P10 **G10-dep** / P12 **G12-audit-dep**.
 //!
 //! Cited: graycart-gba `10-core-api-and-gb-reuse.md` (whole-crate OK until extract)
 //!   Project store: `docs/graycart-gba/10-core-api-and-gb-reuse.md`
 //! Cited: https://github.com/graycart/graycart-gb (crate name `graycart`)
+//! Cited: `docs/supersede-cutover.md` — supersede the **app**, keep this lib dep.
 //! Note: prefer machine-only surface (`Cpu`, `Bus`, `Cartridge`, …). Do not
 //! reinvent SM83/PPU/APU in this tree; do not port gb into ARM/GBA-native.
 
