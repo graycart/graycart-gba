@@ -440,6 +440,16 @@ impl DebugTracker {
         ));
     }
 
+    /// BiosHle skipped an unimplemented SWI instead of vectoring into empty BIOS.
+    pub fn on_unhandled_swi(&mut self, number: u8, resume_pc: u32) {
+        if !self.enabled() {
+            return;
+        }
+        log_line(&format!(
+            "swi unhandled num=0x{number:02X} resume_pc=0x{resume_pc:08X} (BiosHle stub — implement or provide BIOS)"
+        ));
+    }
+
     /// True when headless `--trace N` has exhausted its dump budget.
     #[must_use]
     pub fn trace_exhausted(&self) -> bool {

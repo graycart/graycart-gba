@@ -5,9 +5,9 @@
 //! Cited: GBATEK — ARM CPU Overview / SWI
 //!   https://problemkaputt.de/gbatek.htm
 //! Note: crude 1-insn advance; waitstate-accurate scheduling is later. BiosHle
-//! SWIs (Div/Sqrt/SoftReset/CpuSet) live in [`crate::bios::hle`].
+//! SWIs (Div/Sqrt/SoftReset/Halt/IntrWait/CpuSet) live in [`crate::bios::hle`].
 
-use crate::bios::hle::{self, swi as hle_swi};
+use crate::bios::hle;
 use crate::bus::CpuMem;
 use crate::cpu::arm::{self, ExecResult as ArmExec};
 use crate::cpu::thumb::{self, ExecResult as ThumbExec, ThumbCore, ThumbMem};
@@ -24,8 +24,12 @@ pub enum StepOutcome {
     Branched,
     /// SWI handled by BiosHle (Div, etc.) — PC advanced past the SWI.
     SwiHle,
+    /// BiosHle IntrWait/VBlankIntrWait — PC advanced; Halt entered; mask pending.
+    SwiHleIntrWait(u16),
     /// Took a real exception vector (no HLE handler).
     Exception(ExceptionKind),
+    /// BiosHle saw an unimplemented SWI comment — resumed past it (no empty-BIOS vector).
+    SwiHleUnhandled(u8),
 }
 
 /// Optional BiosHle hooks used while stepping (Div for jsmolka fail digits).
@@ -155,24 +159,27 @@ fn handle_exception(
 ) -> StepOutcome {
     if hle.bios_hle && kind == ExceptionKind::Swi {
         let number = swi_number(cpu, bus, instr_pc);
-        if hle::try_swi(cpu, bus, number) {
-            if number == hle_swi::SOFT_RESET {
+        match hle::try_swi(cpu, bus, number) {
+            hle::SwiHleResult::SoftReset => {
                 // SoftReset already set PC/stacks — refill from new entry.
                 refill_after_branch(cpu, bus);
                 return StepOutcome::SwiHle;
             }
-            // Resume at next instruction (same as exception LR semantics).
-            let next = if cpu.regs.thumb() {
-                instr_pc.wrapping_add(2)
-            } else {
-                instr_pc.wrapping_add(4)
-            };
-            let isa = IsaState::from_cpsr_t(cpu.regs.thumb());
-            cpu.regs.set_pc(next);
-            cpu.pipeline.redirect(next, isa);
-            cpu.pipeline.refill(bus);
-            sync_exec_pc(cpu);
-            return StepOutcome::SwiHle;
+            hle::SwiHleResult::Done => {
+                resume_after_swi_hle(cpu, bus, instr_pc);
+                return StepOutcome::SwiHle;
+            }
+            hle::SwiHleResult::IntrWait(mask) => {
+                resume_after_swi_hle(cpu, bus, instr_pc);
+                return StepOutcome::SwiHleIntrWait(mask);
+            }
+            hle::SwiHleResult::Unhandled => {
+                // Critical: with no BIOS image, vectoring to 0x08 executes open-bus
+                // garbage and the PC wanders (FireRed log: pc=0x00112328…). Resume
+                // past the SWI instead; Gba debug logs the missing number.
+                resume_after_swi_hle(cpu, bus, instr_pc);
+                return StepOutcome::SwiHleUnhandled(number);
+            }
         }
     }
 
@@ -180,6 +187,20 @@ fn handle_exception(
     cpu.pipeline.refill(bus);
     sync_exec_pc(cpu);
     StepOutcome::Exception(kind)
+}
+
+fn resume_after_swi_hle(cpu: &mut Cpu, bus: &mut impl CpuMem, instr_pc: u32) {
+    // Resume at next instruction (same as exception LR semantics).
+    let next = if cpu.regs.thumb() {
+        instr_pc.wrapping_add(2)
+    } else {
+        instr_pc.wrapping_add(4)
+    };
+    let isa = IsaState::from_cpsr_t(cpu.regs.thumb());
+    cpu.regs.set_pc(next);
+    cpu.pipeline.redirect(next, isa);
+    cpu.pipeline.refill(bus);
+    sync_exec_pc(cpu);
 }
 
 /// GBA BIOS SWI comment is in bits 16..=23 of the ARM imm24 / Thumb imm8 low byte.

@@ -16,6 +16,17 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Fixed
+
+- **BiosHle Halt / IntrWait / VBlankIntrWait / RegisterRamReset + no empty-BIOS vector
+  (`walter/gba-black-screen-bios-hle-ae69`):** Dave’s FireRed `--debug` log showed
+  `pc` wandering at `0x00112328` / `0x0258F7DC` / `0x031A7B28` with `DISPCNT=0` after a
+  normal BiosHle soft-boot — classic unhandled-SWI → empty BIOS `0x08` open-bus
+  runaway (crt0 reached System/`cpsr=0xDF`, then `RegisterRamReset` / friends).
+  BiosHle now implements Halt/Stop/IntrWait/VBlankIntrWait/RegisterRamReset, and
+  **never vectors unknown SWIs into empty BIOS** (resumes + `gba-debug: swi
+  unhandled num=…`). Crate **0.1.5**.
+
 ### Added
 
 - **Console debug (`walter/gba-console-debug-a3a2`):** GB-style breadcrumbs for
