@@ -13,6 +13,7 @@ mod nba_hw_test;
 mod p3;
 mod p4;
 mod p5;
+mod p6;
 
 use harness::{
     jsmolka_r12_oracle, load_gba, run_test_rom, GbaTestRom, Outcome, RomLaunchMode, RunBudget,

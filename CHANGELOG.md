@@ -18,6 +18,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P6 APU (shared `walter/p6-apu-052e`):** SOUNDCNT_* / SOUNDBIAS / Wave RAM
+  register file with master-enable clear of PSG `060`–`081`; PSG ch1–4 (AGB
+  wave dual-bank + 75% volume); FIFO A/B with TM0/TM1 sample clock + half-empty
+  DMA1/2 request; digital mixer + PWM truncate; host PCM ring + soft WAV
+  (`--audio-out`). MMIO routes sound ports; DMA dest→FIFO feeds APU. Unit
+  gates G6-regs/psg/fifo/mixer/pcm/glue; `tests/roms/p6.rs` +
+  `tests/fixtures/gba-audio-test/` stubs (`#[ignore]` until ROM/golden).
+  jsmolka arm+thumb+memory stay default-CI PASS.
 - **P5 DMA full (shared `walter/p5-dma-full-980e`):** VBlank / HBlank starts (HBlank
   Interval Free for OAM), DMA1/2 Special FIFO 4×32-bit refill, DMA3 Special
   video-capture window stub (VCOUNT 2..=161), completion IRQs, DMA3 Game Pak

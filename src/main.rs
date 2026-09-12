@@ -1,9 +1,10 @@
-//! graycart-gba binary — headless CLI (P0 + P4 hash path).
+//! graycart-gba binary — headless CLI (P0 + P4 hash + P6 soft audio).
 //!
-//! Accepts `--version` / `-V`, `--frames N`, `--hash-out PATH`, and optional ROM.
-//! Windowed host lives under `frontend/` in later phases (plan §2.1 / S8).
+//! Accepts `--version` / `-V`, `--frames N`, `--hash-out PATH`, `--audio-out PATH`,
+//! and optional ROM. Windowed host lives under `frontend/` in later phases
+//! (plan §2.1 / S8).
 //!
-//! Cited: graycart-gba test strategy §5.5 (headless hash)
+//! Cited: graycart-gba test strategy §5.5 / §7 (headless hash + soft audio)
 //!   Project store: `docs/graycart-gba/07-test-strategy.md`
 
 mod frontend;
@@ -24,6 +25,7 @@ fn main() {
 
     let mut frame_cap: Option<u64> = None;
     let mut hash_out: Option<PathBuf> = None;
+    let mut audio_out: Option<PathBuf> = None;
     let mut rom_path: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
@@ -52,6 +54,13 @@ fn main() {
                     process::exit(1);
                 };
                 hash_out = Some(PathBuf::from(p));
+            }
+            "--audio-out" => {
+                let Some(p) = args.next() else {
+                    eprintln!("--audio-out requires a path");
+                    process::exit(1);
+                };
+                audio_out = Some(PathBuf::from(p));
             }
             other if !other.starts_with('-') => {
                 rom_path = Some(PathBuf::from(other));
@@ -83,8 +92,15 @@ fn main() {
                 process::exit(1);
             });
         }
-    } else if hash_out.is_some() {
-        eprintln!("--hash-out requires --frames N");
+        if let Some(path) = audio_out {
+            let wav = gba.soft_wav_bytes();
+            fs::write(&path, wav).unwrap_or_else(|e| {
+                eprintln!("failed to write {}: {e}", path.display());
+                process::exit(1);
+            });
+        }
+    } else if hash_out.is_some() || audio_out.is_some() {
+        eprintln!("--hash-out / --audio-out require --frames N");
         process::exit(1);
     }
 }

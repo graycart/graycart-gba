@@ -36,7 +36,7 @@ only. Vendored test ROMs keep their **upstream** copyright and license terms.
 |-------|------|---------|--------|
 | [SingleStepTests/ARM7TDMI](https://github.com/SingleStepTests/ARM7TDMI) | JSON single-step CPU vectors | MIT | Secondary oracle (NBA-generated); not HW truth |
 | [destoer/armwrestler-gba-fixed](https://github.com/destoer/armwrestler-gba-fixed) | Visual ARM grid | upstream | Some LDM writeback cases fail on real HW |
-| [cajunpanda/gba-audio-test](https://github.com/cajunpanda/gba-audio-test) | PSG + DirectSound path | MIT | Soft audio gate until dump policy exists |
+| [cajunpanda/gba-audio-test](https://github.com/cajunpanda/gba-audio-test) | PSG + DirectSound path | MIT | Soft audio gate until dump policy exists; path stubs under [`gba-audio-test/`](gba-audio-test/) (P6) |
 
 Do not add commercial cartridges or BIOS dumps under this tree.
 
@@ -50,12 +50,16 @@ tests/
 │   ├── inhouse/           # MIT — P3 simple-irq stub (binary optional)
 │   ├── mgba-suite/        # MIT — LICENSE stub; suite.gba later; P3 stretch dirs
 │   ├── nba-hw-test/       # BSD-3 — LICENSE stub; curated ROM later
+│   ├── gba-audio-test/    # MIT — P6 audio ROM path stub (binary optional)
 │   ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
 │   └── tonc/              # CC0 — empty until selected demos
 └── roms/
     ├── harness.rs         # Outcome + RomLaunchMode + GbaTestRom
     ├── jsmolka.rs         # arm/thumb/memory (PASS in default CI)
     ├── p3.rs              # P3 gates (ignored until simple-irq.gba)
+    ├── p4.rs              # P4 PPU gates
+    ├── p5.rs              # P5 DMA gates
+    ├── p6.rs              # P6 APU gates (gba-audio-test / soft WAV)
     ├── mgba_suite.rs      # ignored SoC-depth stub
     ├── nba_hw_test.rs     # ignored stretch stub
     └── main.rs            # CI-blocking apparatus smoke
