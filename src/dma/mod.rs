@@ -8,7 +8,8 @@
 //!
 //! **P5 scope:** VBlank / HBlank (Interval Free for OAM) / FIFO Special (DMA1/2) /
 //! Video Capture stub (DMA3) / completion IRQs / DMA3 Game Pak yes. SRAM reject
-//! stays. Startup delay 2 cycles / mid-insn preempt are P8 stretch.
+//! **P8 scope:** Enable 0→1 startup delay **2** cycles before Immediate arms;
+//! post-DMA force-N latch on the bus. Mid-insn preempt remains stretch.
 
 mod capture;
 mod channel;
@@ -23,6 +24,8 @@ mod tests_capture;
 mod tests_fifo;
 #[cfg(test)]
 mod tests_starts;
+#[cfg(test)]
+mod tests_timing;
 
 pub use capture::{capture_window, CAPTURE_VCOUNT_FIRST, CAPTURE_VCOUNT_LAST};
 pub use channel::{
@@ -104,12 +107,19 @@ impl Dma {
         self.channels.iter().any(|c| c.active)
     }
 
-    /// True if any channel is active or has a pending armed burst.
+    /// True if any channel is active, pending, or in startup delay.
     #[inline]
     pub fn is_busy(&self) -> bool {
         self.channels
             .iter()
-            .any(|c| c.active || c.pending_immediate)
+            .any(|c| c.active || c.pending_immediate || c.startup_delay > 0)
+    }
+
+    /// Advance Enable/start startup delays by `cycles` (G8-dma-delay).
+    pub fn tick_startup(&mut self, cycles: u32) {
+        for ch in &mut self.channels {
+            ch.tick_startup(cycles);
+        }
     }
 
     pub fn write_sad(&mut self, id: ChannelId, value: u32) {
@@ -191,7 +201,10 @@ impl Dma {
     /// Drain all pending Immediate transfers in priority order (0→3).
     ///
     /// Convenience for P2 call sites; raises IRQs when CNT_H.IRQ is set.
+    /// Drain Immediate-armed channels (test helper). Completes any pending
+    /// 2-cycle Enable startup first (G8-dma-delay).
     pub fn run_immediate<M: CpuMem>(&mut self, mem: &mut M) -> DmaRunReport {
+        self.tick_startup(2);
         let mut irq = Irq::new();
         self.run_pending(mem, &mut irq)
     }

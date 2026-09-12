@@ -8,6 +8,11 @@
 use super::*;
 use crate::cpu::{cpsr, Cpu, ExceptionKind, ExceptionModeBits, IsaState, Mode, Pipeline};
 
+/// Advance recognition delay so CPU IRQ sampling may fire (G8-irq-delay).
+fn elapse_irq_delay(irq: &mut Irq) {
+    irq.tick(IRQ_DELAY_CYCLES);
+}
+
 #[test]
 fn ie_masks_unused_high_bits() {
     let mut irq = Irq::new();
@@ -69,6 +74,7 @@ fn cpu_irq_requires_ime_ie_if_and_cpsr_i_clear() {
     let mut irq = Irq::new();
     irq.write_ie(IRQ_VBLANK);
     irq.raise(IRQ_VBLANK);
+    elapse_irq_delay(&mut irq);
 
     // IME=0 → no CPU IRQ even with IE∧IF and I=0.
     assert!(!irq.cpu_irq_asserted(false));
@@ -88,6 +94,7 @@ fn try_take_cpu_irq_vectors_to_0x18() {
     irq.write_ie(IRQ_TIMER0);
     irq.raise(IRQ_TIMER0);
     irq.set_ime(true);
+    elapse_irq_delay(&mut irq);
 
     let mut cpu = Cpu::new();
     // System mode, IRQs enabled (I=0), ARM.
@@ -139,6 +146,7 @@ fn try_service_cpu_uses_decode_pc() {
     irq.write_ie(IRQ_VCOUNT);
     irq.raise(IRQ_VCOUNT);
     irq.set_ime(true);
+    elapse_irq_delay(&mut irq);
 
     let mut cpu = Cpu::new();
     cpu.regs.set_cpsr(u32::from(ExceptionModeBits::User as u8));
@@ -177,7 +185,29 @@ fn raise_if_trait_bridges_to_raise() {
 }
 
 #[test]
-fn irq_delay_constant_documented_but_unused() {
-    // Guard against silent deletion of the TBD marker.
-    assert_eq!(IRQ_DELAY_CYCLES_TBD, 7);
+fn irq_delay_constant_is_seven() {
+    assert_eq!(IRQ_DELAY_CYCLES, 7);
+    assert_eq!(IRQ_DELAY_CYCLES_TBD, IRQ_DELAY_CYCLES);
+}
+
+#[test]
+fn irq_recognition_waits_seven_cycles_halt_immediate() {
+    let mut irq = Irq::new();
+    irq.write_ie(IRQ_VBLANK);
+    irq.set_ime(true);
+    irq.raise(IRQ_VBLANK);
+    assert!(irq.halt_wake_pending());
+    assert_eq!(irq.delay_remaining(), Some(IRQ_DELAY_CYCLES));
+    // Not ready yet.
+    assert!(!irq.cpu_irq_asserted(false));
+    irq.tick(6);
+    assert_eq!(irq.delay_remaining(), Some(1));
+    assert!(!irq.cpu_irq_asserted(false));
+    irq.tick(1);
+    assert_eq!(irq.delay_remaining(), Some(0));
+    assert!(irq.cpu_irq_asserted(false));
+    // Ack clears schedule.
+    irq.write_if_ack(IRQ_VBLANK);
+    assert_eq!(irq.delay_remaining(), None);
+    assert!(!irq.cpu_irq_asserted(false));
 }

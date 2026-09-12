@@ -77,7 +77,7 @@ fn write_preserves_cart_type_ro_and_clears_unused_bit13() {
 }
 
 #[test]
-fn prefetch_enable_is_bit_stub_only() {
+fn prefetch_enable_bit_roundtrips() {
     let mut wc = WaitCnt::power_on();
     assert!(!wc.prefetch_enable());
     wc.set_prefetch_enable(true);

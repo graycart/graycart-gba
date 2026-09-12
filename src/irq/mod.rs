@@ -7,8 +7,8 @@
 //! Cited: Tonc — Hardware interrupts (IF acknowledge pitfalls)
 //!   https://www.coranac.com/tonc/text/interrupts.htm
 //! Cross-check: research `docs/graycart-gba/05-io-timers-irq-input.md` §4–5, §8.
-//! Note: IRQ delay mid-instruction / DMA preempt / Stop fidelity are TBD
-//! ([05] §10 IO-TBD-4). Functional path samples at instruction boundaries.
+//! Note: IRQ recognition uses a 7-cycle delay (mGBA secondary). Mid-instruction
+//! preempt / Stop fidelity remain stretch ([05] §10 IO-TBD-4).
 
 use crate::cpu::{Cpu, ExceptionEntryPlan, ExceptionKind};
 
@@ -68,9 +68,13 @@ pub const IRQ_KEYPAD: u16 = 1 << 12;
 /// Game Pak /IRQ.
 pub const IRQ_GAMEPAK: u16 = 1 << 13;
 
-/// Named candidate for later IRQ line delay (mGBA uses 7). **Not applied** yet —
-/// functional P3 samples immediately at insn boundaries (IO-TBD-4).
-pub const IRQ_DELAY_CYCLES_TBD: u32 = 7;
+/// IRQ recognition delay after `IE∧IF` becomes nonzero (mGBA `GBA_IRQ_DELAY`).
+///
+/// Halt wake still uses immediate `IE∧IF`; only CPU exception sampling waits.
+pub const IRQ_DELAY_CYCLES: u32 = 7;
+
+/// Compatibility alias for older call sites / docs.
+pub const IRQ_DELAY_CYCLES_TBD: u32 = IRQ_DELAY_CYCLES;
 
 /// GBA interrupt controller (IE / IF / IME).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +85,10 @@ pub struct Irq {
     if_: u16,
     /// Master enable (`IME` bit0).
     ime: bool,
+    /// Cycles remaining before CPU IRQ may be taken (`None` = not scheduled).
+    ///
+    /// `Some(0)` means the delay has elapsed and the line may assert.
+    delay_remaining: Option<u32>,
 }
 
 impl Default for Irq {
@@ -97,6 +105,42 @@ impl Irq {
             ie: 0,
             if_: 0,
             ime: false,
+            delay_remaining: None,
+        }
+    }
+
+    /// Cycles left on the recognition timer (`None` if idle).
+    #[inline]
+    #[must_use]
+    pub fn delay_remaining(&self) -> Option<u32> {
+        self.delay_remaining
+    }
+
+    /// Advance the IRQ recognition delay by `cycles` system clocks.
+    pub fn tick(&mut self, cycles: u32) {
+        if cycles == 0 {
+            return;
+        }
+        if self.ie_and_if() == 0 {
+            self.delay_remaining = None;
+            return;
+        }
+        if let Some(left) = self.delay_remaining {
+            if left == 0 {
+                return;
+            }
+            self.delay_remaining = Some(left.saturating_sub(cycles));
+        }
+    }
+
+    /// (Re)schedule recognition when `IE∧IF` edges to nonzero.
+    fn reschedule_delay(&mut self) {
+        if self.ie_and_if() == 0 {
+            self.delay_remaining = None;
+            return;
+        }
+        if self.delay_remaining.is_none() {
+            self.delay_remaining = Some(IRQ_DELAY_CYCLES);
         }
     }
 
@@ -131,6 +175,7 @@ impl Irq {
     #[inline]
     pub fn write_ie(&mut self, value: u16) {
         self.ie = value & IRQ_SOURCE_MASK;
+        self.reschedule_delay();
     }
 
     /// Read `IF` (`04000202`).
@@ -146,6 +191,7 @@ impl Irq {
     #[inline]
     pub fn write_if_ack(&mut self, value: u16) {
         self.if_ &= !(value & IRQ_SOURCE_MASK);
+        self.reschedule_delay();
     }
 
     /// Read `IME` as a 32-bit I/O word (only bit0 meaningful).
@@ -176,6 +222,7 @@ impl Irq {
     #[inline]
     pub fn raise(&mut self, bits: u16) {
         self.if_ |= bits & IRQ_SOURCE_MASK;
+        self.reschedule_delay();
     }
 
     /// `(IE & IF)` — Halt wake condition (IME / CPSR.I don't-care).
@@ -194,11 +241,11 @@ impl Irq {
         self.ie_and_if() != 0
     }
 
-    /// CPU IRQ line: `IME && (IE & IF) != 0 && !cpsr_i`.
+    /// CPU IRQ line after recognition delay: `IME && (IE & IF) && delay==0 && !cpsr_i`.
     #[inline]
     #[must_use]
     pub fn cpu_irq_asserted(&self, cpsr_i: bool) -> bool {
-        self.ime && self.halt_wake_pending() && !cpsr_i
+        self.ime && self.halt_wake_pending() && self.delay_remaining == Some(0) && !cpsr_i
     }
 
     /// Sample the pending IRQ line and take a CPU IRQ exception when asserted.
@@ -207,8 +254,8 @@ impl Irq {
     /// [`Cpu::take_exception`] / [`ExceptionKind::link_register`] Irq semantics).
     ///
     /// Does **not** refill the pipeline from the bus — caller / Gba step should
-    /// refill after a `Some` return. IRQ delay ([`IRQ_DELAY_CYCLES_TBD`]) is not
-    /// applied (TBD).
+    /// refill after a `Some` return. Recognition is delayed by
+    /// [`IRQ_DELAY_CYCLES`] after `IE∧IF` becomes nonzero.
     ///
     /// BIOS vector at `0x18` eventually loads `[03007FFC]` — that trampoline is
     /// BIOS/HLE, not this controller.

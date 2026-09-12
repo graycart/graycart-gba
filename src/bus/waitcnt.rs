@@ -3,7 +3,8 @@
 //! Cited: GBATEK -- GBA System Control (WAITCNT)
 //!   https://problemkaputt.de/gbatek-gba-system-control.htm
 //! Cross-check: research `docs/graycart-gba/02-memory-bus-dma.md` §5.3.
-//! Note: prefetch enable is bit storage only (no fill/drain FSM — P8).
+//! Note: prefetch enable bit syncs into [`crate::bus::PrefetchBuffer`] via
+//! [`crate::bus::Bus::apply_waitcnt`] (P8).
 
 use super::wait::{RomWindow, WaitTables};
 
@@ -74,13 +75,13 @@ impl WaitCnt {
         (self.raw & 0x8000) != 0
     }
 
-    /// Bit 14: Game Pak prefetch enable — **stub** (no FSM until P8).
+    /// Bit 14: Game Pak prefetch enable (FSM in [`crate::bus::PrefetchBuffer`]).
     #[inline]
     pub const fn prefetch_enable(self) -> bool {
         (self.raw & (1 << 14)) != 0
     }
 
-    /// Stub setter for prefetch enable (bit 14 only; no buffer side effects).
+    /// Setter for prefetch enable (bit 14). Bus glue drains/fills via apply_waitcnt.
     #[inline]
     pub fn set_prefetch_enable(&mut self, enable: bool) {
         if enable {

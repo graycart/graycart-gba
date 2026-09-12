@@ -69,6 +69,7 @@ fn dma3_rom_source_allowed() {
             true,
         ),
     );
+    dma.tick_startup(2);
     let report = dma.run_pending(&mut rom_mem, &mut irq);
     assert_eq!(report.units_transferred, 1);
     assert!(report.rejected.is_empty());
@@ -93,6 +94,7 @@ fn sram_still_rejected_on_all_channels() {
             true,
         ),
     );
+    dma.tick_startup(2);
     let report = dma.run_pending(&mut mem, &mut irq);
     assert_eq!(report.units_transferred, 0);
     assert!(matches!(

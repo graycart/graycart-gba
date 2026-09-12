@@ -174,6 +174,9 @@ pub struct Channel {
     /// Kept as `pending_immediate` name for P2 test compatibility; used for all
     /// start modes once an edge / Immediate arms the channel.
     pub(crate) pending_immediate: bool,
+    /// Cycles remaining before an armed start becomes [`Self::pending_immediate`]
+    /// (GBATEK: wait **2** cycles after Enable 0→1 / start request).
+    pub(crate) startup_delay: u32,
 }
 
 impl Channel {
@@ -189,6 +192,7 @@ impl Channel {
             remaining: 0,
             active: false,
             pending_immediate: false,
+            startup_delay: 0,
         }
     }
 
@@ -253,7 +257,8 @@ impl Channel {
         self.count = value & (self.id.count_mask() as u16);
     }
 
-    /// Write DMAxCNT_H. Rising enable reloads latches; Immediate arms pending.
+    /// Write DMAxCNT_H. Rising enable reloads latches; Immediate schedules a
+    /// 2-cycle startup delay before pending (G8-dma-delay).
     ///
     /// Non-Immediate modes stay enabled until a start edge / FIFO / capture hook
     /// calls [`Self::request_start`].
@@ -266,10 +271,12 @@ impl Channel {
         if rising {
             self.reload_latches_full();
             if self.start_timing() == StartTiming::Immediate {
-                self.pending_immediate = true;
+                self.startup_delay = 2;
+                self.pending_immediate = false;
                 self.active = false;
                 return true;
             }
+            self.startup_delay = 0;
             self.pending_immediate = false;
             self.active = false;
             return false;
@@ -278,6 +285,7 @@ impl Channel {
         if !now_enabled {
             self.active = false;
             self.pending_immediate = false;
+            self.startup_delay = 0;
             self.remaining = 0;
         }
         false
@@ -298,7 +306,7 @@ impl Channel {
 
     /// Edge / FIFO / capture: mark channel pending if enabled for `timing`.
     pub(crate) fn request_start(&mut self, timing: StartTiming) -> bool {
-        if !self.enabled() || self.active || self.pending_immediate {
+        if !self.enabled() || self.active || self.pending_immediate || self.startup_delay > 0 {
             return false;
         }
         if self.start_timing() != timing {
@@ -317,12 +325,27 @@ impl Channel {
         self.remaining = 4;
         // Force 32-bit for the burst regardless of CNT_H size bit.
         self.control |= CONTROL_TRANSFER_TYPE;
+        self.startup_delay = 0;
         self.pending_immediate = true;
         self.active = false;
     }
 
+    /// Tick startup delay; when it reaches 0, arm [`Self::pending_immediate`].
+    pub(crate) fn tick_startup(&mut self, cycles: u32) {
+        if self.startup_delay == 0 || cycles == 0 {
+            return;
+        }
+        if cycles >= self.startup_delay {
+            self.startup_delay = 0;
+            self.pending_immediate = true;
+        } else {
+            self.startup_delay -= cycles;
+        }
+    }
+
     pub(crate) fn begin_active(&mut self) {
         self.pending_immediate = false;
+        self.startup_delay = 0;
         self.active = true;
     }
 
@@ -334,6 +357,7 @@ impl Channel {
         let want_irq = self.irq_enable();
         self.active = false;
         self.pending_immediate = false;
+        self.startup_delay = 0;
 
         let immediate = self.start_timing() == StartTiming::Immediate;
         if immediate || !self.repeat() {

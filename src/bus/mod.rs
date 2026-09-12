@@ -11,8 +11,10 @@
 //!   https://developer.arm.com/documentation/ddi0210/c/
 //! Note: [`CpuMem`] for CPU pipeline fetch; video STRB / open-bus are sibling modules.
 
+pub mod disable_bug;
 pub mod mirror;
 pub mod openbus;
+pub mod prefetch;
 pub mod region;
 pub mod video;
 pub mod wait;
@@ -21,16 +23,25 @@ pub mod waitcnt;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_disable_bug;
+#[cfg(test)]
 mod tests_openbus;
+#[cfg(test)]
+mod tests_prefetch;
 #[cfg(test)]
 mod tests_video;
 #[cfg(test)]
 mod tests_wait;
 
+pub use disable_bug::{
+    arm_likely_i_cycles_no_pc, force_next_fetch_nonseq, next_opcode_access_kind,
+    thumb_likely_i_cycles_no_pc, DisableBugInput,
+};
 pub use openbus::{
     bios_protect_byte, bios_protect_read, empty_cart_rom_halfword, empty_cart_rom_word, pc_in_bios,
     unused_memory_open_bus, OpenBusKind, OpenBusState, BIOS_END,
 };
+pub use prefetch::{PrefetchBuffer, PREFETCH_CAPACITY};
 pub use video::{
     classify_vram_offset, expand_strb_byte, obj_vram_base, resolve_strb, resolve_video_write,
     resolve_wide_write, write_size_ok, VideoTarget, VideoWriteAction, OBJ_VRAM_BASE_BITMAP,
@@ -111,6 +122,12 @@ pub struct Bus {
     pub open_bus: OpenBusState,
     /// Last known CPU PC for BIOS-protect gating (updated by machine step).
     pub cpu_pc: u32,
+    /// Game Pak prefetch buffer (WAITCNT.14).
+    pub prefetch: PrefetchBuffer,
+    /// Waitstate tables derived from WAITCNT (+ default EWRAM).
+    pub wait_tables: WaitTables,
+    /// Force next ROM opcode fetch as N (Disable Bug / post-DMA).
+    pub force_next_fetch_n: bool,
 }
 
 impl Default for Bus {
@@ -127,6 +144,9 @@ impl Default for Bus {
             sram: Vec::new(),
             open_bus: OpenBusState::default(),
             cpu_pc: 0,
+            prefetch: PrefetchBuffer::new(),
+            wait_tables: WaitTables::power_on(),
+            force_next_fetch_n: false,
         }
     }
 }
@@ -136,6 +156,12 @@ impl Bus {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Apply WAITCNT to wait tables + prefetch enable.
+    pub fn apply_waitcnt(&mut self, wc: WaitCnt) {
+        self.wait_tables.apply_waitcnt(wc);
+        self.prefetch.set_enabled(wc.prefetch_enable());
     }
 
     /// Decode `addr` to a [`Region`] (public for waitstate / DMA siblings).

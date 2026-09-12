@@ -15,6 +15,7 @@ mod p4;
 mod p5;
 mod p6;
 mod p7;
+mod p8;
 
 use harness::{
     jsmolka_r12_oracle, load_gba, run_test_rom, GbaTestRom, Outcome, RomLaunchMode, RunBudget,

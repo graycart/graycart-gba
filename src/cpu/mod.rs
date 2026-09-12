@@ -14,12 +14,15 @@ mod mode;
 mod regs;
 pub mod step;
 pub mod thumb;
+pub mod timing;
 
 pub mod exception;
 pub mod pipeline;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_timing;
 
 pub use exception::{
     plan_entry, ExceptionEntryPlan, ExceptionKind, ExceptionModeBits, EXCEPTION_ENTRY_BUS_HINT,
@@ -29,6 +32,7 @@ pub use mode::Mode;
 pub use pipeline::{align_pc, IsaState, Pipeline, PipelineSlot};
 pub use regs::{cpsr, Regs};
 pub use step::{soft_boot, step, StepHle, StepOutcome};
+pub use timing::{price_insn, InsnCycles, TimingInput};
 
 /// ARM7TDMI core shell. ISA execute lives in [`arm`] / [`thumb`].
 #[derive(Debug, Default)]
