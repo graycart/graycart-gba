@@ -92,19 +92,17 @@ pub fn render_scanline(
                     }
                 }
             }
-            3..=5 => {
-                if regs.layer_enable(10) && win.bg[2] {
-                    let pix = bitmap_pixel(
-                        regs,
-                        mode,
-                        i32::from(x),
-                        vram,
-                        palette,
-                        bg2_ref.0,
-                        bg2_ref.1,
-                    );
-                    put_bg(&mut layers, 2, pix, true);
-                }
+            3..=5 if regs.layer_enable(10) && win.bg[2] => {
+                let pix = bitmap_pixel(
+                    regs,
+                    mode,
+                    i32::from(x),
+                    vram,
+                    palette,
+                    bg2_ref.0,
+                    bg2_ref.1,
+                );
+                put_bg(&mut layers, 2, pix, true);
             }
             _ => {}
         }

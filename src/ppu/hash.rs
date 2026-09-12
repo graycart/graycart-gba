@@ -71,7 +71,8 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         0xc67178f2,
     ];
 
-    for chunk in owned.chunks_exact(64) {
+    // Clippy 1.98: prefer as_chunks over chunks_exact(const).
+    for chunk in owned.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
