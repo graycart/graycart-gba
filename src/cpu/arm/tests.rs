@@ -132,3 +132,60 @@ fn pc_relative_add_uses_plus_8() {
     assert_eq!(r, ExecResult::Ok);
     assert_eq!(cpu.regs.get(0), 0x0800_0008);
 }
+
+/// jsmolka arm #224: `mov r0, pc, lsl r0` with Rs-shift samples PC+12.
+#[test]
+fn mov_pc_lsl_rs_uses_plus_12() {
+    let mut cpu = cpu_at(0x0800_0000);
+    let mut mem = FlatRam::new(4);
+    cpu.regs.set(0, 0);
+    // mov r0, pc, lsl r0
+    let r = step(&mut cpu, &mut mem, 0xE1A0_001F);
+    assert_eq!(r, ExecResult::Ok);
+    assert_eq!(cpu.regs.get(0), 0x0800_000C);
+}
+
+/// jsmolka arm #225: `add r0, pc, r0, lsl r0` — Rn=PC also PC+12 under Rs-shift.
+#[test]
+fn add_pc_rm_lsl_rs_uses_plus_12() {
+    let mut cpu = cpu_at(0x0800_0000);
+    let mut mem = FlatRam::new(4);
+    cpu.regs.set(0, 0);
+    // add r0, pc, r0, lsl r0
+    let r = step(&mut cpu, &mut mem, 0xE08F_0010);
+    assert_eq!(r, ExecResult::Ok);
+    assert_eq!(cpu.regs.get(0), 0x0800_000C);
+}
+
+/// jsmolka arm #234: CMP with Rd=15 restores SPSR→CPSR (no Rd write).
+#[test]
+fn cmp_rd15_restores_spsr_without_branch() {
+    let mut cpu = cpu_at(0x0800_0000);
+    let mut mem = FlatRam::new(4);
+    cpu.regs.set(8, 32); // User/System R8
+    cpu.regs.set_mode(Mode::Fiq);
+    cpu.regs.set(8, 64); // FIQ R8
+    cpu.regs.set_spsr(Mode::System.bits());
+    // cmp pc, r0 with Rd=15 encoding (0xE15FF000)
+    let r = step(&mut cpu, &mut mem, 0xE15F_F000);
+    assert_eq!(r, ExecResult::Ok);
+    assert_eq!(cpu.regs.mode(), Mode::System);
+    assert_eq!(cpu.regs.get(8), 32);
+}
+
+/// jsmolka arm #511: STM^ stores User-bank R8 while in FIQ.
+#[test]
+fn stm_user_bank_from_fiq() {
+    let mut cpu = cpu_at(0x0800_0000);
+    let mut mem = FlatRam::new(0x100);
+    let base = 0x40u32;
+    cpu.regs.set(0, base);
+    cpu.regs.set(8, 32); // User R8
+    cpu.regs.set_mode(Mode::Fiq);
+    cpu.regs.set(8, 64); // FIQ R8
+                         // stmfd r0, {r8, r9}^  (S=1, no writeback)
+    let r = step(&mut cpu, &mut mem, 0xE940_0300);
+    assert_eq!(r, ExecResult::Ok);
+    // Fully descending, 2 regs: stores at base-8, base-4
+    assert_eq!(mem.read32(base - 8), 32);
+}

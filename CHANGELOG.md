@@ -16,6 +16,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Fixed
+
+- **jsmolka `arm.gba` P1 gate (honest green):** ARM7TDMI PC+12 when R15 is
+  Rn/Rm under a register-specified shift (`mov r0, pc, lsl r0` / #224–225);
+  S=1 + Rd=15 restores SPSR even for TST/TEQ/CMP/CMN without flushing (#234–235);
+  LDM/STM `^` user-bank transfers, empty Rlist ±0x40, and ARMv4 STM base-in-rlist
+  NEW/OLD base rules. Default CI asserts arm+thumb+memory PASS.
+
 ### Added
 
 - **jsmolka MIT prebuilts (workstream C):** vendored

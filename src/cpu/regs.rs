@@ -148,6 +148,37 @@ impl Regs {
         self.r14[mode.bank().index()] = value;
     }
 
+    /// Read GPR from the **User** bank (LDM/STM `^` force-user transfers).
+    ///
+    /// R0–R7 and R15 are unbanked. R8–R12 use the User/System FIQ-shared bank.
+    /// R13/R14 use the User bank. Cited: GBATEK block transfer S-bit.
+    #[inline]
+    pub fn get_user(&self, r: u8) -> u32 {
+        debug_assert!(r < 16);
+        match r {
+            0..=7 => self.r0_r7[r as usize],
+            8..=12 => self.r8_r12_usr[(r - 8) as usize],
+            13 => self.r13[Mode::User.bank().index()],
+            14 => self.r14[Mode::User.bank().index()],
+            15 => self.r15,
+            _ => unreachable!("register index out of range"),
+        }
+    }
+
+    /// Write GPR in the **User** bank (LDM `^` without R15).
+    #[inline]
+    pub fn set_user(&mut self, r: u8, value: u32) {
+        debug_assert!(r < 16);
+        match r {
+            0..=7 => self.r0_r7[r as usize] = value,
+            8..=12 => self.r8_r12_usr[(r - 8) as usize] = value,
+            13 => self.r13[Mode::User.bank().index()] = value,
+            14 => self.r14[Mode::User.bank().index()] = value,
+            15 => self.r15 = value,
+            _ => unreachable!("register index out of range"),
+        }
+    }
+
     /// Architectural PC (R15). Pipeline skew is applied by the execute / pipeline layer.
     #[inline]
     pub fn pc(&self) -> u32 {

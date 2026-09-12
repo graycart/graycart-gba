@@ -2,14 +2,16 @@
 //!
 //! Cited: GBATEK -- ARM CPU Instruction Set / memory alignments
 //!   https://problemkaputt.de/gbatek.htm
-//! Cited: ARM DDI0210C -- ARM instruction execution
+//! Cited: ARM DDI0210C -- ARM instruction execution / shifted operands / LDM·STM
 //! Note: uses `Cpu.regs` only (no direct `mode`/`regs` module edits). Crude timing.
+//! Note: R15 as Rn/Rm with register-specified shift reads as PC+12 (ARM7TDMI).
+//! Note: LDM/STM S-bit force-user bank + empty Rlist ARMv4 quirks (GBATEK).
 
 use crate::cpu::{cpsr, Cpu, ExceptionKind, IsaState, Mode};
 
 use super::alu::{apply_flags, data_process};
 use super::bus::ArmBus;
-use super::core::{read_reg, write_reg};
+use super::core::{read_reg, read_reg_skew, write_reg, PC_SKEW_ARM_REG_SHIFT};
 use super::decode::{decode, Decoded, MsrSrc, Op, Op2, SingleOffset};
 use super::shifter::{shift_imm_ror, shift_reg_imm, shift_reg_reg, ShiftOut};
 
@@ -146,8 +148,9 @@ fn resolve_op2(cpu: &Cpu, op2: Op2) -> ShiftOut {
     match op2 {
         Op2::Imm { imm8, rot } => shift_imm_ror(imm8, rot, carry_in),
         Op2::RegImmShift { rm, ty, imm } => shift_reg_imm(read_reg(cpu, rm), ty, imm, carry_in),
+        // Rm=R15 with SHIFT(Rs) samples PC+12 (ARM7TDMI pipeline + I-cycle).
         Op2::RegRegShift { rm, ty, rs } => shift_reg_reg(
-            read_reg(cpu, rm),
+            read_reg_skew(cpu, rm, PC_SKEW_ARM_REG_SHIFT),
             ty,
             (read_reg(cpu, rs) & 0xFF) as u8,
             carry_in,
@@ -164,15 +167,24 @@ fn exec_data_processing(
     op2: Op2,
 ) -> ExecResult {
     let shift = resolve_op2(cpu, op2);
-    let rn_val = read_reg(cpu, rn);
+    // Rn=R15 with register-specified shift also reads as PC+12 (jsmolka #225).
+    let rn_val = match op2 {
+        Op2::RegRegShift { .. } => read_reg_skew(cpu, rn, PC_SKEW_ARM_REG_SHIFT),
+        _ => read_reg(cpu, rn),
+    };
     let alu = data_process(opcode, rn_val, shift.value, shift.carry, cpu.regs.c());
 
-    // Rd=R15 + S=1 → restore CPSR from SPSR (exception return), then PC write.
-    if s && rd == 15 && alu.write_rd {
+    // Rd=R15 + S=1 → copy SPSR→CPSR (exception-return / ARM7 "bad" test-op form).
+    // TST/TEQ/CMP/CMN still restore when Rd encodes 15, but do **not** write R15 or
+    // flush the pipeline (jsmolka arm #234/#235). Cited: ARM DDI0210C / GBATEK.
+    if s && rd == 15 {
         cpu.regs.restore_cpsr_from_spsr();
-        write_reg(cpu, 15, alu.result);
-        note_branch(cpu);
-        return ExecResult::Branched;
+        if alu.write_rd {
+            write_reg(cpu, 15, alu.result);
+            note_branch(cpu);
+            return ExecResult::Branched;
+        }
+        return ExecResult::Ok;
     }
 
     if s {
@@ -493,10 +505,62 @@ fn exec_block(
     rn: u8,
     rlist: u16,
 ) -> ExecResult {
+    // Empty Rlist (ARMv4): transfer R15 only; writeback base ±0x40.
+    // Cited: GBATEK — Block Data Transfer (strange empty Rlist effects).
     if rlist == 0 {
-        return ExecResult::Ok;
+        let base = read_reg(cpu, rn);
+        let (addr, wb_value) = if up {
+            if pre {
+                (base.wrapping_add(4), base.wrapping_add(0x40))
+            } else {
+                (base, base.wrapping_add(0x40))
+            }
+        } else if pre {
+            let start = base.wrapping_sub(0x40);
+            (start, start)
+        } else {
+            let start = base.wrapping_sub(0x40);
+            (start.wrapping_add(4), start)
+        };
+        let mut branched = false;
+        if load {
+            let value = bus.read32(addr & !3);
+            if s_bit {
+                cpu.regs.restore_cpsr_from_spsr();
+            }
+            write_reg(cpu, 15, value);
+            branched = true;
+        } else {
+            // PC+12 store (skewed read is +8).
+            let value = read_reg(cpu, 15).wrapping_add(4);
+            bus.write32(addr & !3, value);
+        }
+        if writeback && rn != 15 {
+            cpu.regs.set(rn, wb_value);
+        }
+        if branched {
+            note_branch(cpu);
+            ExecResult::Branched
+        } else {
+            ExecResult::Ok
+        }
+    } else {
+        exec_block_rlist(cpu, bus, load, writeback, s_bit, up, pre, rn, rlist)
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn exec_block_rlist(
+    cpu: &mut Cpu,
+    bus: &mut impl ArmBus,
+    load: bool,
+    writeback: bool,
+    s_bit: bool,
+    up: bool,
+    pre: bool,
+    rn: u8,
+    rlist: u16,
+) -> ExecResult {
     let mut count = 0u32;
     for i in 0..16 {
         if rlist & (1 << i) != 0 {
@@ -519,9 +583,13 @@ fn exec_block(
         (start.wrapping_add(4), start)
     };
 
-    // S-bit user-bank transfers need banked accessors from regs; LDM ^ with R15
-    // restores SPSR. Other ^ forms TBD with pipeline/exception bring-up.
-    let _ = s_bit;
+    // S-bit: LDM with R15 → SPSR→CPSR; otherwise force User-bank GPR transfer.
+    // Cited: GBATEK — Block Data Transfer (PSR & force user bit).
+    let user_bank = s_bit && !(load && (rlist & (1 << 15)) != 0);
+    let rn_in_list = rlist & (1 << rn) != 0;
+    // ARMv4 STM: if Rn is in Rlist, store OLD base when Rn is the lowest set bit,
+    // otherwise store the writeback (NEW) base. Cited: GBATEK empty/Rb-in-rlist notes.
+    let rn_is_lowest_in_list = rn_in_list && (rlist & ((1u16 << rn) - 1)) == 0;
 
     let mut branched = false;
     for i in 0..16u8 {
@@ -536,24 +604,36 @@ fn exec_block(
                 }
                 write_reg(cpu, 15, value);
                 branched = true;
+            } else if user_bank {
+                cpu.regs.set_user(i, value);
             } else {
                 cpu.regs.set(i, value);
             }
         } else {
-            let mut value = read_reg(cpu, i);
+            let mut value = if !user_bank && i == rn && rn_in_list && !rn_is_lowest_in_list {
+                wb_value
+            } else if user_bank {
+                cpu.regs.get_user(i)
+            } else {
+                read_reg(cpu, i)
+            };
             if i == 15 {
-                value = value.wrapping_add(4);
+                // ARM7 STM PC is PC+12; skewed read is already +8.
+                value = if user_bank {
+                    cpu.regs.pc().wrapping_add(12)
+                } else {
+                    value.wrapping_add(4)
+                };
             }
             bus.write32(addr & !3, value);
         }
         addr = addr.wrapping_add(4);
     }
 
-    if writeback && rn != 15 {
-        let rn_in_list = rlist & (1 << rn) != 0;
-        if !(load && rn_in_list) {
-            cpu.regs.set(rn, wb_value);
-        }
+    if writeback && rn != 15 && !(load && rn_in_list) {
+        // Force-user transfers: writeback still updates the *current* mode's Rn
+        // when W is set (tests avoid W with ^; keep current-bank writeback).
+        cpu.regs.set(rn, wb_value);
     }
 
     if branched {
