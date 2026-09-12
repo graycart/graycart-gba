@@ -39,7 +39,7 @@ Do not add commercial cartridges or BIOS dumps under this tree.
 ```text
 tests/fixtures/
 ├── README.md          # this license table (mandatory)
-├── jsmolka/           # MIT — empty until vendored prebuilts
+├── jsmolka/           # MIT — LICENSE + arm/thumb path stubs (ROMs later)
 ├── mgba-suite/        # MIT — empty until suite.gba / build script
 ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
 └── tonc/              # CC0 — empty until selected demos
