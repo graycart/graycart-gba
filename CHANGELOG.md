@@ -18,6 +18,13 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Fixed
 
+- **BiosHle LZ77 / RL / Diff decompress (`walter/bios-hle-swi12-lz77-4933`):** After the
+  Halt/IntrWait fix, Dave’s FireRed `--debug` log showed
+  `swi unhandled num=0x12` (LZ77UnCompWrite16bit) twice early — CPU kept running
+  (`DISPCNT=0x0140`, some pixels) but tiles stayed garbage. BiosHle now implements
+  SWI `11h`/`12h` (LZ77 Write8/Write16), `14h`/`15h` (RL), `16h`–`18h` (Diff8/16
+  unfilter) with synthetic unit payloads (no commercial ROMs). Crate **0.1.6**.
+
 - **BiosHle Halt / IntrWait / VBlankIntrWait / RegisterRamReset + no empty-BIOS vector
   (`walter/gba-black-screen-bios-hle-ae69`):** Dave’s FireRed `--debug` log showed
   `pc` wandering at `0x00112328` / `0x0258F7DC` / `0x031A7B28` with `DISPCNT=0` after a

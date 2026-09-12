@@ -817,8 +817,8 @@ mod tests {
     #[test]
     fn bios_hle_unknown_swi_does_not_vector_to_empty_bios() {
         let mut rom = vec![0u8; 0x100];
-        // ARM SWI 0x11 (LZ77UnCompWram) — not HLE'd yet — then B .
-        rom[0..4].copy_from_slice(&0xEF11_0000u32.to_le_bytes());
+        // ARM SWI 0x13 (HuffUnComp) — still stubbed — then B .
+        rom[0..4].copy_from_slice(&0xEF13_0000u32.to_le_bytes());
         rom[4..8].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
         let mut gba = Gba::new();
         gba.load_rom(&rom);
