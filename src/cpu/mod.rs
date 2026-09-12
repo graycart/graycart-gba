@@ -1,8 +1,28 @@
-//! ARM7TDMI CPU placeholder (P1).
+//! ARM7TDMI CPU core (P1 bring-up).
 //!
-//! Module layout from graycart-gba implementation plan §2.2.
-//! Behavior: see research `docs/graycart-gba/01-cpu-arm7tdmi.md` (not implemented).
+//! Cited: GBATEK -- ARM CPU Overview / Register Set / Flags
+//!   https://problemkaputt.de/gbatek.htm
+//! Cited: ARM DDI0210C (ARM7TDMI TRM r4p1) -- programmer's model
+//! Note: this module currently owns registers, CPSR/SPSR, and modes only;
+//! decode/execute, pipeline, and exceptions are sibling P1 streams.
+//!
+//! Research: Project store `docs/graycart-gba/01-cpu-arm7tdmi.md`.
 
-/// Stub CPU — no ISA decode yet.
+mod mode;
+mod regs;
+
+pub use mode::Mode;
+pub use regs::{cpsr, Regs};
+
+/// ARM7TDMI core shell. ISA execute lands in sibling modules on `dev/p1-cpu`.
 #[derive(Debug, Default)]
-pub struct Cpu;
+pub struct Cpu {
+    pub regs: Regs,
+}
+
+impl Cpu {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
