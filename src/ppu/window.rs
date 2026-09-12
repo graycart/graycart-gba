@@ -1,16 +1,19 @@
-//! Window enable masks — P4 functional (not cycle-perfect).
+//! Window enable masks — WIN0 / WIN1 / OBJWIN.
 //!
 //! Cited: GBATEK — Window Feature
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/03-ppu.md` §6
+//! Note: functional regions; not cycle-perfect.
 
+use super::obj::obj_window_covers;
 use super::regs::LcdRegs;
 
-/// Which window region applies at (x,y). Priority: WIN0 > WIN1 > outside.
+/// Which window region applies at (x,y). Priority: WIN0 > WIN1 > OBJWIN > outside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WinRegion {
     Win0,
     Win1,
+    ObjWin,
     Outside,
 }
 
@@ -44,7 +47,8 @@ impl WinEnables {
 
 #[must_use]
 pub fn windows_active(regs: &LcdRegs) -> bool {
-    regs.layer_enable(13) || regs.layer_enable(14) // WIN0 / WIN1 master
+    // WIN0 / WIN1 / OBJWIN master enables.
+    regs.layer_enable(13) || regs.layer_enable(14) || regs.layer_enable(15)
 }
 
 #[must_use]
@@ -68,24 +72,28 @@ fn in_win_y(y: u16, win_v: u16) -> bool {
 }
 
 #[must_use]
-pub fn region_at(regs: &LcdRegs, x: u16, y: u16) -> WinRegion {
+pub fn region_at(regs: &LcdRegs, x: u16, y: u16, oam: &[u8], vram: &[u8]) -> WinRegion {
     if regs.layer_enable(13) && in_win_x(x, regs.win0_h) && in_win_y(y, regs.win0_v) {
         return WinRegion::Win0;
     }
     if regs.layer_enable(14) && in_win_x(x, regs.win1_h) && in_win_y(y, regs.win1_v) {
         return WinRegion::Win1;
     }
+    if regs.layer_enable(15) && obj_window_covers(regs, x, y, oam, vram) {
+        return WinRegion::ObjWin;
+    }
     WinRegion::Outside
 }
 
 #[must_use]
-pub fn enables_at(regs: &LcdRegs, x: u16, y: u16) -> WinEnables {
+pub fn enables_at(regs: &LcdRegs, x: u16, y: u16, oam: &[u8], vram: &[u8]) -> WinEnables {
     if !windows_active(regs) {
         return WinEnables::all_on();
     }
-    match region_at(regs, x, y) {
+    match region_at(regs, x, y, oam, vram) {
         WinRegion::Win0 => WinEnables::from_nibble(regs.winin & 0x3F),
         WinRegion::Win1 => WinEnables::from_nibble((regs.winin >> 8) & 0x3F),
+        WinRegion::ObjWin => WinEnables::from_nibble((regs.winout >> 8) & 0x3F),
         WinRegion::Outside => WinEnables::from_nibble(regs.winout & 0x3F),
     }
 }

@@ -7,11 +7,12 @@
 use super::affine::{latch_ref_8_8, sample_x, sample_y};
 use super::bg::BgPixel;
 use super::regs::LcdRegs;
+use super::vram_fetch;
 
 #[inline]
-fn read16(mem: &[u8], off: usize) -> u16 {
-    let lo = u16::from(*mem.get(off).unwrap_or(&0));
-    let hi = u16::from(*mem.get(off + 1).unwrap_or(&0));
+fn pal16(palette: &[u8], off: usize) -> u16 {
+    let lo = u16::from(*palette.get(off).unwrap_or(&0));
+    let hi = u16::from(*palette.get(off + 1).unwrap_or(&0));
     lo | (hi << 8)
 }
 
@@ -36,7 +37,7 @@ pub fn bitmap_pixel(
             }
             let off = (ty as usize) * 240 * 2 + (tx as usize) * 2;
             BgPixel {
-                color: read16(vram, off),
+                color: vram_fetch::half(vram, off),
                 priority: prio,
                 transparent: false,
             }
@@ -47,7 +48,7 @@ pub fn bitmap_pixel(
             }
             let base = if regs.frame_select() { 0xA000 } else { 0 };
             let off = base + (ty as usize) * 240 + (tx as usize);
-            let idx = u16::from(*vram.get(off).unwrap_or(&0));
+            let idx = u16::from(vram_fetch::byte(vram, off));
             if idx == 0 {
                 return BgPixel {
                     color: 0,
@@ -55,7 +56,7 @@ pub fn bitmap_pixel(
                     transparent: true,
                 };
             }
-            let color = read16(palette, usize::from(idx) * 2);
+            let color = pal16(palette, usize::from(idx) * 2);
             BgPixel {
                 color,
                 priority: prio,
@@ -70,7 +71,7 @@ pub fn bitmap_pixel(
             let base = if regs.frame_select() { 0xA000 } else { 0 };
             let off = base + (ty as usize) * 160 * 2 + (tx as usize) * 2;
             BgPixel {
-                color: read16(vram, off),
+                color: vram_fetch::half(vram, off),
                 priority: prio,
                 transparent: false,
             }

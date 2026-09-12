@@ -1,13 +1,15 @@
-//! Scanline compositor — modes 0–5 + OBJ — P4.
+//! Scanline compositor — modes 0–5 + OBJ — blend targets + windows.
 //!
-//! Cited: GBATEK — LCD Video / Layer Priority
+//! Cited: GBATEK — LCD Video / Layer Priority / Color Special Effects
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/03-ppu.md` §12
 //! Note: functional priority + blend; not cycle/dot accurate.
 
 use super::bg::{affine_tile_pixel, text_pixel, BgPixel};
 use super::bitmap::bitmap_pixel;
-use super::blend::{apply_blend, green_swap_line};
+use super::blend::{
+    apply_blend, green_swap_line, LAYER_BD, LAYER_BG0, LAYER_BG2, LAYER_BG3, LAYER_OBJ,
+};
 use super::obj::obj_pixel_at;
 use super::regs::LcdRegs;
 use super::window::enables_at;
@@ -17,6 +19,22 @@ fn backdrop(palette: &[u8]) -> u16 {
     let lo = u16::from(*palette.first().unwrap_or(&0));
     let hi = u16::from(*palette.get(1).unwrap_or(&0));
     lo | (hi << 8)
+}
+
+#[derive(Clone, Copy)]
+struct Cand {
+    prio: u8,
+    is_obj: bool,
+    layer: u8,
+    color: u16,
+    semi: bool,
+}
+
+impl Cand {
+    #[inline]
+    fn beats(self, other: Self) -> bool {
+        self.prio < other.prio || (self.prio == other.prio && self.is_obj && !other.is_obj)
+    }
 }
 
 /// Render one visible scanline into `out` (240 RGB555 pixels).
@@ -40,25 +58,48 @@ pub fn render_scanline(
     let bd = backdrop(palette);
 
     for x in 0..240u16 {
-        let win = enables_at(regs, x, line);
+        let win = enables_at(regs, x, line, oam, vram);
 
-        // Collect BG candidates enabled for this mode + window.
-        let mut layers: [(u8, u16, bool); 5] = [(3, 0, true); 5]; // prio, color, transparent
-                                                                  // index 0–3 = BG, 4 = OBJ placeholder filled below
+        let mut top: Option<Cand> = None;
+        let mut second: Option<Cand> = None;
 
-        let put_bg = |layers: &mut [(u8, u16, bool); 5], bg: usize, pix: BgPixel, win_on: bool| {
-            if !win_on || pix.transparent {
-                return;
+        let consider = |top: &mut Option<Cand>, second: &mut Option<Cand>, c: Cand| match *top {
+            None => *top = Some(c),
+            Some(t) if c.beats(t) => {
+                *second = Some(t);
+                *top = Some(c);
             }
-            layers[bg] = (pix.priority, pix.color, false);
+            Some(_) => match *second {
+                None => *second = Some(c),
+                Some(s) if c.beats(s) => *second = Some(c),
+                _ => {}
+            },
         };
+
+        let put_bg =
+            |top: &mut Option<Cand>, second: &mut Option<Cand>, pix: BgPixel, layer: u8| {
+                if pix.transparent {
+                    return;
+                }
+                consider(
+                    top,
+                    second,
+                    Cand {
+                        prio: pix.priority,
+                        is_obj: false,
+                        layer,
+                        color: pix.color,
+                        semi: false,
+                    },
+                );
+            };
 
         match mode {
             0 => {
                 for bg in 0..4 {
                     if regs.layer_enable(8 + bg as u16) && win.bg[bg] {
                         let pix = text_pixel(regs, bg, x, line, vram, palette);
-                        put_bg(&mut layers, bg, pix, true);
+                        put_bg(&mut top, &mut second, pix, LAYER_BG0 + bg as u8);
                     }
                 }
             }
@@ -66,7 +107,7 @@ pub fn render_scanline(
                 for bg in 0..2 {
                     if regs.layer_enable(8 + bg as u16) && win.bg[bg] {
                         let pix = text_pixel(regs, bg, x, line, vram, palette);
-                        put_bg(&mut layers, bg, pix, true);
+                        put_bg(&mut top, &mut second, pix, LAYER_BG0 + bg as u8);
                     }
                 }
                 if regs.layer_enable(10) && win.bg[2] {
@@ -79,7 +120,7 @@ pub fn render_scanline(
                         bg2_ref.0,
                         bg2_ref.1,
                     );
-                    put_bg(&mut layers, 2, pix, true);
+                    put_bg(&mut top, &mut second, pix, LAYER_BG2);
                 }
             }
             2 => {
@@ -88,7 +129,8 @@ pub fn render_scanline(
                         let r = if bg == 2 { bg2_ref } else { bg3_ref };
                         let pix =
                             affine_tile_pixel(regs, bg, i32::from(x), vram, palette, r.0, r.1);
-                        put_bg(&mut layers, bg, pix, true);
+                        let layer = if bg == 2 { LAYER_BG2 } else { LAYER_BG3 };
+                        put_bg(&mut top, &mut second, pix, layer);
                     }
                 }
             }
@@ -102,62 +144,39 @@ pub fn render_scanline(
                     bg2_ref.0,
                     bg2_ref.1,
                 );
-                put_bg(&mut layers, 2, pix, true);
+                put_bg(&mut top, &mut second, pix, LAYER_BG2);
             }
             _ => {}
         }
 
-        let obj = if win.obj {
-            obj_pixel_at(regs, x, line, oam, vram, palette)
-        } else {
-            super::obj::ObjPixel::NONE
-        };
-
-        // Pick top-most by priority (0 highest). OBJ wins ties vs BG.
-        // Build sorted candidates: (prio, is_obj, color)
-        let mut top: Option<(u8, bool, u16)> = None;
-        let mut second: Option<u16> = None;
-
-        let consider = |top: &mut Option<(u8, bool, u16)>,
-                        second: &mut Option<u16>,
-                        prio: u8,
-                        is_obj: bool,
-                        color: u16| {
-            match *top {
-                None => *top = Some((prio, is_obj, color)),
-                Some((tp, _, tc)) => {
-                    let wins = prio < tp || (prio == tp && is_obj);
-                    if wins {
-                        *second = Some(tc);
-                        *top = Some((prio, is_obj, color));
-                    } else if second.is_none() {
-                        *second = Some(color);
-                    }
-                }
-            }
-        };
-
-        for (p, c, tr) in &layers {
-            if !*tr {
-                consider(&mut top, &mut second, *p, false, *c);
+        if win.obj {
+            let obj = obj_pixel_at(regs, x, line, oam, vram, palette);
+            if !obj.transparent {
+                consider(
+                    &mut top,
+                    &mut second,
+                    Cand {
+                        prio: obj.priority,
+                        is_obj: true,
+                        layer: LAYER_OBJ,
+                        color: obj.color,
+                        semi: obj.semi_transparent,
+                    },
+                );
             }
         }
-        if !obj.transparent {
-            consider(&mut top, &mut second, obj.priority, true, obj.color);
-        }
 
-        let (pixel, blend_top_is_obj_semi) = match top {
-            Some((_, is_obj, c)) => (c, is_obj && obj.semi_transparent),
-            None => (bd, false),
+        let (pixel, top_layer, force_alpha) = match top {
+            Some(t) => (t.color, t.layer, t.semi),
+            None => (bd, LAYER_BD, false),
+        };
+        let bottom = match second {
+            Some(s) => Some((s.color, s.layer)),
+            None if top_layer != LAYER_BD => Some((bd, LAYER_BD)),
+            None => None,
         };
 
-        let out_c = if blend_top_is_obj_semi {
-            // Semi-transparent OBJ forces alpha vs next.
-            apply_blend(regs, pixel, second.or(Some(bd)), win.blend)
-        } else {
-            apply_blend(regs, pixel, second, win.blend)
-        };
-        out[usize::from(x)] = out_c;
+        out[usize::from(x)] = apply_blend(regs, pixel, top_layer, bottom, win.blend, force_alpha);
     }
 
     green_swap_line(out, regs.greenswap & 1 != 0);
