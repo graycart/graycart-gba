@@ -22,7 +22,7 @@ Do **not** commit commercial ROMs, `.sav` / state files, or Nintendo BIOS / boot
 
 ## Attribution
 
-If your change references external docs or other projects’ code, credit them **at the top of the file** you edit — see [`ATTRIBUTION.md`](./ATTRIBUTION.md) and the Attribution section in [`AGENTS.md`](./AGENTS.md). Provenance indexes alone are not enough.
+If your change references external docs or other projects' code, credit them **at the top of the file** you edit -- see [`ATTRIBUTION.md`](./ATTRIBUTION.md) and the Attribution section in [`AGENTS.md`](./AGENTS.md). Provenance indexes alone are not enough.
 
 ## License
 

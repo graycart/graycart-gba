@@ -6,7 +6,7 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 
 ## Status
 
-Phase 0 scaffold: crate `graycart-gba` **0.0.1** (lib + headless bin stubs), CI, fixtures stubs. No subsystem behavior yet — do not start P1 CPU work until Phase 0 exit.
+Phase 0 scaffold: crate `graycart-gba` **0.0.1** (lib + headless bin stubs), CI, fixtures stubs. No subsystem behavior yet - do not start P1 CPU work until Phase 0 exit.
 
 | Doc | What |
 |-----|------|
@@ -28,7 +28,7 @@ Default CI stays green without BIOS images, commercial ROMs, or `cargo test -- -
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. Scaffold is **0.0.1**; first tagged runnable milestone targets **0.1.0** (Project store `08-implementation-plan.md` §5). Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. Scaffold is **0.0.1**; first tagged runnable milestone targets **0.1.0** (Project store `08-implementation-plan.md` section 5). Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 
@@ -38,4 +38,4 @@ Default CI stays green without BIOS images, commercial ROMs, or `cargo test -- -
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 Graycart.
+[MIT](LICENSE) - Copyright (c) 2026 Graycart.

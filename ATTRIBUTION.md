@@ -1,12 +1,12 @@
-# Attribution — graycart-gba
+# Attribution -- graycart-gba
 
 Mandatory for in-repo Rust and Markdown that depend on external code or documentation.
 
-Also stated in [`AGENTS.md`](./AGENTS.md). Provenance archives (when present under `docs/` or research packs) remain required for research excerpts — they do **not** replace per-file credits on sources that use those materials.
+Also stated in [`AGENTS.md`](./AGENTS.md). Provenance archives (when present under `docs/` or research packs) remain required for research excerpts -- they do **not** replace per-file credits on sources that use those materials.
 
 ## Rule
 
-If a file references someone else’s **code** or **internet documentation** (GBATEK, Pan Docs, ARM TRM, blogs, another emulator, SDK notes, etc.), put **credit at the top of that file**:
+If a file references someone else's **code** or **internet documentation** (GBATEK, Pan Docs, ARM TRM, blogs, another emulator, SDK notes, etc.), put **credit at the top of that file**:
 
 | Field | Required |
 |-------|----------|
@@ -26,23 +26,23 @@ Does **not** replace:
 
 Never commit full manuals, commercial ROMs, or Nintendo BIOS/boot images.
 
-## Example — Rust (`.rs`)
+## Example -- Rust (`.rs`)
 
 ```rust
 //! Prefetch buffer fill/drain stub for Game Pak ROM.
 //!
-//! Cited: GBATEK — Gamepak Prefetch Buffer
+//! Cited: GBATEK -- Gamepak Prefetch Buffer
 //!   https://problemkaputt.de/gbatek.htm
 //! Cross-check: NanoBoyAdvance prefetch notes (secondary; behavior TBD until P8).
 ```
 
-## Example — Markdown (`.md`)
+## Example -- Markdown (`.md`)
 
 HTML comment (keeps the visible title clean):
 
 ```markdown
 <!--
-Cited: GBATEK — LCD Video Controller
+Cited: GBATEK -- LCD Video Controller
 URL: https://problemkaputt.de/gbatek.htm
 Note: timing numbers for HDraw/HBlank; not a full reprint.
 -->
@@ -57,7 +57,7 @@ Or a visible header block under the title:
 title: GBATEK Interrupt Control
 URL: https://problemkaputt.de/gbatek.htm
 retrieved: 2026-09-12
-license/terms: GBATEK site terms — minimal excerpt only
+license/terms: GBATEK site terms -- minimal excerpt only
 why cited: IE/IF/IME bit layout
 ```
 
@@ -69,5 +69,5 @@ why cited: IE/IF/IME bit layout
 
 ## Related
 
-- [`AGENTS.md`](./AGENTS.md) — full agent norms
-- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — short contributor blurb
+- [`AGENTS.md`](./AGENTS.md) -- full agent norms
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) -- short contributor blurb
