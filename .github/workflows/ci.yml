@@ -1,0 +1,50 @@
+# Credits: adapted from graycart-gb `.github/workflows/ci.yml`
+#   https://github.com/graycart/graycart-gb/blob/main/.github/workflows/ci.yml
+# Policy + gates: docs/graycart-gba PHASES P0 / 08-implementation-plan §3.1 / §6;
+#   AGENTS.md once landed on this branch.
+#
+# CI: fmt + clippy + cargo test on ubuntu / macOS / windows.
+# fail-fast is false so one OS flake does not cancel the others.
+# RUST_MIN_STACK keeps deep emulator recursion from overflowing the default thread stack.
+#
+# Policy: ROM / conformance matrices marked `#[ignore]` are manual / opt-in only.
+# Do not run `cargo test -- --ignored` in this workflow — those need fixtures under
+# tests/fixtures/ or local carts/ and are not CI-blocking. Never require BIOS images.
+# Windows PE/GUI-subsystem checks land with host packaging (tools/); omitted in P0.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_MIN_STACK: "16777216"
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux audio/input libs
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        # Default cargo test only — ignored ROM matrices stay opt-in (see header).
+        run: cargo test
