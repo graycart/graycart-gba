@@ -1,9 +1,11 @@
-//! Shared CPU conformance harness stubs (graycart-gb Outcome posture).
+//! Shared CPU conformance harness stubs (Outcome / launch mode).
 //!
 //! Cited: graycart-gb `tests/roms/harness.rs` Outcome enum
 //!   https://github.com/graycart/graycart-gb
 //! Cited: graycart-gba test strategy §5.1
 //!   Project store: `docs/graycart-gba/07-test-strategy.md`
+//! Note: full `GbaTestRom` runner lives in `tests/roms/harness.rs`; this module
+//! keeps the small enum surface for CPU integration tests only.
 
 #![allow(dead_code)] // stubs exercised as the ROM runner fills in
 
@@ -18,13 +20,14 @@ pub enum RomLaunchMode {
     Multiboot,
 }
 
-/// Result of one conformance ROM run.
+/// Result of one conformance ROM run (mirrors `tests/roms/harness.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Pass,
     Fail(String),
     Timeout,
     Unsupported(String),
+    Skipped(String),
 }
 
 impl Outcome {
@@ -34,13 +37,14 @@ impl Outcome {
             Self::Fail(_) => "FAIL",
             Self::Timeout => "TIMEOUT",
             Self::Unsupported(_) => "UNSUPPORTED",
+            Self::Skipped(_) => "SKIPPED",
         }
     }
 
     pub fn detail(&self) -> &str {
         match self {
             Self::Pass | Self::Timeout => "",
-            Self::Fail(s) | Self::Unsupported(s) => s,
+            Self::Fail(s) | Self::Unsupported(s) | Self::Skipped(s) => s,
         }
     }
 }

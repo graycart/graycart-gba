@@ -98,6 +98,10 @@ fn harness_outcome_labels() {
         harness::Outcome::Unsupported("no rom".into()).label(),
         "UNSUPPORTED"
     );
+    assert_eq!(
+        harness::Outcome::Skipped("apparatus".into()).label(),
+        "SKIPPED"
+    );
     assert_eq!(harness::Outcome::Fail("n".into()).detail(), "n");
     let _ = harness::RomLaunchMode::BiosHle;
     let _ = harness::RomLaunchMode::BiosLle;
