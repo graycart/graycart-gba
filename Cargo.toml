@@ -1,0 +1,18 @@
+[package]
+name = "graycart-gba"
+version = "0.0.1"
+edition = "2021"
+description = "Graycart Game Boy Advance emulator (scaffold)"
+license = "MIT"
+repository = "https://github.com/graycart/graycart-gba"
+readme = "README.md"
+keywords = ["emulator", "gba", "gameboy-advance"]
+categories = ["emulators"]
+
+[[bin]]
+name = "graycart-gba"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
