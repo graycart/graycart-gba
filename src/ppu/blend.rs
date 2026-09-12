@@ -1,10 +1,19 @@
-//! Color special effects (alpha / brightness) — P4 functional.
+//! Color special effects (alpha / brightness) — P4 functional + target layers.
 //!
 //! Cited: GBATEK — Color Special Effects
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/03-ppu.md` §7
+//! Note: semi-transparent OBJ forces alpha + 1st-target (overrides BLDCNT 4 / 6–7).
 
 use super::regs::LcdRegs;
+
+/// BLDCNT layer indices: BG0–3, OBJ, Backdrop.
+pub const LAYER_BG0: u8 = 0;
+pub const LAYER_BG1: u8 = 1;
+pub const LAYER_BG2: u8 = 2;
+pub const LAYER_BG3: u8 = 3;
+pub const LAYER_OBJ: u8 = 4;
+pub const LAYER_BD: u8 = 5;
 
 #[inline]
 fn clamp5(v: i32) -> u16 {
@@ -21,20 +30,51 @@ pub fn pack_rgb555(r: u16, g: u16, b: u16) -> u16 {
     (r & 0x1F) | ((g & 0x1F) << 5) | ((b & 0x1F) << 10)
 }
 
-/// Apply BLDCNT effect when `blend_ok` (window allows). Top is 1st target pixel.
+#[inline]
+fn is_1st_target(bldcnt: u16, layer: u8) -> bool {
+    bldcnt & (1 << layer) != 0
+}
+
+#[inline]
+fn is_2nd_target(bldcnt: u16, layer: u8) -> bool {
+    bldcnt & (1 << (8 + layer)) != 0
+}
+
+/// Apply BLDCNT when `blend_ok` (window allows).
+///
+/// `force_alpha`: semi-transparent OBJ — always 1st target + alpha mode.
 #[must_use]
-pub fn apply_blend(regs: &LcdRegs, top: u16, bottom: Option<u16>, blend_ok: bool) -> u16 {
+pub fn apply_blend(
+    regs: &LcdRegs,
+    top: u16,
+    top_layer: u8,
+    bottom: Option<(u16, u8)>,
+    blend_ok: bool,
+    force_alpha: bool,
+) -> u16 {
     if !blend_ok {
         return top;
     }
-    let mode = (regs.bldcnt >> 6) & 3;
+    let mut mode = (regs.bldcnt >> 6) & 3;
+    if force_alpha {
+        mode = 1;
+    }
+    if mode == 0 {
+        return top;
+    }
+    if !force_alpha && !is_1st_target(regs.bldcnt, top_layer) {
+        return top;
+    }
+
     let (r1, g1, b1) = rgb555_channels(top);
     match mode {
         1 => {
-            // Alpha: need 2nd target.
-            let Some(bot) = bottom else {
+            let Some((bot, bot_layer)) = bottom else {
                 return top;
             };
+            if !is_2nd_target(regs.bldcnt, bot_layer) {
+                return top;
+            }
             let eva = (regs.bldalpha & 0x1F).min(16);
             let evb = ((regs.bldalpha >> 8) & 0x1F).min(16);
             let (r2, g2, b2) = rgb555_channels(bot);

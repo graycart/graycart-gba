@@ -3,10 +3,11 @@
 //! Cited: GBATEK — BG Control / BG Text / BG Rotation
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/03-ppu.md` §3
-//! Note: mosaic applied coarsely (block UL sample); not cycle-perfect.
+//! Note: mosaic = upper-left of block (size−1 fields); not cycle-perfect.
 
 use super::affine::{latch_ref_8_8, sample_x, sample_y};
 use super::regs::LcdRegs;
+use super::vram_fetch;
 
 /// Opaque RGB555 pixel or transparent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,15 +26,10 @@ impl BgPixel {
 }
 
 #[inline]
-fn read16(mem: &[u8], off: usize) -> u16 {
-    let lo = u16::from(*mem.get(off).unwrap_or(&0));
-    let hi = u16::from(*mem.get(off + 1).unwrap_or(&0));
-    lo | (hi << 8)
-}
-
-#[inline]
 fn pal_color(palette: &[u8], index: usize) -> u16 {
-    read16(palette, index.saturating_mul(2))
+    let lo = u16::from(*palette.get(index.saturating_mul(2)).unwrap_or(&0));
+    let hi = u16::from(*palette.get(index.saturating_mul(2) + 1).unwrap_or(&0));
+    lo | (hi << 8)
 }
 
 /// Screen size in tiles for text BGs.
@@ -67,6 +63,12 @@ fn priority(bgcnt: u16) -> u8 {
     (bgcnt & 3) as u8
 }
 
+#[inline]
+fn mosaic_snap(coord: u16, size_minus_1: u16) -> u16 {
+    let size = size_minus_1 + 1;
+    coord - (coord % size)
+}
+
 /// Fetch one text-BG pixel at screen (x, y).
 pub fn text_pixel(
     regs: &LcdRegs,
@@ -78,9 +80,16 @@ pub fn text_pixel(
 ) -> BgPixel {
     let bgcnt = regs.bgcnt[bg];
     let prio = priority(bgcnt);
+    let (mut sx, mut sy) = (x, y);
+    if bgcnt & (1 << 6) != 0 {
+        let mh = regs.mosaic & 0xF;
+        let mv = (regs.mosaic >> 4) & 0xF;
+        sx = mosaic_snap(sx, mh);
+        sy = mosaic_snap(sy, mv);
+    }
     let (sw, sh) = text_screen_tiles(bgcnt >> 14);
-    let mut mx = (x.wrapping_add(regs.bg_hofs[bg])) & 0x1FF;
-    let mut my = (y.wrapping_add(regs.bg_vofs[bg])) & 0x1FF;
+    let mut mx = (sx.wrapping_add(regs.bg_hofs[bg])) & 0x1FF;
+    let mut my = (sy.wrapping_add(regs.bg_vofs[bg])) & 0x1FF;
     // Wrap within screen size in tiles*8.
     let pix_w = sw * 8;
     let pix_h = sh * 8;
@@ -98,7 +107,7 @@ pub fn text_pixel(
     };
     let screen_off = screen_base(bgcnt) + usize::from(sb_y * 2 + sb_x) * 0x800;
     let entry_off = screen_off + (usize::from(ty) * 32 + usize::from(tx)) * 2;
-    let entry = read16(vram, entry_off);
+    let entry = vram_fetch::half(vram, entry_off);
     let tile = entry & 0x3FF;
     let hflip = entry & (1 << 10) != 0;
     let vflip = entry & (1 << 11) != 0;
@@ -116,7 +125,7 @@ pub fn text_pixel(
     let char0 = char_base(bgcnt);
     if is_8bpp(bgcnt) {
         let tile_off = char0 + usize::from(tile) * 64 + usize::from(fy) * 8 + usize::from(fx);
-        let idx = u16::from(*vram.get(tile_off).unwrap_or(&0));
+        let idx = u16::from(vram_fetch::byte(vram, tile_off));
         if idx == 0 {
             return BgPixel {
                 color: 0,
@@ -131,7 +140,7 @@ pub fn text_pixel(
         }
     } else {
         let tile_off = char0 + usize::from(tile) * 32 + usize::from(fy) * 4 + usize::from(fx / 2);
-        let byte = *vram.get(tile_off).unwrap_or(&0);
+        let byte = vram_fetch::byte(vram, tile_off);
         let nibble = if fx & 1 == 0 { byte & 0xF } else { byte >> 4 };
         if nibble == 0 {
             return BgPixel {
@@ -173,8 +182,15 @@ pub fn affine_tile_pixel(
     } else {
         (regs.bg3_pa, regs.bg3_pc)
     };
-    let mut tx = sample_x(internal_x, pa, x);
-    let mut ty = sample_y(internal_y, pc, x);
+    // Mosaic snaps screen X before affine sample (coarse / common emulator model).
+    let sx = if bgcnt & (1 << 6) != 0 {
+        let mh = i32::from(regs.mosaic & 0xF) + 1;
+        x - x.rem_euclid(mh)
+    } else {
+        x
+    };
+    let mut tx = sample_x(internal_x, pa, sx);
+    let mut ty = sample_y(internal_y, pc, sx);
     let pix = map_tiles * 8;
     let wrap = bgcnt & (1 << 13) != 0;
     if tx < 0 || ty < 0 || tx >= pix || ty >= pix {
@@ -192,10 +208,10 @@ pub fn affine_tile_pixel(
     let map_off = screen_base(bgcnt)
         + usize::from(tile_y) * usize::from(map_tiles as u16)
         + usize::from(tile_x);
-    let tile = u16::from(*vram.get(map_off).unwrap_or(&0));
+    let tile = u16::from(vram_fetch::byte(vram, map_off));
     let char0 = char_base(bgcnt);
     let tile_off = char0 + usize::from(tile) * 64 + usize::from(fy) * 8 + usize::from(fx);
-    let idx = u16::from(*vram.get(tile_off).unwrap_or(&0));
+    let idx = u16::from(vram_fetch::byte(vram, tile_off));
     if idx == 0 {
         return BgPixel {
             color: 0,

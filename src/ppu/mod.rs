@@ -15,6 +15,7 @@ pub mod obj;
 pub mod regs;
 pub mod render;
 pub mod timing;
+pub mod vram_fetch;
 pub mod window;
 
 #[cfg(test)]
@@ -23,6 +24,8 @@ mod tests_modes;
 mod tests_obj;
 #[cfg(test)]
 mod tests_timing;
+#[cfg(test)]
+mod tests_video;
 
 use crate::bus::Bus;
 use crate::irq::Irq;
