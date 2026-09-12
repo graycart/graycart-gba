@@ -10,6 +10,7 @@ mod harness;
 mod jsmolka;
 mod mgba_suite;
 mod nba_hw_test;
+mod p10;
 mod p3;
 mod p4;
 mod p5;

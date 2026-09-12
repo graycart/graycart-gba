@@ -18,6 +18,13 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P10 DMG/CGB compat bring-up (`walter/p10-compat-8eeb`):** interim whole-crate
+  `graycart` dep; WAITCNT.bit15 / load-path detect; Mode-8/HALTCNT handoff +
+  CGB-AGB user-supplied boot slot; `CompatMachine` wrapper (load/run/FB/PCM/
+  buttons/battery); IO bridge (L/R → stretch, not `FF00`); Blargg
+  `01-special.gb` smoke + fixture LICENSE dirs; docs/conformance P10 board;
+  crate **0.1.1**. Unit gates G10-*; full Blargg/Mooneye boards deferred to P11.
+  jsmolka arm+thumb+memory stay default-CI PASS.
 - **P9 Frontend (`walter/p9-frontend-ca20`):** windowed host via eframe
   (winit/wgpu/egui) + cpal; ROM picker, pause/reset, `.sav` sidecar flush;
   lib host seam (`set_buttons`, `battery_sav` / `load_battery_sav`); headless

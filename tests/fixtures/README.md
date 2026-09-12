@@ -23,6 +23,8 @@ only. Vendored test ROMs keep their **upstream** copyright and license terms.
 | Suite | Path | Upstream | License | Notes |
 |-------|------|----------|---------|-------|
 | jsmolka/gba-tests | [`jsmolka/`](jsmolka/) | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | MIT | `arm`/`thumb`/`memory` + P4 `ppu/*` + P7 `bios`/`save/*` prebuilts in-tree (pin in suite README) |
+| Blargg GB tests | [`blargg/`](blargg/) | [retrio/gb-test-roms](https://github.com/retrio/gb-test-roms) | upstream (not MIT) | P10 smoke: `cpu_instrs/individual/01-special.gb`; full matrix **P11** |
+| Mooneye GB | [`mooneye/`](mooneye/) | [Gekkio/mooneye-gb](https://github.com/Gekkio/mooneye-gb) | upstream | P10 LICENSE/README stub; acceptance **P11** |
 | In-house (Graycart) | [`inhouse/`](inhouse/) | this repo | MIT | P3 **G3-irq-rom** simple IRQ stub (`simple-irq/`); no BIOS |
 | mGBA suite | [`mgba-suite/`](mgba-suite/) | [mgba-emu/suite](https://github.com/mgba-emu/suite) | MIT | LICENSE stub + ignored harness row; P5 dma progress log; P3 stretch `io-read` / `timer-irq` stubs; no `suite.gba` yet |
 | alyosha gba-tests | [`alyosha/`](alyosha/) | [alyosha-tas/gba-tests](https://github.com/alyosha-tas/gba-tests) | MIT | P5 **G5-alyosha** path stub; `DMA_*` `#[ignore]` until curated |
@@ -52,7 +54,9 @@ tests/
 │   ├── nba-hw-test/       # BSD-3 — LICENSE stub; curated ROM later
 │   ├── gba-audio-test/    # MIT — P6 audio ROM path stub (binary optional)
 │   ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
-│   └── tonc/              # CC0 — empty until selected demos
+│   ├── tonc/              # CC0 — empty until selected demos
+│   ├── blargg/            # Blargg — P10 smoke subset; full matrix P11
+│   └── mooneye/           # Mooneye — P10 stub; acceptance P11
 └── roms/
     ├── harness.rs         # Outcome + RomLaunchMode + GbaTestRom
     ├── jsmolka.rs         # arm/thumb/memory (PASS in default CI)
@@ -60,6 +64,10 @@ tests/
     ├── p4.rs              # P4 PPU gates
     ├── p5.rs              # P5 DMA gates
     ├── p6.rs              # P6 APU gates (gba-audio-test / soft WAV)
+    ├── p7.rs              # P7 cart/BIOS/saves
+    ├── p8.rs              # P8 timing
+    ├── p9.rs              # P9 frontend hygiene
+    ├── p10.rs             # P10 DMG/CGB compat bring-up
     ├── mgba_suite.rs      # ignored SoC-depth stub
     ├── nba_hw_test.rs     # ignored stretch stub
     └── main.rs            # CI-blocking apparatus smoke

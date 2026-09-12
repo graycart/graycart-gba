@@ -1,0 +1,11 @@
+Mooneye GB test ROMs — licensing / provenance
+=============================================
+
+Fixtures under tests/fixtures/mooneye/ are NOT licensed under the Graycart
+repository MIT license.
+
+Upstream: https://github.com/Gekkio/mooneye-gb
+Author: Joonas Javanainen (Gekkio) and contributors
+
+Binaries are optional for P10 (LICENSE/README stubs only). Suite pass boards
+are P11. Retain upstream attribution if/when ROMs are vendored.

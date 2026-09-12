@@ -1,0 +1,39 @@
+Blargg Game Boy test ROMs — licensing / provenance
+====================================================
+
+These ROM binaries and accompanying suite notes under tests/fixtures/blargg/
+are NOT licensed under the Graycart repository MIT license
+(see the repository root LICENSE).
+
+Author
+------
+Shay Green (“Blargg”) <gblargg@gmail.com>
+
+Upstream distribution
+---------------------
+The copies vendored in this repository were obtained from the widely used
+community mirror:
+
+  https://github.com/retrio/gb-test-roms
+
+That mirror’s top-level readme.txt states that these are Blargg’s Game Boy
+hardware test ROMs, originally hosted at:
+
+  http://blargg.parodius.com/gb-tests/
+
+and later noted as:
+
+  http://blargg.8bitalley.com/parodius/gb-tests/
+
+License status
+--------------
+The retrio/gb-test-roms mirror does not ship an SPDX LICENSE file. Shay Green
+distributed the ROMs (with source historically available) for emulator and
+hardware testing. Graycart does not relicense these files; retain author
+attribution and consult upstream if you redistribute them outside this tree.
+
+Suite documentation retained in-tree (examples)
+-----------------------------------------------
+  cgb_sound/readme.txt  — Shay Green test documentation
+
+See also tests/fixtures/README.md and tests/fixtures/blargg/README.md.

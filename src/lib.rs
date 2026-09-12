@@ -15,6 +15,7 @@
 //! P7: cart saves + BIOS protect latch + BiosHle SWI/IRQ trampoline.
 //! P8: prefetch FSM, Disable Bug latch, DMA 2-cycle startup, waitstate step.
 //! P9: host seam — buttons / framebuffer / PCM / battery `.sav` (GUI stays in `frontend/`).
+//! P10: DMG/CGB compat wrapper via `graycart` (detect / Mode-8 / CompatMachine).
 
 pub mod apu;
 pub mod bios;
