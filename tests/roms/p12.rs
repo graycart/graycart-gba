@@ -71,9 +71,14 @@ fn g12_audit_no_host_ui_in_lib_cores() {
     let mut offenders = Vec::new();
     walk_rs(&src, &mut |path: &Path, text: &str| {
         // Host stack lives in frontend/ + main.rs only.
+        // Use Path components (not `/`-only string prefix) so Windows CI matches.
         let rel = path.strip_prefix(&src).unwrap_or(path);
         let rel_s = rel.to_string_lossy();
-        if rel_s.starts_with("frontend/") || rel_s == "main.rs" {
+        let in_frontend = rel
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == "frontend");
+        if in_frontend || rel == Path::new("main.rs") {
             return;
         }
         for crate_name in HOST_ONLY_CRATES {
