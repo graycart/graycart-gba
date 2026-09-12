@@ -227,6 +227,14 @@ impl Irq {
     }
 }
 
+/// Bridge for keypad / other peripherals that raise IF via [`crate::input::RaiseIf`].
+impl crate::input::RaiseIf for Irq {
+    #[inline]
+    fn raise_if(&mut self, bits: u16) {
+        self.raise(bits);
+    }
+}
+
 // --- IntrWait flag helpers (IWRAM @ 03007FF8) ---
 
 /// Byte offset of IntrWait check flags within IWRAM.

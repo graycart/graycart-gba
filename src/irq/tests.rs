@@ -169,6 +169,14 @@ fn intr_wait_flags_helpers_roundtrip() {
 }
 
 #[test]
+fn raise_if_trait_bridges_to_raise() {
+    use crate::input::RaiseIf;
+    let mut irq = Irq::new();
+    irq.raise_if(IRQ_KEYPAD);
+    assert_eq!(irq.read_if(), IRQ_KEYPAD);
+}
+
+#[test]
 fn irq_delay_constant_documented_but_unused() {
     // Guard against silent deletion of the TBD marker.
     assert_eq!(IRQ_DELAY_CYCLES_TBD, 7);
