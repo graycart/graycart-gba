@@ -18,6 +18,7 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P2 bus/memory (in progress):** region map + mirrors, WAITCNT waitstates, video STRB / open-bus stubs, DMA register file + Immediate (shared branch `dev/p2-bus`).
 - **P0 scaffold (in progress):** fixture layout under `tests/fixtures/` with a
   mandatory upstream license table (jsmolka MIT, mGBA suite MIT, FuzzARM
   GPL-3.0, Tonc examples CC0). Suite dirs are stubs — **no** commercial ROMs,
