@@ -1,0 +1,37 @@
+/target
+__pycache__/
+*.pyc
+/tmp/
+.worktrees/
+
+# Commercial dumps and sidecars — never commit
+carts/*.gba
+carts/*.gb
+carts/*.gbc
+/saves/
+*.sav
+*.gcs[0-9]
+*.gcs
+*.state
+*.sna
+
+# Nintendo BIOS / boot firmware (optional local cache only)
+bios/*.bin
+**/gba_bios.bin
+**/gba_bios.bin.gz
+**/dmg_boot.bin
+**/cgb_boot.bin
+
+# Keep redistributable conformance fixtures when present
+!tests/fixtures/**/*.gba
+!tests/fixtures/**/*.gb
+!tests/fixtures/**/*.gbc
+
+# Secrets and editor scratch
+.gitea_token
+.superpowers/
+sdd/
+docs/superpowers/
+.cursor/
+*.swp
+.DS_Store
