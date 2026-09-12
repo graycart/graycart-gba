@@ -1,13 +1,25 @@
-//! BIOS LLE map + HLE SWI table (minimal BiosHle for suite soft-boot).
+//! BIOS LLE map + HLE SWI table (BiosHle for suite soft-boot).
 //!
 //! Module layout from graycart-gba implementation plan §2.2.
 //! Behavior: see research `docs/graycart-gba/06-cart-bios-saves.md`.
 //!
-//! Cited: GBATEK — BIOS Functions (Div SWI 0x06)
+//! Cited: GBATEK — BIOS Functions / Unpredictable Things (BIOS protect)
 //!   https://problemkaputt.de/gbatek.htm
-//! Note: user-supplied BIOS only for LLE — never commit BIOS images. Div HLE
-//! lives in [`crate::cpu::step`] for the instruction loop; this type records
-//! launch posture for the machine orchestrator.
+//! Note: user-supplied BIOS only for LLE — never commit BIOS images.
+
+pub mod hle;
+pub mod lle;
+pub mod protect;
+
+#[cfg(test)]
+mod tests_hle;
+#[cfg(test)]
+mod tests_lle;
+
+pub use protect::{
+    HLE_IRQ_RETURN, IRQ_HANDLER_PTR, LATCH_AFTER_IRQ, LATCH_AFTER_SWI, LATCH_DURING_IRQ,
+    LATCH_SOFT_RESET,
+};
 
 /// BIOS glue: tracks whether soft-boot HLE or mapped LLE firmware is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -19,8 +31,19 @@ pub enum BiosMode {
     Lle,
 }
 
-/// Stub BIOS owner. Image bytes (when LLE) live on [`crate::bus::Bus::bios`].
+/// BIOS owner. Image bytes (when LLE) live on [`crate::bus::Bus::bios`].
 #[derive(Debug, Clone, Default)]
 pub struct Bios {
     pub mode: BiosMode,
+    /// Resume PC after HLE IRQ trampoline (`None` when idle).
+    pub hle_irq_resume: Option<u32>,
+    /// Saved r0–r3,r12 across BiosHle IRQ user ISR (BIOS wrapper semantics).
+    pub hle_irq_regs: [u32; 5],
+}
+
+impl Bios {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 }

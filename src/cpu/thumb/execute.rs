@@ -525,7 +525,8 @@ fn load32_arm7<C: ThumbCtx>(ctx: &mut C, addr: u32) -> u32 {
 }
 
 fn store32_arm7<C: ThumbCtx>(ctx: &mut C, addr: u32, val: u32) {
-    ctx.write32(addr & !3, val);
+    // Keep low bits for Game Pak SRAM rotate-write; Bus aligns other regions.
+    ctx.write32(addr, val);
 }
 
 /// ARM7 LDRH: aligned = zero-extend halfword; odd = `[addr&~1]` then **ROR 8**
@@ -540,5 +541,6 @@ fn load16_zx_arm7<C: ThumbCtx>(ctx: &mut C, addr: u32) -> u32 {
 }
 
 fn store16_arm7<C: ThumbCtx>(ctx: &mut C, addr: u32, val: u16) {
-    ctx.write16(addr & !1, val);
+    // Keep bit0 for Game Pak SRAM rotate-write; Bus aligns other regions.
+    ctx.write16(addr, val);
 }

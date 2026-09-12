@@ -27,12 +27,22 @@ fetch_one "memory/memory.gba"
 fetch_one "ppu/hello.gba"
 fetch_one "ppu/shades.gba"
 fetch_one "ppu/stripes.gba"
+fetch_one "bios/bios.gba"
+fetch_one "save/none.gba"
+fetch_one "save/sram.gba"
+fetch_one "save/flash64.gba"
+fetch_one "save/flash128.gba"
 
 # Layout under fixtures uses per-ROM dirs for harness paths.
 mkdir -p "${ROOT}/ppu/hello" "${ROOT}/ppu/shades" "${ROOT}/ppu/stripes"
+mkdir -p "${ROOT}/save/none" "${ROOT}/save/sram" "${ROOT}/save/flash64" "${ROOT}/save/flash128"
 mv -f "${ROOT}/ppu/hello.gba" "${ROOT}/ppu/hello/hello.gba"
 mv -f "${ROOT}/ppu/shades.gba" "${ROOT}/ppu/shades/shades.gba"
 mv -f "${ROOT}/ppu/stripes.gba" "${ROOT}/ppu/stripes/stripes.gba"
+mv -f "${ROOT}/save/none.gba" "${ROOT}/save/none/none.gba"
+mv -f "${ROOT}/save/sram.gba" "${ROOT}/save/sram/sram.gba"
+mv -f "${ROOT}/save/flash64.gba" "${ROOT}/save/flash64/flash64.gba"
+mv -f "${ROOT}/save/flash128.gba" "${ROOT}/save/flash128/flash128.gba"
 
 echo "done. LICENSE remains ${ROOT}/LICENSE (upstream MIT)."
 echo "sha256:"
@@ -42,4 +52,9 @@ sha256sum \
   "${ROOT}/memory/memory.gba" \
   "${ROOT}/ppu/hello/hello.gba" \
   "${ROOT}/ppu/shades/shades.gba" \
-  "${ROOT}/ppu/stripes/stripes.gba"
+  "${ROOT}/ppu/stripes/stripes.gba" \
+  "${ROOT}/bios/bios.gba" \
+  "${ROOT}/save/none/none.gba" \
+  "${ROOT}/save/sram/sram.gba" \
+  "${ROOT}/save/flash64/flash64.gba" \
+  "${ROOT}/save/flash128/flash128.gba"

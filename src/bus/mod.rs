@@ -28,7 +28,7 @@ mod tests_video;
 mod tests_wait;
 
 pub use openbus::{
-    bios_protect_read, empty_cart_rom_halfword, empty_cart_rom_word, pc_in_bios,
+    bios_protect_byte, bios_protect_read, empty_cart_rom_halfword, empty_cart_rom_word, pc_in_bios,
     unused_memory_open_bus, OpenBusKind, OpenBusState, BIOS_END,
 };
 pub use video::{
@@ -85,7 +85,7 @@ pub trait CpuMem {
 ///
 /// Internal RAM (EWRAM / IWRAM / I/O / palette / VRAM / OAM) is always allocated.
 /// BIOS, Game Pak ROM, and SRAM start empty until cart/BIOS owners load images —
-/// reads of unloaded media return `0` (open-bus / empty-cart patterns are TBD siblings).
+/// empty SRAM reads as `0xFF` (uninit / no-save); BIOS outside-PC uses protect latch.
 #[derive(Debug, Clone)]
 pub struct Bus {
     /// Optional BIOS image (16 KiB when loaded).
@@ -104,8 +104,13 @@ pub struct Bus {
     pub oam: Vec<u8>,
     /// Game Pak ROM image (shared across WS0–2 views).
     pub rom: Vec<u8>,
-    /// Game Pak SRAM / Flash backup window (≤64 KiB).
+    /// Game Pak SRAM / Flash backup window (≤64 KiB) — legacy direct buffer.
+    /// Prefer cart [`crate::cart::SaveBackend`] via [`crate::mmio::MachineMem`] for P7+.
     pub sram: Vec<u8>,
+    /// BIOS-protect / open-bus latch state.
+    pub open_bus: OpenBusState,
+    /// Last known CPU PC for BIOS-protect gating (updated by machine step).
+    pub cpu_pc: u32,
 }
 
 impl Default for Bus {
@@ -120,6 +125,8 @@ impl Default for Bus {
             oam: vec![0; OAM_SIZE],
             rom: Vec::new(),
             sram: Vec::new(),
+            open_bus: OpenBusState::default(),
+            cpu_pc: 0,
         }
     }
 }
@@ -182,12 +189,32 @@ impl Bus {
     }
 }
 
+impl Bus {
+    /// Read a BIOS byte with PC-gated protect (shared by [`CpuMem`] impl).
+    fn read_bios8(&self, addr: u32) -> u8 {
+        if let Some(latch) = bios_protect_read(self.cpu_pc, &self.open_bus) {
+            return bios_protect_byte(latch, addr);
+        }
+        // Inside BIOS: normal ROM read; note fetch for ARM word-aligned ops via read32.
+        bios_offset(addr)
+            .map(|i| Self::read_slice(&self.bios, i))
+            .unwrap_or(0)
+    }
+
+    /// Read backup window: empty buffer → `0xFF` (uninit / no-save).
+    fn read_sram8(&self, addr: u32) -> u8 {
+        if self.sram.is_empty() {
+            return 0xFF;
+        }
+        let i = sram_window_offset(addr) % self.sram.len();
+        self.sram.get(i).copied().unwrap_or(0xFF)
+    }
+}
+
 impl CpuMem for Bus {
     fn read8(&mut self, addr: u32) -> u8 {
         match decode(addr) {
-            Region::Bios => bios_offset(addr)
-                .map(|i| Self::read_slice(&self.bios, i))
-                .unwrap_or(0),
+            Region::Bios => self.read_bios8(addr),
             Region::UnusedLow | Region::UnusedHigh => 0, // open-bus TBD (sibling)
             Region::Ewram => Self::read_slice(&self.ewram, ewram_offset(addr)),
             Region::Iwram => Self::read_slice(&self.iwram, iwram_offset(addr)),
@@ -200,7 +227,7 @@ impl CpuMem for Bus {
             Region::GamePakRomWs0 | Region::GamePakRomWs1 | Region::GamePakRomWs2 => {
                 Self::read_slice(&self.rom, rom_offset(addr))
             }
-            Region::GamePakSram => Self::read_slice(&self.sram, sram_window_offset(addr)),
+            Region::GamePakSram => self.read_sram8(addr),
         }
     }
 
@@ -248,6 +275,7 @@ impl CpuMem for Bus {
         match decode(addr) {
             Region::GamePakSram => {
                 // Only the addressed byte is stored; value = LSB of (data ROR (addr*8)).
+                // Pass-through unaligned `addr` (STRH must not force-align before this).
                 let rotated = value.rotate_right((addr & 1) * 8);
                 self.write8(addr, rotated as u8);
             }
@@ -262,8 +290,9 @@ impl CpuMem for Bus {
                 Self::write16_video_raw(&mut self.oam, oam_offset(addr), value);
             }
             _ => {
-                self.write8(addr, value as u8);
-                self.write8(addr.wrapping_add(1), (value >> 8) as u8);
+                let a = addr & !1;
+                self.write8(a, value as u8);
+                self.write8(a.wrapping_add(1), (value >> 8) as u8);
             }
         }
     }
@@ -284,9 +313,10 @@ impl CpuMem for Bus {
             self.write8(addr, rotated as u8);
             return;
         }
-        // Two halfword stores — video path uses write16_video_raw via write16.
-        self.write16(addr, value as u16);
-        self.write16(addr.wrapping_add(2), (value >> 16) as u16);
+        // Two halfword stores on aligned base — video path uses write16_video_raw via write16.
+        let a = addr & !3;
+        self.write16(a, value as u16);
+        self.write16(a.wrapping_add(2), (value >> 16) as u16);
     }
 }
 

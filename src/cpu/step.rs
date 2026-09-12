@@ -5,8 +5,9 @@
 //! Cited: GBATEK — ARM CPU Overview / SWI
 //!   https://problemkaputt.de/gbatek.htm
 //! Note: crude 1-insn advance; waitstate-accurate scheduling is later. BiosHle
-//! Div (SWI 0x06) is handled here so jsmolka fail-digit paths can settle.
+//! SWIs (Div/Sqrt/SoftReset/CpuSet) live in [`crate::bios::hle`].
 
+use crate::bios::hle::{self, swi as hle_swi};
 use crate::bus::CpuMem;
 use crate::cpu::arm::{self, ExecResult as ArmExec};
 use crate::cpu::thumb::{self, ExecResult as ThumbExec, ThumbCore, ThumbMem};
@@ -152,20 +153,27 @@ fn handle_exception(
     kind: ExceptionKind,
     instr_pc: u32,
 ) -> StepOutcome {
-    if hle.bios_hle && kind == ExceptionKind::Swi && try_hle_swi(cpu, bus, instr_pc) {
-        // Resume at next instruction (same as exception LR semantics).
-        let next = if cpu.regs.thumb() {
-            // CPSR.T still Thumb here — we have not taken the vector.
-            instr_pc.wrapping_add(2)
-        } else {
-            instr_pc.wrapping_add(4)
-        };
-        let isa = IsaState::from_cpsr_t(cpu.regs.thumb());
-        cpu.regs.set_pc(next);
-        cpu.pipeline.redirect(next, isa);
-        cpu.pipeline.refill(bus);
-        sync_exec_pc(cpu);
-        return StepOutcome::SwiHle;
+    if hle.bios_hle && kind == ExceptionKind::Swi {
+        let number = swi_number(cpu, bus, instr_pc);
+        if hle::try_swi(cpu, bus, number) {
+            if number == hle_swi::SOFT_RESET {
+                // SoftReset already set PC/stacks — refill from new entry.
+                refill_after_branch(cpu, bus);
+                return StepOutcome::SwiHle;
+            }
+            // Resume at next instruction (same as exception LR semantics).
+            let next = if cpu.regs.thumb() {
+                instr_pc.wrapping_add(2)
+            } else {
+                instr_pc.wrapping_add(4)
+            };
+            let isa = IsaState::from_cpsr_t(cpu.regs.thumb());
+            cpu.regs.set_pc(next);
+            cpu.pipeline.redirect(next, isa);
+            cpu.pipeline.refill(bus);
+            sync_exec_pc(cpu);
+            return StepOutcome::SwiHle;
+        }
     }
 
     cpu.take_exception(kind, instr_pc);
@@ -180,28 +188,6 @@ fn swi_number(cpu: &Cpu, bus: &mut impl CpuMem, instr_pc: u32) -> u8 {
         (bus.read16(instr_pc) & 0xFF) as u8
     } else {
         ((bus.read32(instr_pc) >> 16) & 0xFF) as u8
-    }
-}
-
-fn try_hle_swi(cpu: &mut Cpu, bus: &mut impl CpuMem, instr_pc: u32) -> bool {
-    match swi_number(cpu, bus, instr_pc) {
-        0x06 => {
-            // Div: r0=/ r1=% ; r3 = abs(quot). Cited: GBATEK BIOS Div.
-            let num = cpu.regs.get(0) as i32;
-            let den = cpu.regs.get(1) as i32;
-            if den == 0 {
-                // Hardware Div-by-zero is undefined; keep registers and succeed.
-                return true;
-            }
-            let quot = num / den;
-            let rem = num % den;
-            cpu.regs.set(0, quot as u32);
-            cpu.regs.set(1, rem as u32);
-            cpu.regs.set(3, quot.unsigned_abs());
-            true
-        }
-        // Soft-boot homebrew rarely needs more SWIs for arm/thumb/memory PASS path.
-        _ => false,
     }
 }
 
