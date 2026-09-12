@@ -18,7 +18,7 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
-- **P5 DMA full (shared `dev/p5-dma-full`):** VBlank / HBlank starts (HBlank
+- **P5 DMA full (shared `walter/p5-dma-full-980e`):** VBlank / HBlank starts (HBlank
   Interval Free for OAM), DMA1/2 Special FIFO 4×32-bit refill, DMA3 Special
   video-capture window stub (VCOUNT 2..=161), completion IRQs, DMA3 Game Pak
   yes / SRAM never. `Gba` step hooks PPU edges + APU FIFO request stub; MMIO
