@@ -19,6 +19,7 @@ use eframe::egui::{self, ColorImage, Key, TextureHandle, TextureOptions};
 use graycart_gba::compat::{
     apply_lr_stretch, framebuffer_rgb888, gba_mask_to_gb_buttons, CompatMachine, StretchMode,
 };
+use graycart_gba::debug::DebugConfig;
 use graycart_gba::Gba;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ enum HostSession {
 }
 
 /// Open the application window. Flushes `.sav` on exit when a ROM was loaded.
-pub fn run(initial_rom: Option<PathBuf>) -> Result<(), String> {
+pub fn run(initial_rom: Option<PathBuf>, debug_cfg: DebugConfig) -> Result<(), String> {
     let title = format!("graycart-gba {}", env!("CARGO_PKG_VERSION"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -43,7 +44,7 @@ pub fn run(initial_rom: Option<PathBuf>) -> Result<(), String> {
     eframe::run_native(
         "graycart-gba",
         options,
-        Box::new(move |cc| Ok(Box::new(GbaApp::new(cc, initial_rom)))),
+        Box::new(move |cc| Ok(Box::new(GbaApp::new(cc, initial_rom, debug_cfg)))),
     )
     .map_err(|e| e.to_string())
 }
@@ -61,10 +62,15 @@ struct GbaApp {
     pcm_scratch: Vec<graycart_gba::apu::PcmFrame>,
     stretch: StretchMode,
     lr_was_down: bool,
+    debug_cfg: DebugConfig,
 }
 
 impl GbaApp {
-    fn new(cc: &eframe::CreationContext<'_>, initial_rom: Option<PathBuf>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_rom: Option<PathBuf>,
+        debug_cfg: DebugConfig,
+    ) -> Self {
         let audio = match AudioOut::open_default() {
             Ok(a) => {
                 let _ = a.sample_rate;
@@ -93,6 +99,7 @@ impl GbaApp {
             pcm_scratch: vec![graycart_gba::apu::PcmFrame::default(); 4096],
             stretch: StretchMode::default(),
             lr_was_down: false,
+            debug_cfg,
         };
         let _ = cc;
         if let Some(path) = initial_rom {
@@ -131,6 +138,7 @@ impl GbaApp {
             }
         };
         let mut gba = Gba::new();
+        gba.set_debug_config(self.debug_cfg);
         gba.load_rom(&bytes);
         gba.reset_bios_hle();
         let sav_path = default_save_path(path);
@@ -139,6 +147,12 @@ impl GbaApp {
             self.status = format!("loaded {} (+ {})", path.display(), sav_path.display());
         } else {
             self.status = format!("loaded {}", path.display());
+        }
+        if self.debug_cfg.enabled() {
+            eprintln!(
+                "gba-debug: host loaded {} (BiosHle); breadcrumbs on stderr",
+                path.display()
+            );
         }
         self.session = Some(HostSession::Native(Box::new(gba)));
         self.rom_path = Some(path.to_path_buf());
