@@ -76,9 +76,13 @@ fn gui_window_smoke_ignored() {
 }
 
 #[test]
-fn crate_version_is_0_1_0() {
-    // G9-docs / G9-release prep: first tagged runnable milestone.
-    assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
+fn crate_version_is_0_1_series() {
+    // G9-docs / G9-release: first tagged runnable milestone was 0.1.0; patch bumps OK.
+    let v = env!("CARGO_PKG_VERSION");
+    assert!(
+        v.starts_with("0.1."),
+        "expected 0.1.x crate version after P9 tag, got {v}"
+    );
 }
 
 #[test]

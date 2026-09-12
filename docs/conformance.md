@@ -1,5 +1,5 @@
 <!--
-Cited: PHASES.md P8–P9; 07-test-strategy.md §6; 11-test-apparatus.md §2; mgba-emu/suite
+Cited: PHASES.md P8–P10; 07-test-strategy.md §6; 11-test-apparatus.md §2; mgba-emu/suite
 Note: living accuracy board — update thresholds when suite automation lands.
 -->
 # graycart-gba conformance board
@@ -33,3 +33,18 @@ vendored and `tests/roms/p8.rs` asserts `passes >= threshold`.
 | Accuracy tracker / installers | stretch | not required for P9 exit |
 
 Headless `--frames` / `--hash-out` / `--audio-out` remain window-free.
+
+## P10 DMG/CGB compat bring-up (2026-09-12)
+
+| Gate | Status | Notes |
+|------|--------|-------|
+| `graycart` whole-crate dep | pinned | git rev in `src/compat/dep.rs` / Cargo.toml |
+| WAITCNT.bit15 / load-path detect | unit green | header `$0143` ≠ SoC selector |
+| Mode-8 / HALTCNT posture + CGB-AGB slot | unit green | FastHle default; LLE needs user firmware |
+| CompatMachine wrap (load/run/FB/PCM/buttons) | unit green | no in-tree SM83 |
+| Presentment / IO bridge (no L/R→FF00) | unit green | stretch stub |
+| Blargg `01-special.gb` smoke | PASS when vendored | full Blargg/Mooneye boards → **P11** |
+| Fixture LICENSE dirs | present | `tests/fixtures/blargg/`, `mooneye/` |
+| Crate | **0.1.1** | patch after P9 `0.1.0` |
+
+Stretch (non-blocking): CGB color path, soft-patch / bootlogo, BootRomLle overlay.
