@@ -2,26 +2,29 @@
 //!
 //! Cited: graycart-gb CLI verbosity / `--trace` / runtime diag env flags
 //!   https://github.com/graycart/graycart-gb (src/main.rs, frontend/launch.rs)
-//! Cited: GBATEK — cartridge header / IRQ / DMA / LCD (field names only)
+//! Cited: GBATEK — cartridge header / IRQ / DMA / LCD / memory map (field names only)
 //!   https://problemkaputt.de/gbatek.htm
-//! Note: Default quiet. Breadcrumbs go to stderr with `gba-debug:` prefix.
+//! Note: Default quiet. `--debug` = summary (problems + aggregates), not DMA spam.
+//!   `--debug=trace` / `--trace` for verbose DMA/IRQ/insn. Prefix `gba-debug:`.
 //!   No commercial ROMs required — validate with jsmolka / synthetic fixtures.
 
 #[cfg(test)]
 mod tests;
 
-use crate::bios::BiosMode;
+use crate::bios::{BiosMode, HLE_IRQ_RETURN};
+use crate::bus::region::{self, Region};
 use crate::cart::detect::SaveKind;
 use crate::cart::header::CartHeader;
 use crate::cpu::{cpsr, Mode};
-use crate::dma::DmaRunReport;
+use crate::dma::{DmaRunReport, StartTiming};
 use crate::hw::PowerMode;
 use crate::ppu::FRAME_CYCLES;
 use crate::RomLaunchMode;
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt::Write as _;
 
-/// Env var enabling debug breadcrumbs (`1` / `true` / `yes` / non-empty).
+/// Env var enabling debug breadcrumbs (`1` / `true` / `yes` / `summary` / `trace`).
 pub const ENV_DEBUG: &str = "GRAYCART_DEBUG";
 /// Env var enabling trace-level samples (same truthy parsing as [`ENV_DEBUG`]).
 pub const ENV_TRACE: &str = "GRAYCART_TRACE";
@@ -35,10 +38,24 @@ pub enum DebugLevel {
     /// No breadcrumbs (default).
     #[default]
     Off,
-    /// Load/reset/events + periodic CPU/PPU samples + stuck detection.
+    /// Bring-up summary: rom/bios, loud faults, blanking, stuck, dma/irq aggregates.
     Debug,
-    /// Debug plus per-instruction samples (rate-limited) / headless `--trace N`.
+    /// Summary plus per-event DMA/IRQ (rate-limited) and insn samples / `--trace N`.
     Trace,
+}
+
+impl DebugLevel {
+    /// Parse CLI/env level tokens (`summary`/`debug`/`1` → Debug; `trace` → Trace).
+    #[must_use]
+    pub fn parse_token(raw: &str) -> Option<Self> {
+        let t = raw.trim().to_ascii_lowercase();
+        match t.as_str() {
+            "" | "0" | "false" | "no" | "off" => Some(Self::Off),
+            "1" | "true" | "yes" | "on" | "summary" | "debug" => Some(Self::Debug),
+            "trace" | "verbose" => Some(Self::Trace),
+            _ => None,
+        }
+    }
 }
 
 /// GB-style load/boot summary verbosity (stdout), separate from breadcrumbs.
@@ -57,7 +74,7 @@ pub struct DebugConfig {
     pub verbosity: Verbosity,
     /// When set, headless path dumps this many insn lines then exits (GB `--trace`).
     pub trace_steps: Option<u64>,
-    /// Emit a `cpu`/`ppu` sample every N frames while debug is on (default 60).
+    /// Emit a `cpu`/`ppu` / dma·irq summary every N frames while debug is on (default 60).
     pub period_frames: u64,
     /// Same decode PC for this many consecutive frames → `stuck` (default 120).
     pub stuck_frames: u64,
@@ -77,9 +94,12 @@ impl Default for DebugConfig {
 
 impl DebugConfig {
     /// Merge CLI overrides with env (`GRAYCART_DEBUG` / `GRAYCART_TRACE`).
+    ///
+    /// `cli_debug_level`: `Some` when `--debug` / `--debug=…` was passed.
+    /// `cli_trace`: bare `--trace` or `--trace N` (implies Trace).
     #[must_use]
     pub fn from_env_and_cli(
-        cli_debug: bool,
+        cli_debug_level: Option<DebugLevel>,
         cli_trace: bool,
         trace_steps: Option<u64>,
         verbosity: Verbosity,
@@ -89,10 +109,25 @@ impl DebugConfig {
             trace_steps,
             ..Self::default()
         };
-        if env_flag(ENV_TRACE) || cli_trace || trace_steps.is_some() {
+        let env_level = env::var(ENV_DEBUG)
+            .ok()
+            .as_deref()
+            .and_then(DebugLevel::parse_token);
+        if env_flag(ENV_TRACE)
+            || cli_trace
+            || trace_steps.is_some()
+            || matches!(cli_debug_level, Some(DebugLevel::Trace))
+            || matches!(env_level, Some(DebugLevel::Trace))
+        {
             cfg.level = DebugLevel::Trace;
-        } else if env_flag(ENV_DEBUG) || cli_debug {
+        } else if matches!(cli_debug_level, Some(DebugLevel::Debug))
+            || matches!(env_level, Some(DebugLevel::Debug))
+        {
             cfg.level = DebugLevel::Debug;
+        } else if matches!(cli_debug_level, Some(DebugLevel::Off))
+            || matches!(env_level, Some(DebugLevel::Off))
+        {
+            cfg.level = DebugLevel::Off;
         }
         cfg
     }
@@ -101,6 +136,27 @@ impl DebugConfig {
     #[must_use]
     pub fn enabled(self) -> bool {
         self.level != DebugLevel::Off
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_trace(self) -> bool {
+        self.level == DebugLevel::Trace
+    }
+}
+
+/// Parse `--debug` or `--debug=<level>`. Returns `None` if `arg` is not a debug flag.
+pub fn parse_debug_arg(arg: &str) -> Option<Result<DebugLevel, String>> {
+    if arg == "--debug" {
+        return Some(Ok(DebugLevel::Debug));
+    }
+    let rest = arg.strip_prefix("--debug=")?;
+    match DebugLevel::parse_token(rest) {
+        Some(DebugLevel::Off) => Some(Err("--debug=off is invalid; omit --debug for quiet".into())),
+        Some(level) => Some(Ok(level)),
+        None => Some(Err(format!(
+            "invalid --debug={rest}; use summary|debug|trace"
+        ))),
     }
 }
 
@@ -147,6 +203,21 @@ fn capture_take() -> Vec<String> {
     CAPTURED.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
+#[derive(Debug, Clone, Default)]
+struct DmaCounters {
+    total: u64,
+    /// (channel index, timing discriminant) → count
+    by_ch_timing: BTreeMap<(u8, u8), u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SwiCounters {
+    /// SWI number → count of unhandled hits
+    by_num: BTreeMap<u8, u64>,
+    /// Numbers already announced loudly at least once
+    announced: BTreeMap<u8, u64>,
+}
+
 /// Runtime counters for periodic / stuck / rate-limited event logs.
 #[derive(Debug, Clone)]
 pub struct DebugTracker {
@@ -158,10 +229,23 @@ pub struct DebugTracker {
     same_pc_frames: u64,
     stuck_announced: bool,
     irq_logged: u64,
+    irq_period: u64,
     dma_logged: u64,
+    dma_counters: DmaCounters,
+    dma_period: u64,
+    swi: SwiCounters,
     halt_logged: bool,
+    halt_frames: u64,
+    halt_forever_announced: bool,
     last_waitcnt: Option<u16>,
     last_power: PowerMode,
+    last_forced_blank: Option<bool>,
+    last_dispcnt: Option<u16>,
+    openbus_announced: bool,
+    bios_vector_announced: bool,
+    ie_nonzero_announced: bool,
+    irq_trap_frames: u64,
+    irq_trap_announced: bool,
     /// Remaining insn lines for headless `--trace N` (stdout).
     pub trace_remaining: Option<u64>,
 }
@@ -185,10 +269,23 @@ impl DebugTracker {
             same_pc_frames: 0,
             stuck_announced: false,
             irq_logged: 0,
+            irq_period: 0,
             dma_logged: 0,
+            dma_counters: DmaCounters::default(),
+            dma_period: 0,
+            swi: SwiCounters::default(),
             halt_logged: false,
+            halt_frames: 0,
+            halt_forever_announced: false,
             last_waitcnt: None,
             last_power: PowerMode::Run,
+            last_forced_blank: None,
+            last_dispcnt: None,
+            openbus_announced: false,
+            bios_vector_announced: false,
+            ie_nonzero_announced: false,
+            irq_trap_frames: 0,
+            irq_trap_announced: false,
         }
     }
 
@@ -237,36 +334,38 @@ impl DebugTracker {
     }
 
     pub fn log_error(&self, msg: &str) {
-        // Errors always print when debug is on; also useful without debug for host.
         if self.enabled() {
             log_line(&format!("error {msg}"));
         }
     }
 
-    /// After DMA drain — rate-limited.
+    /// After DMA drain — summary aggregates always; per-event only at Trace.
     pub fn on_dma_report(&mut self, report: &DmaRunReport, dma: &crate::dma::Dma) {
-        if !self.enabled() || report.completed.is_empty() {
+        if !self.enabled() || (report.completed.is_empty() && report.rejected.is_empty()) {
             return;
         }
         for &id in &report.completed {
             self.dma_logged = self.dma_logged.saturating_add(1);
-            if self.dma_logged > 16 && !self.dma_logged.is_multiple_of(256) {
-                continue;
-            }
+            self.dma_period = self.dma_period.saturating_add(1);
             let ch = dma.channel(id);
-            log_line(&format!(
-                "dma ch={} timing={:?} sad=0x{:08X} dad=0x{:08X} count={}{}",
-                id.index(),
-                ch.start_timing(),
-                ch.sad,
-                ch.dad,
-                ch.count,
-                if self.dma_logged > 16 {
-                    format!(" (n={})", self.dma_logged)
-                } else {
-                    String::new()
+            let timing = ch.start_timing();
+            let key = (id.index() as u8, timing as u8);
+            *self.dma_counters.by_ch_timing.entry(key).or_insert(0) += 1;
+            self.dma_counters.total = self.dma_counters.total.saturating_add(1);
+
+            if self.config.is_trace() {
+                // First 4 events, then every 1024th — avoid Special-DMA floods.
+                if self.dma_logged <= 4 || self.dma_logged.is_multiple_of(1024) {
+                    log_line(&format!(
+                        "dma ch={} timing={timing:?} sad=0x{:08X} dad=0x{:08X} count={} (n={})",
+                        id.index(),
+                        ch.sad,
+                        ch.dad,
+                        ch.count,
+                        self.dma_logged
+                    ));
                 }
-            ));
+            }
         }
         for rej in &report.rejected {
             log_line(&format!("dma reject {rej:?}"));
@@ -287,6 +386,7 @@ impl DebugTracker {
         self.maybe_trace_insn(gba, outcome);
         self.watch_waitcnt(gba);
         self.watch_power(gba);
+        self.watch_pc_health(gba);
 
         self.cycles_in_frame = self.cycles_in_frame.saturating_add(step_cycles);
         while self.cycles_in_frame >= u64::from(FRAME_CYCLES) {
@@ -344,6 +444,8 @@ impl DebugTracker {
         match p {
             PowerMode::Halt => {
                 self.halt_logged = true;
+                self.halt_frames = 0;
+                self.halt_forever_announced = false;
                 log_line(&format!(
                     "halt enter ie=0x{:04X} if=0x{:04X} ime={}",
                     gba.irq.read_ie(),
@@ -362,6 +464,47 @@ impl DebugTracker {
                 ));
             }
             PowerMode::Run => {}
+        }
+    }
+
+    /// Loud open-bus / unexpected BIOS-vector breadcrumbs (once until recovered).
+    fn watch_pc_health(&mut self, gba: &crate::Gba) {
+        let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
+        let region = region::decode(pc);
+
+        let openbus = matches!(
+            region,
+            Region::UnusedLow
+                | Region::UnusedHigh
+                | Region::Palette
+                | Region::Vram
+                | Region::Oam
+                | Region::GamePakSram
+        );
+        if openbus {
+            if !self.openbus_announced {
+                self.openbus_announced = true;
+                log_line(&format!(
+                    "warn openbus pc=0x{pc:08X} region={region:?} cpsr=0x{:08X} (PC runaway / non-exec fetch)",
+                    gba.cpu.regs.cpsr()
+                ));
+            }
+        } else {
+            self.openbus_announced = false;
+        }
+
+        // Under BiosHle, executing BIOS ROM (except IRQ return sentinel) usually means
+        // an unexpected vector into empty/stub BIOS space.
+        let bios_hle = matches!(gba.bios.mode, BiosMode::Hle);
+        if bios_hle && region == Region::Bios && pc != HLE_IRQ_RETURN {
+            if !self.bios_vector_announced {
+                self.bios_vector_announced = true;
+                log_line(&format!(
+                    "warn bios vector unexpected pc=0x{pc:08X} (BiosHle — empty BIOS fetch?)"
+                ));
+            }
+        } else if region != Region::Bios {
+            self.bios_vector_announced = false;
         }
     }
 
@@ -390,10 +533,92 @@ impl DebugTracker {
             ));
         }
 
+        self.watch_blanking(gba);
+        self.watch_irq_trap(gba);
+        self.watch_halt_forever(gba);
+
         let period = self.config.period_frames.max(1);
         if self.frames == 1 || self.frames.saturating_sub(self.last_period_frame) >= period {
             self.last_period_frame = self.frames;
             self.log_periodic(gba);
+            self.log_dma_summary();
+            self.log_irq_summary();
+            self.log_swi_summary();
+        }
+    }
+
+    fn watch_blanking(&mut self, gba: &crate::Gba) {
+        let blank = gba.ppu.regs.forced_blank();
+        let dispcnt = gba.ppu.regs.dispcnt;
+        if self.last_forced_blank != Some(blank) {
+            let prev = self.last_forced_blank;
+            self.last_forced_blank = Some(blank);
+            if prev.is_some() || blank {
+                // Always note first sample if already blank, and every edge after.
+                log_line(&format!(
+                    "ppu blank forced_blank={blank} dispcnt=0x{dispcnt:04X} mode={} vcount={}",
+                    gba.ppu.regs.bg_mode(),
+                    gba.ppu.timing.vcount
+                ));
+            }
+        }
+        // Surface first non-zero DISPCNT (LCD programmed) even without blank edge.
+        if self.last_dispcnt != Some(dispcnt) {
+            let prev = self.last_dispcnt;
+            self.last_dispcnt = Some(dispcnt);
+            if prev == Some(0) && dispcnt != 0 {
+                log_line(&format!(
+                    "ppu dispcnt 0x0000→0x{dispcnt:04X} forced_blank={blank} mode={}",
+                    gba.ppu.regs.bg_mode()
+                ));
+            }
+        }
+    }
+
+    fn watch_irq_trap(&mut self, gba: &crate::Gba) {
+        let ie = gba.irq.read_ie();
+        let if_ = gba.irq.read_if();
+        let ime = gba.irq.ime();
+        if ie != 0 && !self.ie_nonzero_announced {
+            self.ie_nonzero_announced = true;
+            log_line(&format!(
+                "irq ie set ie=0x{ie:04X} if=0x{if_:04X} ime={}",
+                ime as u8
+            ));
+        }
+        let pending_masked = (ie & if_) != 0;
+        if pending_masked && !ime {
+            self.irq_trap_frames = self.irq_trap_frames.saturating_add(1);
+            if self.irq_trap_frames >= self.config.stuck_frames && !self.irq_trap_announced {
+                self.irq_trap_announced = true;
+                log_line(&format!(
+                    "warn irq trap ie=0x{ie:04X} if=0x{if_:04X} ime=0 frames={} (IF pending, IME off)",
+                    self.irq_trap_frames
+                ));
+            }
+        } else {
+            self.irq_trap_frames = 0;
+            self.irq_trap_announced = false;
+        }
+    }
+
+    fn watch_halt_forever(&mut self, gba: &crate::Gba) {
+        if matches!(gba.hw.power, PowerMode::Halt | PowerMode::Stop) {
+            self.halt_frames = self.halt_frames.saturating_add(1);
+            if self.halt_frames >= self.config.stuck_frames && !self.halt_forever_announced {
+                self.halt_forever_announced = true;
+                log_line(&format!(
+                    "warn halt forever frames={} power={:?} ie=0x{:04X} if=0x{:04X} ime={}",
+                    self.halt_frames,
+                    gba.hw.power,
+                    gba.irq.read_ie(),
+                    gba.irq.read_if(),
+                    gba.irq.ime() as u8
+                ));
+            }
+        } else {
+            self.halt_frames = 0;
+            self.halt_forever_announced = false;
         }
     }
 
@@ -403,10 +628,11 @@ impl DebugTracker {
         let mode = Mode::from_bits(cpsr_v & 0x1F)
             .map(|m| format!("{m:?}"))
             .unwrap_or_else(|| "?".into());
+        let region = region::decode(pc);
         let mut buf = String::new();
         let _ = write!(
             &mut buf,
-            "cpu frame={} pc=0x{pc:08X} cpsr=0x{cpsr_v:08X} mode={mode} thumb={} i_mask={} ime={} ie=0x{:04X} if=0x{:04X} power={:?}",
+            "cpu frame={} pc=0x{pc:08X} region={region:?} cpsr=0x{cpsr_v:08X} mode={mode} thumb={} i_mask={} ime={} ie=0x{:04X} if=0x{:04X} power={:?}",
             self.frames,
             gba.cpu.regs.thumb(),
             (cpsr_v & cpsr::I) != 0,
@@ -426,12 +652,72 @@ impl DebugTracker {
         ));
     }
 
+    fn log_dma_summary(&mut self) {
+        if self.dma_period == 0 && self.dma_counters.total == 0 {
+            return;
+        }
+        if self.dma_period == 0 {
+            return;
+        }
+        let mut parts = String::new();
+        for (&(ch, timing_d), &n) in &self.dma_counters.by_ch_timing {
+            let timing = match timing_d {
+                0 => StartTiming::Immediate,
+                1 => StartTiming::VBlank,
+                2 => StartTiming::HBlank,
+                _ => StartTiming::Special,
+            };
+            if !parts.is_empty() {
+                parts.push(' ');
+            }
+            let _ = write!(&mut parts, "ch{ch}/{timing:?}={n}");
+        }
+        log_line(&format!(
+            "dma summary frame={} period={} total={} {parts}",
+            self.frames, self.dma_period, self.dma_counters.total
+        ));
+        self.dma_period = 0;
+    }
+
+    fn log_irq_summary(&mut self) {
+        if self.irq_period == 0 {
+            return;
+        }
+        log_line(&format!(
+            "irq summary frame={} period={} total={}",
+            self.frames, self.irq_period, self.irq_logged
+        ));
+        self.irq_period = 0;
+    }
+
+    fn log_swi_summary(&mut self) {
+        if self.swi.by_num.is_empty() {
+            return;
+        }
+        let mut parts = String::new();
+        for (&num, &n) in &self.swi.by_num {
+            if !parts.is_empty() {
+                parts.push(',');
+            }
+            let _ = write!(&mut parts, "0x{num:02X}:{n}");
+        }
+        // Only re-emit when counts grew since last period — always useful at frame 1+.
+        log_line(&format!(
+            "swi summary frame={} unhandled=[{parts}]",
+            self.frames
+        ));
+    }
+
     pub fn on_irq_serviced(&mut self, handler: u32, ie: u16, if_: u16, ime: bool) {
         if !self.enabled() {
             return;
         }
         self.irq_logged = self.irq_logged.saturating_add(1);
-        if self.irq_logged > 8 && !self.irq_logged.is_multiple_of(64) {
+        self.irq_period = self.irq_period.saturating_add(1);
+        if !self.config.is_trace() {
+            return;
+        }
+        if self.irq_logged > 8 && !self.irq_logged.is_multiple_of(256) {
             return;
         }
         log_line(&format!(
@@ -441,13 +727,24 @@ impl DebugTracker {
     }
 
     /// BiosHle skipped an unimplemented SWI instead of vectoring into empty BIOS.
+    ///
+    /// First hit per SWI number is always loud; repeats are counted for `swi summary`.
     pub fn on_unhandled_swi(&mut self, number: u8, resume_pc: u32) {
         if !self.enabled() {
             return;
         }
-        log_line(&format!(
-            "swi unhandled num=0x{number:02X} resume_pc=0x{resume_pc:08X} (BiosHle stub — implement or provide BIOS)"
-        ));
+        let count = self.swi.by_num.entry(number).or_insert(0);
+        *count = count.saturating_add(1);
+        let n = *count;
+        let announced = self.swi.announced.entry(number).or_insert(0);
+        let first = *announced == 0;
+        *announced = announced.saturating_add(1);
+        // Always loud on first occurrence of each SWI number; rare repeats stay visible.
+        if first || n <= 3 || n.is_multiple_of(256) {
+            log_line(&format!(
+                "warn swi unhandled num=0x{number:02X} resume_pc=0x{resume_pc:08X} n={n} (BiosHle stub — implement or provide BIOS)"
+            ));
+        }
     }
 
     /// True when headless `--trace N` has exhausted its dump budget.
@@ -486,7 +783,9 @@ pub fn print_load_summary(
             println!("save: {save:?}");
             println!("boot: {launch:?}");
             if verbosity == Verbosity::Verbose {
-                println!("debug: breadcrumbs on stderr when --debug / GRAYCART_DEBUG");
+                println!(
+                    "debug: --debug (summary) / --debug=trace / GRAYCART_DEBUG; breadcrumbs on stderr"
+                );
             }
         }
     }

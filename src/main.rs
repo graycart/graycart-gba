@@ -1,7 +1,7 @@
 //! graycart-gba binary — headless CLI + windowed host (P9).
 //!
 //! Accepts `--version` / `-V`, `--frames N`, `--hash-out PATH`, `--audio-out PATH`,
-//! `--run`, `--debug`, `--trace [N]`, `--quiet` / `--verbose`, optional ROM.
+//! `--run`, `--debug[=summary|trace]`, `--trace [N]`, `--quiet` / `--verbose`, optional ROM.
 //! No-args opens the windowed host.
 //!
 //! Cited: graycart-gba test strategy §5.5 / §7 (headless hash + soft audio)
@@ -13,7 +13,9 @@
 
 mod frontend;
 
-use graycart_gba::debug::{print_load_summary, DebugConfig, Verbosity};
+use graycart_gba::debug::{
+    parse_debug_arg, print_load_summary, DebugConfig, DebugLevel, Verbosity,
+};
 use graycart_gba::{Gba, RomLaunchMode};
 use std::env;
 use std::fs;
@@ -26,7 +28,7 @@ fn main() {
     if argv.is_empty() {
         open_gui(
             None,
-            DebugConfig::from_env_and_cli(false, false, None, Verbosity::Normal),
+            DebugConfig::from_env_and_cli(None, false, None, Verbosity::Normal),
         );
         return;
     }
@@ -44,7 +46,7 @@ fn main() {
         let mut audio_out: Option<PathBuf> = None;
         let mut rom_path: Option<PathBuf> = None;
         let mut saw_headless = false;
-        let mut cli_debug = false;
+        let mut cli_debug_level: Option<DebugLevel> = None;
         let mut cli_trace = false;
         let mut trace_steps: Option<u64> = None;
         let mut verbosity = Verbosity::Normal;
@@ -60,7 +62,6 @@ fn main() {
                     process::exit(0);
                 }
                 "--run" => want_run = true,
-                "--debug" => cli_debug = true,
                 "--trace" => {
                     cli_trace = true;
                     // Optional step count (GB: `--trace N` required; we accept bare `--trace`).
@@ -107,6 +108,16 @@ fn main() {
                     rom_path = Some(PathBuf::from(other));
                 }
                 other => {
+                    if let Some(parsed) = parse_debug_arg(other) {
+                        match parsed {
+                            Ok(level) => cli_debug_level = Some(level),
+                            Err(e) => {
+                                eprintln!("{e}");
+                                process::exit(1);
+                            }
+                        }
+                        continue;
+                    }
                     eprintln!("unknown argument: {other}");
                     eprintln!("{}", frontend::usage());
                     process::exit(1);
@@ -114,7 +125,8 @@ fn main() {
             }
         }
 
-        let debug_cfg = DebugConfig::from_env_and_cli(cli_debug, cli_trace, trace_steps, verbosity);
+        let debug_cfg =
+            DebugConfig::from_env_and_cli(cli_debug_level, cli_trace, trace_steps, verbosity);
 
         if saw_headless {
             run_headless(frame_cap, hash_out, audio_out, rom_path, debug_cfg);
@@ -125,7 +137,7 @@ fn main() {
             return;
         }
         // Bare `--debug` / `--verbose` without ROM → GUI with config.
-        if cli_debug || cli_trace || !matches!(verbosity, Verbosity::Normal) {
+        if cli_debug_level.is_some() || cli_trace || !matches!(verbosity, Verbosity::Normal) {
             open_gui(None, debug_cfg);
             return;
         }
@@ -135,7 +147,7 @@ fn main() {
 
     // Positional ROM → windowed host (optional trailing flags).
     let rom = PathBuf::from(args.next().expect("peeked"));
-    let mut cli_debug = false;
+    let mut cli_debug_level: Option<DebugLevel> = None;
     let mut cli_trace = false;
     let mut trace_steps: Option<u64> = None;
     let mut verbosity = Verbosity::Normal;
@@ -146,7 +158,6 @@ fn main() {
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--debug" => cli_debug = true,
             "--quiet" => verbosity = Verbosity::Quiet,
             "--verbose" => verbosity = Verbosity::Verbose,
             "--trace" => {
@@ -193,6 +204,16 @@ fn main() {
                 process::exit(0);
             }
             other => {
+                if let Some(parsed) = parse_debug_arg(other) {
+                    match parsed {
+                        Ok(level) => cli_debug_level = Some(level),
+                        Err(e) => {
+                            eprintln!("{e}");
+                            process::exit(1);
+                        }
+                    }
+                    continue;
+                }
                 eprintln!("unexpected argument: {other}");
                 eprintln!("{}", frontend::usage());
                 process::exit(1);
@@ -200,7 +221,8 @@ fn main() {
         }
     }
 
-    let debug_cfg = DebugConfig::from_env_and_cli(cli_debug, cli_trace, trace_steps, verbosity);
+    let debug_cfg =
+        DebugConfig::from_env_and_cli(cli_debug_level, cli_trace, trace_steps, verbosity);
     if saw_headless {
         run_headless(frame_cap, hash_out, audio_out, Some(rom), debug_cfg);
     } else {

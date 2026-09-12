@@ -16,6 +16,16 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Changed
+
+- **Debug UX (`walter/gba-debug-ux-1f81`):** `--debug` is a **summary** level —
+  rom/bios, loud `warn` faults (unhandled SWI, open-bus/PC runaway, unexpected
+  BiosHle vector, halt-forever, IE/IF trap), forced-blank / DISPCNT edges, stuck
+  PC, and periodic `dma summary` / `irq summary` / `swi summary`. Per-event
+  Special DMA / IRQ lines moved to `--debug=trace` / `--trace` /
+  `GRAYCART_DEBUG=trace` (still rate-limited). Default remains quiet. Crate
+  **0.1.7**.
+
 ### Fixed
 
 - **BiosHle LZ77 / RL / Diff decompress (`walter/bios-hle-swi12-lz77-4933`):** After the
