@@ -181,10 +181,7 @@ impl Dma {
         let mut report = DmaRunReport::default();
 
         // Priority: always prefer the lowest channel index with pending/active work.
-        loop {
-            let Some(idx) = self.next_immediate_index() else {
-                break;
-            };
+        while let Some(idx) = self.next_immediate_index() {
             let id = ChannelId::try_from(idx).expect("index 0..=3");
 
             // Validate SRAM before becoming active.
@@ -279,7 +276,7 @@ enum MmioHalf {
 
 fn decode_mmio_word(offset: u32) -> Option<(ChannelId, MmioWord)> {
     // Each channel occupies 12 bytes: SAD, DAD, CNT_L|CNT_H.
-    if offset >= 0x30 || offset % 4 != 0 {
+    if offset >= 0x30 || (offset & 3) != 0 {
         return None;
     }
     let ch = (offset / 12) as usize;
@@ -295,7 +292,7 @@ fn decode_mmio_word(offset: u32) -> Option<(ChannelId, MmioWord)> {
 }
 
 fn decode_mmio_half(offset: u32) -> Option<(ChannelId, MmioHalf)> {
-    if offset >= 0x30 || offset % 2 != 0 {
+    if offset >= 0x30 || (offset & 1) != 0 {
         return None;
     }
     let ch = (offset / 12) as usize;
