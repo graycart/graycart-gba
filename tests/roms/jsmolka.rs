@@ -5,8 +5,7 @@
 //! Cited: graycart-gba test gates / apparatus (P1–P2 musts)
 //!   Project store: `docs/graycart-gba/12-test-gates.md`
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
-//! Note: default CI runs thumb+memory (PASS today). arm stays `#[ignore]` as
-//! known-red (fail #224 — PC-as-shifted-register) until CPU coverage catches up.
+//! Note: default CI asserts arm+thumb+memory PASS (honest green after PC+12 fix).
 //! Never fake green.
 
 use crate::harness::{
@@ -169,36 +168,24 @@ fn jsmolka_memory_suite_passes() {
     );
 }
 
-/// P1 arm gate — known red: fail test 224 (PC as shifted register) until CPU fix.
-///
-/// Run: `cargo test -p graycart-gba --test roms jsmolka_arm -- --ignored --nocapture`
+/// P1 arm gate: arm.gba must PASS (includes PC+12 for register-specified shifts).
 #[test]
-#[ignore = "known-red: jsmolka/arm fails test 224 (mov r0, pc, lsl r0) — TODO un-ignore when PASS"]
-fn jsmolka_arm_suite_known_red() {
+fn jsmolka_arm_suite_passes() {
     let outcome = run_test_rom(&ARM);
-    print_row(ARM.id, &outcome);
-    assert_ne!(
+    assert_eq!(
         outcome.label(),
-        "SKIPPED",
-        "arm must score for real (FAIL/TIMEOUT), not SKIPPED"
+        "PASS",
+        "jsmolka/arm: expected PASS, got {} ({})",
+        outcome.label(),
+        outcome.detail()
     );
-    // Document current tip expectation without locking FAIL forever once fixed.
-    if outcome.is_pass() {
-        eprintln!("jsmolka/arm unexpectedly PASS — remove #[ignore] and assert PASS in CI");
-    } else {
-        eprintln!(
-            "jsmolka/arm still red: {} ({}) — expected until PC-shifted-reg ALU is fixed",
-            outcome.label(),
-            outcome.detail()
-        );
-    }
 }
 
 /// Opt-in full matrix printout (arm+thumb+memory).
 ///
 /// `cargo test -p graycart-gba --test roms -- --ignored --nocapture`
 #[test]
-#[ignore = "full jsmolka matrix printout — thumb/memory also covered by default CI"]
+#[ignore = "full jsmolka matrix printout — also covered by default CI suite asserts"]
 fn jsmolka_arm_thumb_memory_matrix() {
     eprintln!();
     eprintln!("{:<40} result", "ROM");

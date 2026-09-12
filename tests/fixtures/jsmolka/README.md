@@ -5,9 +5,8 @@ Note: MIT prebuilts vendored for P1/P2 gates; Graycart MIT does not cover these 
 -->
 # jsmolka/gba-tests fixtures
 
-**Status (workstream D/E):** BiosHle load + step + r12/idle oracle are wired.
-**thumb** and **memory** PASS in default CI. **arm** is known-red (fail #224 —
-`mov r0, pc, lsl r0`) and stays `#[ignore]` until fixed — never fake green.
+**Status (workstream D/E + ARM PC+12):** BiosHle load + step + r12/idle oracle are wired.
+**arm**, **thumb**, and **memory** assert **PASS** in default CI.
 
 | Field | Value |
 |-------|-------|
@@ -37,7 +36,7 @@ Launch: **BiosHle** soft entry `0x08000000` (no Nintendo BIOS in git). Fail-digi
 |-----|------------|------------|
 | `thumb/thumb.gba` | asserts **PASS** | executes end-to-end |
 | `memory/memory.gba` | asserts **PASS** | executes (needs bus video STRB) |
-| `arm/arm.gba` | `#[ignore]` known-red | **FAIL 224** (PC as shifted register) |
+| `arm/arm.gba` | asserts **PASS** | PC+12 Rs-shift + LDM/STM ^ / empty Rlist |
 
 ## Vendored binaries (P1/P2 musts)
 
@@ -62,8 +61,8 @@ jsmolka/
 └── memory/{README.md,memory.gba} # P2 exit
 ```
 
-Harness matrix: [`tests/roms/jsmolka.rs`](../../roms/jsmolka.rs) — thumb/memory
-in default CI; arm `#[ignore]` until PASS. No fake green.
+Harness matrix: [`tests/roms/jsmolka.rs`](../../roms/jsmolka.rs) — arm/thumb/memory
+assert PASS in default CI. No fake green.
 
 Not vendored yet: `ppu/*`, `bios`, `save/*` (later phases). Do not claim
 Graycart MIT covers these ROMs. No Nintendo BIOS / commercial carts.

@@ -9,9 +9,9 @@ Note: adapted for GBA suites from docs/graycart-gba/07-test-strategy.md §4–§
 Commercial carts stay under `carts/` (local only, gitignored). Nintendo BIOS /
 `gba_bios.bin` is **never** committed. Conformance fixtures live here.
 
-Shared runner + ignored matrices: [`tests/roms/`](../roms/) (`harness.rs`,
-`jsmolka.rs`). jsmolka **thumb** + **memory** assert PASS in default CI; **arm**
-is `#[ignore]` known-red (fail #224) — **no fake green**.
+Shared runner + matrices: [`tests/roms/`](../roms/) (`harness.rs`,
+`jsmolka.rs`). jsmolka **arm** + **thumb** + **memory** assert PASS in default CI —
+**no fake green**.
 
 ## Licensing / provenance
 
@@ -49,13 +49,13 @@ tests/
 │   └── tonc/              # CC0 — empty until selected demos
 └── roms/
     ├── harness.rs         # Outcome + RomLaunchMode + GbaTestRom
-    ├── jsmolka.rs         # #[ignore] arm/thumb/memory matrix
+    ├── jsmolka.rs         # arm/thumb/memory matrix (PASS in default CI)
     └── main.rs            # CI-blocking apparatus smoke
 ```
 
-Default `cargo test` stays ROM-free. Conformance matrices that need these
-fixtures are marked `#[ignore]` and are **not** run in CI
-(`cargo test -- --ignored` is opt-in only).
+Default `cargo test` runs jsmolka arm/thumb/memory gates (vendored MIT prebuilts).
+Additional conformance matrices that need extra fixtures stay `#[ignore]` /
+`cargo test -- --ignored` opt-in.
 
 Outcomes: `PASS` / `FAIL` / `TIMEOUT` / `UNSUPPORTED` / `SKIPPED`
 (apparatus or absent ROM).
