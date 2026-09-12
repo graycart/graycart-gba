@@ -47,9 +47,33 @@ fn fifo_full_volume_scales() {
 
 #[test]
 fn to_i16_pcm_centers_zero_at_bias() {
-    assert_eq!(to_i16_pcm(0x200), 0);
-    assert!(to_i16_pcm(0x300) > 0);
-    assert!(to_i16_pcm(0x100) < 0);
+    assert_eq!(to_i16_pcm(0x200, 0x200), 0);
+    assert!(to_i16_pcm(0x300, 0x200) > 0);
+    assert!(to_i16_pcm(0x100, 0x200) < 0);
+}
+
+#[test]
+fn to_i16_centers_on_programmed_bias_not_hardcoded() {
+    // Silence at a non-default bias must center to 0 (else DC rumble).
+    assert_eq!(to_i16_pcm(0x100, 0x100), 0);
+    assert_eq!(to_i16_pcm(0x180, 0x100).signum(), 1);
+}
+
+#[test]
+fn fifo_full_scale_leaves_host_headroom() {
+    // Direct Sound at 100% spans nearly the full signed 10-bit mix range.
+    // Mapping that 1:1 onto i16 (<<6) rails the host DAC — aliased PCM then
+    // reads as a loud saw on top of the music (FireRed after FIFO #25).
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_X, MASTER_ENABLE);
+    apu.write16(OFF_SOUNDCNT_H, (1 << 2) | (1 << 8) | (1 << 9));
+    apu.fifos.latch_a = 127;
+    let m = mix(&apu.regs, &apu.psg, &apu.fifos);
+    let pcm = to_i16_pcm(m.left, apu.regs.bias_level());
+    assert!(
+        pcm.unsigned_abs() < 30_000,
+        "full-scale FIFO must keep host headroom, got {pcm}"
+    );
 }
 
 #[test]

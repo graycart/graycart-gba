@@ -215,7 +215,8 @@ impl Apu {
 
     fn emit_pcm_frame(&mut self) {
         let mixed = mix(&self.regs, &self.psg, &self.fifos);
-        let frame = PcmFrame::from(mixed);
+        let bias = self.regs.bias_level();
+        let frame = PcmFrame::from_mixed(mixed, bias);
         self.health.on_pcm(frame);
         self.pcm.push(frame);
     }

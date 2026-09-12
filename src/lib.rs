@@ -456,16 +456,28 @@ impl Gba {
         }
 
         let overflows = self.timer.step(cycles, &mut self.irq);
-        // Refill FIFO DMA after each overflow edge so a large quantum cannot
-        // drain the FIFO then request only once (underrun → hold/pop garbage).
+        // Interleave FIFO timer edges with PWM emission so a large quantum
+        // cannot pop N samples then emit all PWM frames from only the final
+        // latch (decimated / slow saw-rumble under batched cycles).
         let max_ov = overflows[0].max(overflows[1]);
-        for i in 0..max_ov {
-            let t0 = if i < overflows[0] { 1 } else { 0 };
-            let t1 = if i < overflows[1] { 1 } else { 0 };
-            self.apu.on_timer_overflows(t0, t1);
-            self.service_fifo_dma();
+        if max_ov == 0 {
+            self.apu.step(cycles);
+        } else {
+            let mut left = cycles;
+            for i in 0..max_ov {
+                let slices_left = max_ov - i;
+                let slice = left / slices_left;
+                self.apu.step(slice);
+                left -= slice;
+                let t0 = u64::from(i < overflows[0]);
+                let t1 = u64::from(i < overflows[1]);
+                self.apu.on_timer_overflows(t0, t1);
+                self.service_fifo_dma();
+            }
+            if left > 0 {
+                self.apu.step(left);
+            }
         }
-        self.apu.step(cycles);
 
         self.input.poll_keypad_irq(&mut self.irq);
         self.hw.poll_halt_wake(self.irq.ie_and_if());
@@ -1087,5 +1099,49 @@ mod tests {
             "expected FIFO activity"
         );
         let _ = latch;
+    }
+
+    #[test]
+    fn fifo_pwm_interleave_preserves_distinct_latches() {
+        // Large quantum with many TM0 overflows must not emit every PWM frame
+        // from only the final latch (that decimates into a slow saw/rumble).
+        use crate::bus::CpuMem;
+        use crate::timer::{TimerId, CTRL_START};
+
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0084, 0x0080);
+            // A → L+R full vol, TM0
+            mem.write16(0x0400_0082, 0x0304);
+        }
+        // Distinct ramp so successive latches differ.
+        for i in 1..=32i8 {
+            gba.apu.fifos.a.push_sample(i.wrapping_mul(3));
+        }
+        // Overflow every 512 cycles (= one default PWM period) so each slice
+        // emits one PCM frame between pops.
+        gba.timer.write_reload(TimerId::Tm0, 0xFFFF - 511);
+        gba.timer.write_control(TimerId::Tm0, CTRL_START);
+
+        gba.apu.pcm.clear();
+        gba.advance_subsystems(512 * 8);
+        let frames = gba.apu.pcm.snapshot();
+        assert!(
+            frames.len() >= 8,
+            "expected PWM frames, got {}",
+            frames.len()
+        );
+        // At least two distinct non-silence levels across the quantum.
+        let mut distinct = std::collections::BTreeSet::new();
+        for f in &frames {
+            if f.left != 0 {
+                distinct.insert(f.left);
+            }
+        }
+        assert!(
+            distinct.len() >= 2,
+            "PWM/FIFO interleave should surface multiple latch values, got {distinct:?}"
+        );
     }
 }

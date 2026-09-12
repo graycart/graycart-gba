@@ -29,6 +29,20 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Fixed
 
+- **FireRed loud saw / rumble (`walter/firered-audio-rumble-5af6`):** After FIFO
+  #25, Direct Sound was present but a huge saw-like rumble sat on top of the
+  music. Root cause: PWM→i16 used full-scale `<< 6` (rails host DAC on ordinary
+  FIFO peaks; aliased stairs read as a loud saw), overflow **drop-oldest**
+  corrupted the playhead under DMA pressure, and large cycle quanta popped many
+  FIFO samples then emitted all PWM frames from only the final latch. Fixes:
+  (1) `to_i16_pcm` centers on programmed SOUNDBIAS and uses `<< 5` headroom;
+  (2) FIFO overflow **resets empty** then accepts the write (Gericom);
+  (3) timer overflow ↔ PWM emission **interleaved** per quantum; (4) DMA
+  half-empty check also runs **before** pop (jsgroth). Crate **0.1.10**
+  (serialized after AV-debug #26’s 0.1.9).
+
+### Fixed
+
 - **FIFO Direct Sound / host audio (`walter/firered-fifo-audio-0568`):** FireRed
   past SWI `0x12` had active DMA1/2 Special FIFO traffic but audible pops /
   whirrs / bings. Fixes: (1) FIFO Special forces **Fixed** dest + 32-bit (mGBA

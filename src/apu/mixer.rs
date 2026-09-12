@@ -123,10 +123,14 @@ pub fn pwm_period_cycles(res: u16) -> u32 {
     16_777_216 / pwm_rate_hz(res)
 }
 
-/// Convert unsigned 10-bit (biased) to signed 16-bit PCM centered.
+/// Convert unsigned 10-bit (biased) to signed 16-bit PCM centered on `bias`.
+///
+/// Uses `<< 5` (½ of full-scale `<< 6`) so a max Direct Sound peak keeps host
+/// DAC headroom. Full `<< 6` rails i16 on ordinary FIFO peaks; the stair-step
+/// aliasing then reads as a loud saw on top of the music (FireRed after #25).
+/// Matches MAME's ~0.5 FIFO DAC route gain posture for host playback.
 #[must_use]
-pub fn to_i16_pcm(sample10: u16) -> i16 {
-    // Map 0..0x3FF around mid 0x200 → roughly -512..511 then scale to i16.
-    let centered = i32::from(sample10) - 0x200;
-    (centered << 6).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+pub fn to_i16_pcm(sample10: u16, bias: i32) -> i16 {
+    let centered = i32::from(sample10) - bias;
+    (centered << 5).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
