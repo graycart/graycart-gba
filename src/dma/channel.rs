@@ -321,10 +321,16 @@ impl Channel {
     }
 
     /// FIFO Special: force 4×32-bit units; dest stays at latched DAD (fixed).
+    ///
+    /// Cited: mGBA `GBAAudioScheduleFifoDma` — dest control forced Fixed + 32-bit
+    /// width regardless of the CNT_H bits the game programmed (GBATEK Sound FIFO).
     pub(crate) fn arm_fifo_burst(&mut self) {
         self.remaining = 4;
         // Force 32-bit for the burst regardless of CNT_H size bit.
         self.control |= CONTROL_TRANSFER_TYPE;
+        // Force Fixed dest (bits 5–6 = 10b). Clearing Increment/Reload prevents
+        // DAD walking off FIFO_A/B mid-burst (samples lost → underrun garbage).
+        self.control = (self.control & !(0b11 << 5)) | ((DestControl::Fixed as u16) << 5);
         self.startup_delay = 0;
         self.pending_immediate = true;
         self.active = false;
