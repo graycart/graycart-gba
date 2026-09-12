@@ -4,13 +4,14 @@
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: ARM DDI0210C (ARM7TDMI TRM r4p1) -- programmer's model, pipeline
 //!   https://developer.arm.com/documentation/ddi0210/c/
-//! Note: registers/modes + pipeline/exception stubs; `arm/**` and `thumb/**`
-//! decode/execute are sibling streams on `dev/p1-cpu`.
+//! Note: registers/modes + pipeline/exception stubs; Thumb decode/execute in
+//! [`thumb`]; `arm/**` decode/execute is a sibling stream on `dev/p1-cpu`.
 //!
 //! Research: Project store `docs/graycart-gba/01-cpu-arm7tdmi.md`.
 
 mod mode;
 mod regs;
+pub mod thumb;
 
 pub mod exception;
 pub mod pipeline;
