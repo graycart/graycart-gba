@@ -11,6 +11,7 @@
 //! P3: timers / keypad / Halt wake / IRQ sample.
 //! P4: real PPU scanline timing replaces crude VBlank toggle.
 //! P5: DMA VBlank/HBlank/FIFO/capture starts hooked from PPU/APU edges.
+//! P6: APU PSG + FIFO timer clock + mixer/PCM; sound MMIO owned by APU.
 
 pub mod apu;
 pub mod bios;
@@ -28,7 +29,7 @@ pub mod timer;
 
 use bios::BiosMode;
 use cpu::{soft_boot, step, ExceptionKind, StepHle, StepOutcome};
-use mmio::MachineMem;
+use mmio::{BusApuMem, MachineMem};
 use ppu::FRAME_CYCLES;
 
 /// How a ROM is launched (mirrors harness [`RomLaunchMode`] names).
@@ -124,6 +125,7 @@ impl Gba {
             hw: &mut self.hw,
             ppu: &mut self.ppu,
             dma: &mut self.dma,
+            apu: &mut self.apu,
         }
     }
 
@@ -141,6 +143,7 @@ impl Gba {
                 hw,
                 ppu,
                 dma,
+                apu,
                 cpu,
                 ..
             } = self;
@@ -152,6 +155,7 @@ impl Gba {
                 hw,
                 ppu,
                 dma,
+                apu,
             };
             cpu.pipeline.refill(&mut mem);
         }
@@ -169,24 +173,44 @@ impl Gba {
         let vcount = self.ppu.timing.vcount;
         let fifo_req = self.apu.take_fifo_dma_request();
 
-        let Self { bus, irq, dma, .. } = self;
+        let Self {
+            bus, irq, dma, apu, ..
+        } = self;
+        let mut mem = BusApuMem { bus, apu };
         if vblank {
-            let _ = dma.on_vblank(bus, irq);
+            let _ = dma.on_vblank(&mut mem, irq);
         }
         if hblank {
-            let _ = dma.on_hblank(bus, irq, hif);
-            let _ = dma.on_capture_hblank(bus, irq, vcount);
+            let _ = dma.on_hblank(&mut mem, irq, hif);
+            let _ = dma.on_capture_hblank(&mut mem, irq, vcount);
         }
         if fifo_req != 0 {
-            let _ = dma.on_fifo_request(bus, irq, fifo_req);
+            let _ = dma.on_fifo_request(&mut mem, irq, fifo_req);
         }
-        let _ = dma.run_pending(bus, irq);
+        let _ = dma.run_pending(&mut mem, irq);
+    }
+
+    /// Service FIFO DMA request bits only (after timer overflows) — no blanking re-fire.
+    fn service_fifo_dma(&mut self) {
+        let fifo_req = self.apu.take_fifo_dma_request();
+        if fifo_req == 0 {
+            return;
+        }
+        let Self {
+            bus, irq, dma, apu, ..
+        } = self;
+        let mut mem = BusApuMem { bus, apu };
+        let _ = dma.on_fifo_request(&mut mem, irq, fifo_req);
+        let _ = dma.run_pending(&mut mem, irq);
     }
 
     /// Drain pending Immediate (or already-armed) bursts only — no edge re-fire.
     fn drain_dma(&mut self) {
-        let Self { bus, irq, dma, .. } = self;
-        let _ = dma.run_pending(bus, irq);
+        let Self {
+            bus, irq, dma, apu, ..
+        } = self;
+        let mut mem = BusApuMem { bus, apu };
+        let _ = dma.run_pending(&mut mem, irq);
     }
 
     /// One machine step: PPU → DMA edges → timer/keypad/halt → IRQ → (optional) CPU.
@@ -201,7 +225,12 @@ impl Gba {
 
         self.service_dma_edges();
 
-        self.timer.step(STEP_CYCLES, &mut self.irq);
+        let overflows = self.timer.step(STEP_CYCLES, &mut self.irq);
+        self.apu.on_timer_overflows(overflows[0], overflows[1]);
+        // FIFO DMA request may have been raised by timer sampling.
+        self.service_fifo_dma();
+        self.apu.step(STEP_CYCLES);
+
         self.input.poll_keypad_irq(&mut self.irq);
         self.hw.poll_halt_wake(self.irq.ie_and_if());
 
@@ -225,6 +254,7 @@ impl Gba {
                 hw,
                 ppu,
                 dma,
+                apu,
                 cpu,
                 ..
             } = self;
@@ -236,6 +266,7 @@ impl Gba {
                 hw,
                 ppu,
                 dma,
+                apu,
             };
             step(cpu, &mut mem, hle)
         };
@@ -276,6 +307,7 @@ impl Gba {
     pub fn io16(&self, offset: usize) -> u16 {
         match offset {
             o if o <= 0x56 => self.ppu.read16(o),
+            o if apu::Apu::owns_offset(o) => self.apu.read16(o),
             o if (0xB0..0xE0).contains(&o) => self.dma.read_mmio16((o - 0xB0) as u32),
             o if (0x100..0x110).contains(&o) => self.timer.read_mmio16(o - 0x100),
             0x130 => self.input.read_keyinput(),
@@ -293,6 +325,17 @@ impl Gba {
                 lo | (hi << 8)
             }
         }
+    }
+
+    /// Pull host PCM frames from the APU ring (P6).
+    pub fn pull_audio(&mut self, out: &mut [apu::PcmFrame]) -> usize {
+        self.apu.pull_samples(out)
+    }
+
+    /// Soft WAV bytes of the current PCM snapshot (P6 soft gate / `--audio-out`).
+    #[must_use]
+    pub fn soft_wav_bytes(&self) -> Vec<u8> {
+        self.apu.soft_wav_bytes()
     }
 
     /// Mode 4 VRAM byte (LCD / framebuffer oracle).
@@ -462,5 +505,50 @@ mod tests {
         assert!(!gba.dma.channel(ChannelId::Ch0).enabled());
         assert_eq!(gba.bus.read16(0x0300_0200), 0x1234);
         assert_eq!(gba.bus.read16(0x0300_0202), 0x5678);
+    }
+
+    #[test]
+    fn g6_glue_sound_mmio_and_fifo_dma() {
+        use crate::bus::CpuMem;
+        use crate::dma::{control_word, ChannelId, DestControl, SrcControl, StartTiming};
+        use crate::timer::{TimerId, CTRL_START};
+
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0084, 0x0080); // SOUNDCNT_X master on
+            mem.write16(0x0400_0082, 0x0B0F); // SOUNDCNT_H: reset A + route/vol
+                                              // Seed source words for DMA1 → FIFO A
+            mem.write32(0x0300_0400, 0x0403_0201);
+            mem.write32(0x0300_0404, 0x0807_0605);
+            mem.write32(0x0300_0408, 0x0C0B_0A09);
+            mem.write32(0x0300_040C, 0x100F_0E0D);
+            mem.write32(0x0400_00BC, 0x0300_0400); // DMA1 SAD
+            mem.write32(0x0400_00C0, 0x0400_00A0); // DMA1 DAD = FIFO A
+            mem.write16(0x0400_00C4, 1);
+            let ctrl = control_word(
+                DestControl::Fixed,
+                SrcControl::Increment,
+                StartTiming::Special,
+                true, // 32-bit
+                true,
+            ) | crate::dma::CONTROL_REPEAT;
+            mem.write16(0x0400_00C6, ctrl);
+        }
+        assert!(gba.dma.channel(ChannelId::Ch1).enabled());
+
+        // Manually request FIFO DMA (as timer half-empty would).
+        gba.apu.request_fifo_dma(true, false);
+        gba.service_fifo_dma();
+        assert!(gba.apu.fifos.a.len() >= 4);
+
+        // Timer0 overflow path: configure TM0 near overflow and step.
+        gba.timer.write_reload(TimerId::Tm0, 0xFFFF);
+        gba.timer.write_control(TimerId::Tm0, CTRL_START);
+        let before = gba.apu.fifos.a.len();
+        gba.step_instruction();
+        // May or may not pop depending on overflow this cycle; sound MMIO readable.
+        assert_eq!(gba.io16(0x84) & 0x80, 0x80);
+        let _ = before;
     }
 }

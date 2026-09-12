@@ -1,13 +1,15 @@
-//! P3–P5 MMIO dispatch — timers / IRQ / keypad / hw / LCD / DMA ports.
+//! P3–P6 MMIO dispatch — timers / IRQ / keypad / hw / LCD / DMA / sound ports.
 //!
-//! Cited: GBATEK — Memory Map / Interrupt Control / Timers / Keypad / LCD I/O / DMA
+//! Cited: GBATEK — Memory Map / Interrupt Control / Timers / Keypad / LCD I/O / DMA / Sound
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/05-io-timers-irq-input.md` §2.3
 //!   Project store `docs/graycart-gba/03-ppu.md` §13
 //!   Project store `docs/graycart-gba/02-memory-bus-dma.md` §8
-//! Note: sound FIFO data ports stay dumb `bus.io` until APU (P6) owns them.
+//!   Project store `docs/graycart-gba/04-apu.md` §2
+//! Note: sound FIFO / SOUNDCNT_* owned by APU (P6).
 //! IRQ delay / IO write latency TBD (IO-TBD-4).
 
+use crate::apu::Apu;
 use crate::bus::mirror::io_offset;
 use crate::bus::{Bus, CpuMem};
 use crate::dma::Dma;
@@ -26,6 +28,7 @@ pub struct MachineMem<'a> {
     pub hw: &'a mut Hw,
     pub ppu: &'a mut Ppu,
     pub dma: &'a mut Dma,
+    pub apu: &'a mut Apu,
 }
 
 impl MachineMem<'_> {
@@ -42,6 +45,8 @@ impl MachineMem<'_> {
         match off {
             // LCD I/O 0x000–0x056
             o if o <= 0x56 => self.ppu.read16(o),
+            // Sound 0x060–0x0A6
+            o if Apu::owns_offset(o) => self.apu.read16(o),
             // DMA0–3 CNT_H readable; other DMA regs open-bus → 0 via dma helper
             o if (0xB0..0xE0).contains(&o) => self.dma.read_mmio16((o - 0xB0) as u32),
             // Timers 0–3
@@ -76,6 +81,13 @@ impl MachineMem<'_> {
             self.poke_io8(0x300, value);
             return;
         }
+        // FIFO byte writes: push as low byte of a word slot (partial write still advances).
+        if off == 0xA0 || off == 0xA4 {
+            let word = u32::from(value);
+            self.apu.write32(off, word);
+            self.mirror_u16(off, self.apu.read16(off));
+            return;
+        }
         let aligned = off & !1;
         let cur = self.read_io16(aligned);
         let next = if off & 1 == 0 {
@@ -91,6 +103,10 @@ impl MachineMem<'_> {
             o if o <= 0x56 => {
                 self.ppu.write16(o, value);
                 self.mirror_u16(o, self.ppu.read16(o));
+            }
+            o if Apu::owns_offset(o) => {
+                self.apu.write16(o, value);
+                self.mirror_u16(o, self.apu.read16(o));
             }
             o if (0xB0..0xE0).contains(&o) => {
                 self.dma.write_mmio16((o - 0xB0) as u32, value);
@@ -154,6 +170,11 @@ impl MachineMem<'_> {
 
     fn write_io32(&mut self, off: usize, value: u32) {
         match off {
+            o if Apu::owns_offset(o) && (o & 3) == 0 => {
+                self.apu.write32(o, value);
+                self.mirror_u16(o, self.apu.read16(o));
+                self.mirror_u16(o + 2, self.apu.read16(o + 2));
+            }
             o if (0xB0..0xE0).contains(&o) && (o & 3) == 0 => {
                 self.dma.write_mmio32((o - 0xB0) as u32, value);
                 self.mirror_u16(o, self.dma.read_mmio16((o - 0xB0) as u32));
@@ -244,6 +265,55 @@ impl CpuMem for MachineMem<'_> {
         if let Some(off) = io_offset(addr) {
             self.write_io32(off, value);
             return;
+        }
+        self.bus.write32(addr, value);
+    }
+}
+
+/// Bus + APU view for DMA drains so FIFO dest writes feed the APU.
+pub struct BusApuMem<'a> {
+    pub bus: &'a mut Bus,
+    pub apu: &'a mut Apu,
+}
+
+impl CpuMem for BusApuMem<'_> {
+    fn read8(&mut self, addr: u32) -> u8 {
+        self.bus.read8(addr)
+    }
+    fn write8(&mut self, addr: u32, value: u8) {
+        if let Some(off) = io_offset(addr) {
+            if off == 0xA0 || off == 0xA4 {
+                self.apu.write32(off, u32::from(value));
+                return;
+            }
+        }
+        self.bus.write8(addr, value);
+    }
+    fn read16(&mut self, addr: u32) -> u16 {
+        self.bus.read16(addr)
+    }
+    fn write16(&mut self, addr: u32, value: u16) {
+        if let Some(off) = io_offset(addr) {
+            if Apu::owns_offset(off) {
+                self.apu.write16(off, value);
+                return;
+            }
+        }
+        self.bus.write16(addr, value);
+    }
+    fn read32(&mut self, addr: u32) -> u32 {
+        self.bus.read32(addr)
+    }
+    fn write32(&mut self, addr: u32, value: u32) {
+        if let Some(off) = io_offset(addr) {
+            if off == 0xA0 || off == 0xA4 {
+                self.apu.write32(off, value);
+                return;
+            }
+            if Apu::owns_offset(off) {
+                self.apu.write32(off, value);
+                return;
+            }
         }
         self.bus.write32(addr, value);
     }

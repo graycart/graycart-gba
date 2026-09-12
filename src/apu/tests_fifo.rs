@@ -1,0 +1,82 @@
+//! G6-fifo — FIFO A/B timer clock + DMA request + reset.
+//!
+//! Cited: GBATEK — FIFO / DMA Sound
+//!   https://problemkaputt.de/gbatek.htm
+
+use super::fifo::{FIFO_CAPACITY, FIFO_HALF};
+use super::regs::{MASTER_ENABLE, OFF_FIFO_A, OFF_FIFO_B, OFF_SOUNDCNT_H, OFF_SOUNDCNT_X};
+use super::Apu;
+
+#[test]
+fn fifo_reset_bit_clears_queue() {
+    let mut apu = Apu::new();
+    apu.write32(OFF_FIFO_A, 0x0102_0304);
+    assert!(!apu.fifos.a.is_empty());
+    apu.write16(OFF_SOUNDCNT_H, 1 << 11); // reset A
+    assert!(apu.fifos.a.is_empty());
+    assert_eq!(apu.fifos.latch_a, 0);
+}
+
+#[test]
+fn timer0_overflow_pops_and_requests_dma_when_half() {
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_X, MASTER_ENABLE);
+    // Timer0 for A (bit10=0), route irrelevant
+    apu.write16(OFF_SOUNDCNT_H, 0x0200); // A→right only, TM0
+                                         // Fill just above half so one pop crosses threshold
+    for i in 0..(FIFO_HALF + 1) {
+        apu.fifos.a.push_sample(i as i8);
+    }
+    assert!(!apu.fifos.a.needs_dma());
+    let _ = apu.take_fifo_dma_request();
+    apu.on_timer_overflows(1, 0);
+    assert_eq!(apu.fifos.latch_a, 0); // oldest sample
+    assert_eq!(apu.fifos.a.len(), FIFO_HALF);
+    let req = apu.take_fifo_dma_request();
+    assert_eq!(req & 1, 1, "DMA1 should request when ≤ half");
+}
+
+#[test]
+fn timer1_selected_for_fifo_b() {
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_H, (1 << 14) | (1 << 12)); // B timer1 + right
+    for _ in 0..4 {
+        apu.fifos.b.push_sample(0x55);
+    }
+    let _ = apu.take_fifo_dma_request();
+    apu.on_timer_overflows(5, 0); // TM0 only — should not pop B
+    assert_eq!(apu.fifos.b.len(), 4);
+    apu.on_timer_overflows(0, 1);
+    assert_eq!(apu.fifos.b.len(), 3);
+    assert_eq!(apu.fifos.latch_b, 0x55);
+}
+
+#[test]
+fn underrun_holds_last_sample() {
+    let mut apu = Apu::new();
+    apu.fifos.a.push_sample(0x7F);
+    apu.on_timer_overflows(1, 0);
+    assert_eq!(apu.fifos.latch_a, 0x7F);
+    // Empty further pops hold last
+    for _ in 0..8 {
+        apu.on_timer_overflows(1, 0);
+    }
+    assert_eq!(apu.fifos.latch_a, 0x7F);
+}
+
+#[test]
+fn fifo_capacity_is_32_samples() {
+    let mut apu = Apu::new();
+    for i in 0..40 {
+        apu.fifos.a.push_sample(i as i8);
+    }
+    assert_eq!(apu.fifos.a.len(), FIFO_CAPACITY);
+}
+
+#[test]
+fn fifo_b_word_push() {
+    let mut apu = Apu::new();
+    apu.write32(OFF_FIFO_B, 0xAABB_CCDD);
+    assert_eq!(apu.fifos.b.pop_sample() as u8, 0xDD);
+    assert_eq!(apu.fifos.b.pop_sample() as u8, 0xCC);
+}

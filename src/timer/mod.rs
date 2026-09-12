@@ -175,11 +175,13 @@ impl Timers {
     ///
     /// Cascade (count-up) timers ignore their prescaler and tick once per
     /// previous-timer overflow. TM0 never cascades.
-    pub fn step(&mut self, cycles: u64, irq: &mut impl IrqRaise) {
-        if cycles == 0 {
-            return;
-        }
+    ///
+    /// Returns per-channel overflow counts (P6 APU uses TM0/TM1 for FIFO clock).
+    pub fn step(&mut self, cycles: u64, irq: &mut impl IrqRaise) -> [u64; 4] {
         let mut overflows = [0u64; 4];
+        if cycles == 0 {
+            return overflows;
+        }
         for i in 0..4 {
             let id = TimerId::from_index(i).expect("0..4");
             let cascade = i > 0 && self.channels[i].count_up();
@@ -196,5 +198,6 @@ impl Timers {
                 overflows[i] = self.channels[i].step_cycles(cycles, id, &mut raise);
             }
         }
+        overflows
     }
 }
