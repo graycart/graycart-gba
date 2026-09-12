@@ -46,20 +46,22 @@ tests/
 ├── fixtures/
 │   ├── README.md          # this license table (mandatory)
 │   ├── jsmolka/           # MIT — LICENSE + arm/thumb/memory .gba (pinned)
-│   ├── mgba-suite/        # MIT — LICENSE stub; suite.gba later
+│   ├── inhouse/           # MIT — P3 simple-irq stub (binary optional)
+│   ├── mgba-suite/        # MIT — LICENSE stub; suite.gba later; P3 stretch dirs
 │   ├── nba-hw-test/       # BSD-3 — LICENSE stub; curated ROM later
 │   ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
 │   └── tonc/              # CC0 — empty until selected demos
 └── roms/
     ├── harness.rs         # Outcome + RomLaunchMode + GbaTestRom
     ├── jsmolka.rs         # arm/thumb/memory (PASS in default CI)
+    ├── p3.rs              # P3 gates (ignored until simple-irq.gba)
     ├── mgba_suite.rs      # ignored SoC-depth stub
     ├── nba_hw_test.rs     # ignored stretch stub
     └── main.rs            # CI-blocking apparatus smoke
 ```
 
 Default `cargo test` runs jsmolka arm/thumb/memory gates (vendored MIT prebuilts).
-Additional conformance matrices (`mgba_suite`, `nba_hw_test`, full printout) stay
+Additional conformance matrices (`p3`, `mgba_suite`, `nba_hw_test`, full printout) stay
 `#[ignore]` / `cargo test -- --ignored` opt-in — not default CI, no nightly yet.
 
 Outcomes: `PASS` / `FAIL` / `TIMEOUT` / `UNSUPPORTED` / `SKIPPED`

@@ -22,7 +22,9 @@ stay untagged until a playable or gate-complete slice ships.
   harness gates wired early (`tests/roms/p3.rs`) — in-house simple IRQ ROM
   stub + mGBA `io-read` / `timer-irq` stretch stubs (`#[ignore]` until
   fixtures). Unit gates (timers / IE·IF·IME / Halt wake / KEYINPUT) land on
-  exclusive streams. jsmolka arm+thumb+memory stay default-CI PASS.
+  exclusive streams. `Gba` step wires halt wake → timer/keypad → IRQ sample;
+  `mmio::MachineMem` dispatches IE/IF/IME, timers, KEY*, HALTCNT/POSTFLG/
+  WAITCNT/SIO. jsmolka arm+thumb+memory stay default-CI PASS.
 - **Suite apparatus harden:** README/CI matrix documents that default `ci.yml`
   (ubuntu/macOS/windows, `fail-fast: false`) asserts jsmolka **arm+thumb+memory
   PASS**; `--ignored` stays opt-in (no nightly job yet). Stubbed ignored rows +
