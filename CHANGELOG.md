@@ -16,6 +16,15 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Added
+
+- **Suite apparatus harden:** README/CI matrix documents that default `ci.yml`
+  (ubuntu/macOS/windows, `fail-fast: false`) asserts jsmolka **arm+thumb+memory
+  PASS**; `--ignored` stays opt-in (no nightly job yet). Stubbed ignored rows +
+  LICENSE paths for next SoC-depth gates: `tests/roms/mgba_suite.rs` (MIT) and
+  `tests/roms/nba_hw_test.rs` + `tests/fixtures/nba-hw-test/` (BSD-3-Clause).
+  No large binaries vendored.
+
 ### Fixed
 
 - **jsmolka `arm.gba` P1 gate (honest green):** ARM7TDMI PC+12 when R15 is
@@ -24,22 +33,20 @@ stay untagged until a playable or gate-complete slice ships.
   LDM/STM `^` user-bank transfers, empty Rlist ±0x40, and ARMv4 STM base-in-rlist
   NEW/OLD base rules. Default CI asserts arm+thumb+memory PASS.
 
-### Added
+### Previously
 
+- **jsmolka load+oracle (workstream D/E):** BiosHle cart load + r12/idle oracle;
+  default CI asserts thumb+memory (then arm after PC+12 fix).
 - **jsmolka MIT prebuilts (workstream C):** vendored
   `tests/fixtures/jsmolka/{arm,thumb,memory}/*.gba` pinned to upstream
   `a7113b67e63f83a9b321696ddd7042ccfad6c881` + `fetch.sh`; LICENSE intact.
-  Ignored matrices still return **SKIPPED** until load+oracle (D/E). No BIOS /
-  commercial ROMs.
-- **Test harness scaffolding (apparatus only — no accuracy claim):** shared
+  No BIOS / commercial ROMs.
+- **Test harness scaffolding (apparatus only):** shared
   `tests/roms/{harness,jsmolka,main}.rs` with `GbaTestRom` + outcomes
-  (`PASS`/`FAIL`/`TIMEOUT`/`UNSUPPORTED`/`SKIPPED`); ignored jsmolka
-  arm/thumb/memory matrix; LICENSE/path stubs kept; optional
-  `tests/fixtures/jsmolka/fetch-sketch.sh` (does not download). Default CI
-  stays ROM-free (no `--ignored`).
-- **P2 bus/memory (in progress):** region map + mirrors, WAITCNT waitstates, video STRB / open-bus stubs, DMA register file + Immediate (shared branch `dev/p2-bus`).
-- **P0 scaffold (in progress):** fixture layout under `tests/fixtures/` with a
-  mandatory upstream license table (jsmolka MIT, mGBA suite MIT, FuzzARM
-  GPL-3.0, Tonc examples CC0). No commercial ROMs or BIOS images.
-- Repository MIT `LICENSE` (Graycart source/docs only; fixtures keep upstream
-  terms).
+  (`PASS`/`FAIL`/`TIMEOUT`/`UNSUPPORTED`/`SKIPPED`); LICENSE/path stubs.
+- **P2 bus/memory:** region map + mirrors, WAITCNT waitstates, video STRB /
+  open-bus stubs, DMA register file + Immediate.
+- **P0 scaffold:** fixture layout under `tests/fixtures/` with a mandatory
+  upstream license table (jsmolka MIT, mGBA suite MIT, FuzzARM GPL-3.0, Tonc
+  examples CC0). Repository MIT `LICENSE` (Graycart source/docs only; fixtures
+  keep upstream terms).

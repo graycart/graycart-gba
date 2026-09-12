@@ -7,7 +7,7 @@
 //! Cited: jsmolka/gba-tests (MIT) — `m_test_eval` / idle / Mode 4 text
 //!   https://github.com/jsmolka/gba-tests
 //! Note: outcomes are real PASS/FAIL/TIMEOUT once ROMs load — never fake green.
-//! Suites stay `#[ignore]` until CPU coverage can complete them.
+//! jsmolka arm/thumb/memory assert PASS in default CI; deeper suites stay `#[ignore]`.
 
 #![allow(dead_code)] // helpers used by suite matrices + unit smoke
 

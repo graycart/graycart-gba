@@ -5,7 +5,8 @@ Note: provenance stub only; no suite.gba in P0.
 -->
 # mGBA suite fixtures
 
-**Status (P0):** directory stub — no `suite.gba` committed yet.
+**Status:** LICENSE/path stub + ignored harness row in `tests/roms/mgba_suite.rs`
+— no `suite.gba` committed yet (next SoC-depth gate after jsmolka).
 
 | Field | Value |
 |-------|-------|
