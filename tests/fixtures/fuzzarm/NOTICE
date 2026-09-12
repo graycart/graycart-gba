@@ -1,0 +1,7 @@
+FuzzARM test ROMs and generator are Copyright (c) DenSinH and contributors.
+Upstream: https://github.com/DenSinH/FuzzARM
+License: GNU General Public License v3.0 (GPL-3.0)
+
+This directory is a Graycart fixture stub. When ROMs are added, retain the full
+upstream LICENSE text (see LICENSE) and do not claim coverage under the
+Graycart repository MIT license.
