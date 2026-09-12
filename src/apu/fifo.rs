@@ -6,7 +6,8 @@
 //!   https://jsgroth.dev/blog/posts/gba-audio/
 //! Research: Project store `docs/graycart-gba/04-apu.md` §4–§5
 //! Note: capacity modelled as 32 samples (GBATEK); half-empty ≤16 → DMA request.
-//! Underrun: hold last sample (provisional / Gericom secondary).
+//! Underrun: hold last sample (Gericom / mGBA #1847).
+//! Overflow: reset empty then accept the new write (Gericom secondary).
 
 /// Logical FIFO depth in samples (GBATEK: 8×32-bit = 32 bytes).
 pub const FIFO_CAPACITY: usize = 32;
@@ -27,7 +28,7 @@ pub struct Fifo {
     last: i8,
     /// Timer pops while empty (held last sample — pops / stuck tone risk).
     pub underruns: u64,
-    /// Pushes that dropped the oldest sample because the queue was full.
+    /// Pushes that hit a full FIFO (overflow reset — saw/corruption risk).
     pub overruns: u64,
 }
 
@@ -82,9 +83,13 @@ impl Fifo {
 
     pub fn push_sample(&mut self, sample: i8) {
         if self.len >= FIFO_CAPACITY {
-            // Overflow: drop oldest (provisional secondary: some HW clears — we drop).
-            self.head = (self.head + 1) % FIFO_CAPACITY;
-            self.len -= 1;
+            // Overflow: clear like SOUNDCNT_H reset (Gericom / mGBA #1847).
+            // Drop-oldest advances the playhead under DMA pressure → harsh saw.
+            self.head = 0;
+            self.tail = 0;
+            self.len = 0;
+            self.last = 0;
+            self.buf = [0; FIFO_CAPACITY];
             self.overruns = self.overruns.saturating_add(1);
         }
         self.buf[self.tail] = sample;
@@ -143,15 +148,18 @@ impl FifoPair {
         self.latch_b = 0;
     }
 
-    /// Timer overflow for FIFO A: latch next sample; return whether DMA1 should fire.
+    /// Timer overflow for FIFO A: request DMA while half-empty **before** pop
+    /// (jsgroth / mGBA), then latch next sample.
     pub fn on_timer_a(&mut self) -> bool {
+        let need = self.a.needs_dma();
         self.latch_a = self.a.pop_sample();
-        self.a.needs_dma()
+        need || self.a.needs_dma()
     }
 
     /// Timer overflow for FIFO B.
     pub fn on_timer_b(&mut self) -> bool {
+        let need = self.b.needs_dma();
         self.latch_b = self.b.pop_sample();
-        self.b.needs_dma()
+        need || self.b.needs_dma()
     }
 }

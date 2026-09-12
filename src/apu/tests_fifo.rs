@@ -67,10 +67,29 @@ fn underrun_holds_last_sample() {
 #[test]
 fn fifo_capacity_is_32_samples() {
     let mut apu = Apu::new();
-    for i in 0..40 {
+    for i in 0..32 {
         apu.fifos.a.push_sample(i as i8);
     }
     assert_eq!(apu.fifos.a.len(), FIFO_CAPACITY);
+}
+
+#[test]
+fn fifo_overflow_resets_empty_like_hw() {
+    // Gericom / mGBA #1847: overflow clears the FIFO (like the reset bit),
+    // then accepts the new write. Drop-oldest corrupts the playhead into a
+    // harsh saw while DMA keeps feeding.
+    let mut apu = Apu::new();
+    for i in 0..FIFO_CAPACITY {
+        apu.fifos.a.push_sample(i as i8);
+    }
+    assert_eq!(apu.fifos.a.len(), FIFO_CAPACITY);
+    apu.fifos.a.push_sample(99);
+    assert_eq!(
+        apu.fifos.a.len(),
+        1,
+        "overflow must reset empty then keep the new sample"
+    );
+    assert_eq!(apu.fifos.a.pop_sample(), 99);
 }
 
 #[test]

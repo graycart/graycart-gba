@@ -894,7 +894,7 @@ impl DebugTracker {
         }
         if period.overrun_a + period.overrun_b > 0 {
             log_line(&format!(
-                "warn apu fifo overrun A={} B={} (DMA too fast / Fixed-dest miss?)",
+                "warn apu fifo overrun A={} B={} (FIFO overflow reset — DMA too fast?)",
                 period.overrun_a, period.overrun_b
             ));
         }

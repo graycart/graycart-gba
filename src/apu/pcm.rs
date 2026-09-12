@@ -14,11 +14,13 @@ pub struct PcmFrame {
     pub right: i16,
 }
 
-impl From<MixedSample> for PcmFrame {
-    fn from(m: MixedSample) -> Self {
+impl PcmFrame {
+    /// Convert a biased 10-bit mix pair using the programmed SOUNDBIAS level.
+    #[must_use]
+    pub fn from_mixed(m: MixedSample, bias: i32) -> Self {
         Self {
-            left: to_i16_pcm(m.left),
-            right: to_i16_pcm(m.right),
+            left: to_i16_pcm(m.left, bias),
+            right: to_i16_pcm(m.right, bias),
         }
     }
 }
