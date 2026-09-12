@@ -14,7 +14,7 @@
 mod frontend;
 
 use graycart_gba::debug::{
-    parse_debug_arg, print_load_summary, DebugConfig, DebugLevel, Verbosity,
+    format_av_report, parse_debug_arg, print_load_summary, DebugConfig, DebugLevel, Verbosity,
 };
 use graycart_gba::{Gba, RomLaunchMode};
 use std::env;
@@ -279,6 +279,9 @@ fn run_headless(
 
     if let Some(n) = frame_cap {
         gba.run_frames(n);
+        if debug_cfg.enabled() {
+            eprint!("{}", format_av_report(&gba, n));
+        }
         if let Some(path) = hash_out {
             let body = gba.ppu.hash_file_body(n);
             fs::write(&path, body).unwrap_or_else(|e| {

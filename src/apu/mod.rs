@@ -9,6 +9,7 @@
 //! Note: P5 FIFO DMA request latch retained for DMA1/2 Special coupling.
 
 mod fifo;
+mod health;
 mod mixer;
 mod pcm;
 mod psg;
@@ -26,6 +27,9 @@ mod tests_psg;
 mod tests_regs;
 
 pub use fifo::{Fifo, FifoPair, FIFO_CAPACITY, FIFO_HALF};
+pub use health::{
+    fifo_route_label, ApuHealth, ApuHealthPeriod, CLIP_ABS, DC_WARN_ABS, EXTREME_ABS,
+};
 pub use mixer::{apply_pwm_truncate, mix, pwm_period_cycles, pwm_rate_hz, to_i16_pcm, MixedSample};
 pub use pcm::{encode_wav_s16le, soft_rms, PcmBuffer, PcmFrame, PCM_CAPACITY};
 pub use psg::Psg;
@@ -43,6 +47,8 @@ pub struct Apu {
     pub pcm: PcmBuffer,
     /// Bit0 → DMA1 FIFO request, bit1 → DMA2. Cleared when consumed by DMA glue.
     pub fifo_dma_request: u8,
+    /// Always-on health counters for `--debug` AV summaries.
+    pub health: ApuHealth,
     /// Cycles accumulated toward next PWM output sample.
     pwm_accum: u32,
 }
@@ -62,6 +68,7 @@ impl Apu {
             fifos: FifoPair::new(),
             pcm: PcmBuffer::new(),
             fifo_dma_request: 0,
+            health: ApuHealth::new(),
             pwm_accum: 0,
         }
     }
@@ -107,15 +114,19 @@ impl Apu {
         }
         if effect.reset_fifo_a {
             self.fifos.reset_a();
+            self.health.on_fifo_push_a();
         }
         if effect.reset_fifo_b {
             self.fifos.reset_b();
+            self.health.on_fifo_push_b();
         }
         if let Some(w) = effect.fifo_a_word {
             self.fifos.a.push_word(w);
+            self.health.on_fifo_push_a();
         }
         if let Some(w) = effect.fifo_b_word {
             self.fifos.b.push_word(w);
+            self.health.on_fifo_push_b();
         }
         if effect.trigger_ch1 {
             self.psg.trigger_ch1(&self.regs);
@@ -151,15 +162,28 @@ impl Apu {
         let fire_a = if a_tm1 { tm1 } else { tm0 };
         let fire_b = if b_tm1 { tm1 } else { tm0 };
 
+        let routed_a = self.regs.fifo_a_left() || self.regs.fifo_a_right();
+        let routed_b = self.regs.fifo_b_left() || self.regs.fifo_b_right();
         for _ in 0..fire_a {
-            if self.fifos.on_timer_a() {
+            let was_empty = self.fifos.a.is_empty();
+            let needs = self.fifos.on_timer_a();
+            self.health
+                .on_fifo_timer_a(was_empty, routed_a, self.fifos.a.needs_dma());
+            if needs {
                 dma1 = true;
             }
         }
         for _ in 0..fire_b {
-            if self.fifos.on_timer_b() {
+            let was_empty = self.fifos.b.is_empty();
+            let needs = self.fifos.on_timer_b();
+            self.health
+                .on_fifo_timer_b(was_empty, routed_b, self.fifos.b.needs_dma());
+            if needs {
                 dma2 = true;
             }
+        }
+        if dma1 || dma2 {
+            self.health.on_dma_req(dma1, dma2);
         }
         self.request_fifo_dma(dma1, dma2);
     }
@@ -191,7 +215,9 @@ impl Apu {
 
     fn emit_pcm_frame(&mut self) {
         let mixed = mix(&self.regs, &self.psg, &self.fifos);
-        self.pcm.push(PcmFrame::from(mixed));
+        let frame = PcmFrame::from(mixed);
+        self.health.on_pcm(frame);
+        self.pcm.push(frame);
     }
 
     /// Pull host PCM frames (consumes ring).

@@ -128,6 +128,12 @@ pub struct Bus {
     pub wait_tables: WaitTables,
     /// Force next ROM opcode fetch as N (Disable Bug / post-DMA).
     pub force_next_fetch_n: bool,
+    /// Debug: successful VRAM halfword/word stores (period-friendly counter).
+    pub vram_write_count: u64,
+    /// Debug: successful OAM halfword/word stores.
+    pub oam_write_count: u64,
+    /// Debug: successful palette halfword/word stores.
+    pub palette_write_count: u64,
 }
 
 impl Default for Bus {
@@ -147,6 +153,9 @@ impl Default for Bus {
             prefetch: PrefetchBuffer::new(),
             wait_tables: WaitTables::power_on(),
             force_next_fetch_n: false,
+            vram_write_count: 0,
+            oam_write_count: 0,
+            palette_write_count: 0,
         }
     }
 }
@@ -196,10 +205,12 @@ impl Bus {
                     VideoTarget::Palette => {
                         Self::write_slice(&mut self.palette, aligned, halfword as u8);
                         Self::write_slice(&mut self.palette, aligned + 1, (halfword >> 8) as u8);
+                        self.palette_write_count = self.palette_write_count.saturating_add(1);
                     }
                     VideoTarget::BgVram => {
                         Self::write_slice(&mut self.vram, aligned, halfword as u8);
                         Self::write_slice(&mut self.vram, aligned + 1, (halfword >> 8) as u8);
+                        self.vram_write_count = self.vram_write_count.saturating_add(1);
                     }
                     VideoTarget::Oam | VideoTarget::ObjVram => {}
                 }
@@ -308,12 +319,15 @@ impl CpuMem for Bus {
             // Video: 16-bit stores are real halfwords — must not go through STRB write8.
             Region::Palette => {
                 Self::write16_video_raw(&mut self.palette, palette_offset(addr), value);
+                self.palette_write_count = self.palette_write_count.saturating_add(1);
             }
             Region::Vram => {
                 Self::write16_video_raw(&mut self.vram, vram_offset(addr), value);
+                self.vram_write_count = self.vram_write_count.saturating_add(1);
             }
             Region::Oam => {
                 Self::write16_video_raw(&mut self.oam, oam_offset(addr), value);
+                self.oam_write_count = self.oam_write_count.saturating_add(1);
             }
             _ => {
                 let a = addr & !1;

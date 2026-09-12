@@ -25,6 +25,10 @@ pub struct Fifo {
     len: usize,
     /// Last sample played (held on underrun).
     last: i8,
+    /// Timer pops while empty (held last sample — pops / stuck tone risk).
+    pub underruns: u64,
+    /// Pushes that dropped the oldest sample because the queue was full.
+    pub overruns: u64,
 }
 
 impl Default for Fifo {
@@ -42,6 +46,8 @@ impl Fifo {
             tail: 0,
             len: 0,
             last: 0,
+            underruns: 0,
+            overruns: 0,
         }
     }
 
@@ -57,7 +63,7 @@ impl Fifo {
         self.len == 0
     }
 
-    /// Clear queue (SOUNDCNT_H reset bit).
+    /// Clear queue (SOUNDCNT_H reset bit). Health counters are preserved.
     pub fn reset(&mut self) {
         self.head = 0;
         self.tail = 0;
@@ -79,6 +85,7 @@ impl Fifo {
             // Overflow: drop oldest (provisional secondary: some HW clears — we drop).
             self.head = (self.head + 1) % FIFO_CAPACITY;
             self.len -= 1;
+            self.overruns = self.overruns.saturating_add(1);
         }
         self.buf[self.tail] = sample;
         self.tail = (self.tail + 1) % FIFO_CAPACITY;
@@ -88,6 +95,7 @@ impl Fifo {
     /// Pop one sample for the output latch; underrun → hold `last`.
     pub fn pop_sample(&mut self) -> i8 {
         if self.len == 0 {
+            self.underruns = self.underruns.saturating_add(1);
             return self.last;
         }
         let s = self.buf[self.head];

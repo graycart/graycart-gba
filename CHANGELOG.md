@@ -16,6 +16,17 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Added
+
+- **AV health in `--debug` summary (`walter/gba-av-debug-health-7491`):** periodic
+  `apu health` / `ppu health` one-liners plus loud `warn` for FIFO
+  underrun/overrun/empty-drain/refill-lag, extreme peaks / DC / clipping,
+  master-off-with-FIFO traffic, silent PSG vol, host cpal underruns, forced
+  blank / DISPCNT mode+layer flips, mosaic/blend/OBJWIN, all-black /
+  backdrop-only frames, and VRAM/OAM write storms. Headless `--debug --frames N`
+  ends with a GB-inspired structured AV report on stderr. Trace keeps denser
+  pixel samples; DMA firehose stays behind `--debug=trace`. Crate **0.1.9**.
+
 ### Fixed
 
 - **FIFO Direct Sound / host audio (`walter/firered-fifo-audio-0568`):** FireRed

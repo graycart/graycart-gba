@@ -16,7 +16,7 @@
 //! P8: prefetch FSM, Disable Bug latch, DMA 2-cycle startup, waitstate step.
 //! P9: host seam — buttons / framebuffer / PCM / battery `.sav` (GUI stays in `frontend/`).
 //! P10–P11: DMG/CGB compat wrapper via `graycart` (detect / Mode-8 / CompatMachine / suites).
-//! Console debug: `debug/` breadcrumbs (`--debug` summary / `--debug=trace`) for boot bring-up.
+//! Console debug: `debug/` breadcrumbs (`--debug` summary / `--debug=trace`) for boot bring-up + AV health.
 
 pub mod apu;
 pub mod bios;

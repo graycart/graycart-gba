@@ -10,7 +10,7 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 **GBA + DMG/CGB**. Dual-run → default-gba plan:
 [`docs/supersede-cutover.md`](./docs/supersede-cutover.md). Intentional
 whole-crate `graycart` dep remains (supersede the **app**, not the library).
-Crate **0.1.4** (console debug). Planned phase ladder **P0–P12** complete.
+Crate **0.1.9** (AV health debug). Planned phase ladder **P0–P12** complete.
 
 **P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
 FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
@@ -61,7 +61,7 @@ Default is quiet. `--debug` is a **summary** for bring-up (not DMA spam).
 Your own dumps only — never commit commercial ROMs or BIOS blobs:
 
 ```bash
-# summary: rom/bios, warn faults, blanking edges, stuck, dma/irq aggregates
+# summary: rom/bios, warn faults, blanking, stuck, dma/irq + apu/ppu health
 cargo run --release -- --debug --frames 180 path/to/your.gba 2>gba-debug.log
 
 # verbose DMA/IRQ/insn (when you need the firehose)
@@ -69,9 +69,11 @@ cargo run --release -- --debug=trace --frames 60 path/to/your.gba 2>gba-trace.lo
 cargo run --release -- --trace 64 path/to/your.gba   # GB-style insn dump
 GRAYCART_DEBUG=1 cargo run --release -- path/to/your.gba   # GUI + summary
 
-# greppable — faults first
-grep -E 'gba-debug: (warn |stuck|swi|openbus|blank|halt)' gba-debug.log
+# greppable — faults + AV health first
+grep -E 'gba-debug: (warn |stuck|swi|openbus|blank|halt|apu health|ppu health)' gba-debug.log
 grep '^gba-debug:' gba-debug.log
+# end-of-run structured report is also on stderr under --debug --frames N
+grep -E '^(=== graycart-gba AV|PPU |APU )' gba-debug.log
 ```
 
 | Flag / env | Level |
@@ -80,9 +82,10 @@ grep '^gba-debug:' gba-debug.log
 | `--debug` / `--debug=summary` / `GRAYCART_DEBUG=1` | Summary |
 | `--debug=trace` / `--trace` / `GRAYCART_DEBUG=trace` | Trace |
 
-Expect `gba-debug: rom …`, `bios launch=…`, periodic `cpu`/`ppu`/`dma summary`,
-and loud `warn swi unhandled` / `warn openbus` / `stuck` / `ppu blank` when
-something is wrong. `--quiet`/`--verbose` only affect the stdout load summary.
+Expect `gba-debug: rom …`, `bios launch=…`, periodic `cpu`/`ppu`/`dma summary` /
+`apu health` / `ppu health`, and loud `warn` lines for SWI / openbus / stuck /
+blank / FIFO underrun / all-black / write-storm when something is wrong.
+`--quiet`/`--verbose` only affect the stdout load summary.
 
 ### CI matrix (`.github/workflows/ci.yml`)
 
@@ -99,7 +102,7 @@ something is wrong. `--quiet`/`--verbose` only affect the stdout load summary.
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**, BiosHle black-screen **0.1.5**, BiosHle decompress **0.1.6**, debug UX **0.1.7**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**, BiosHle black-screen **0.1.5**, BiosHle decompress **0.1.6**, debug UX **0.1.7**, FIFO+video **0.1.8**, AV health debug **0.1.9**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 
