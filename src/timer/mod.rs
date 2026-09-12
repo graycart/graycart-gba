@@ -139,7 +139,7 @@ impl Timers {
             Some(id) => id,
             None => return,
         };
-        if offset % 4 == 0 {
+        if offset.is_multiple_of(4) {
             self.write_reload(id, value);
         } else if offset % 4 == 2 {
             self.write_control(id, value);
@@ -153,7 +153,7 @@ impl Timers {
             Some(id) => id,
             None => return 0,
         };
-        if offset % 4 == 0 {
+        if offset.is_multiple_of(4) {
             self.read_counter(id)
         } else if offset % 4 == 2 {
             self.read_control(id)
@@ -165,7 +165,7 @@ impl Timers {
     /// MMIO 32-bit write at `TMnCNT_L` aligned offset (`0`, `4`, `8`, `12`).
     pub fn write_mmio32(&mut self, offset: usize, value: u32) {
         let id = match TimerId::from_index(offset / 4) {
-            Some(id) if offset % 4 == 0 => id,
+            Some(id) if offset.is_multiple_of(4) => id,
             _ => return,
         };
         self.write_cnt32(id, value);

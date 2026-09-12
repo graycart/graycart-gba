@@ -136,7 +136,7 @@ impl MachineMem<'_> {
 
     fn write_io32(&mut self, off: usize, value: u32) {
         match off {
-            o if (0x100..0x110).contains(&o) && o % 4 == 0 => {
+            o if (0x100..0x110).contains(&o) && o.is_multiple_of(4) => {
                 self.timer.write_mmio32(o - 0x100, value);
                 self.mirror_u16(o, self.timer.read_mmio16(o - 0x100));
                 self.mirror_u16(o + 2, self.timer.read_mmio16(o + 2 - 0x100));
