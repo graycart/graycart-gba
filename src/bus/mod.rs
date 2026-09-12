@@ -12,15 +12,30 @@
 //! Note: [`CpuMem`] for CPU pipeline fetch; video STRB / open-bus are sibling modules.
 
 pub mod mirror;
+pub mod openbus;
 pub mod region;
+pub mod video;
 pub mod wait;
 pub mod waitcnt;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_openbus;
+#[cfg(test)]
+mod tests_video;
+#[cfg(test)]
 mod tests_wait;
 
+pub use openbus::{
+    bios_protect_read, empty_cart_rom_halfword, empty_cart_rom_word, pc_in_bios,
+    unused_memory_open_bus, OpenBusKind, OpenBusState, BIOS_END,
+};
+pub use video::{
+    classify_vram_offset, expand_strb_byte, obj_vram_base, resolve_strb, resolve_video_write,
+    resolve_wide_write, write_size_ok, VideoTarget, VideoWriteAction, OBJ_VRAM_BASE_BITMAP,
+    OBJ_VRAM_BASE_TILE,
+};
 pub use wait::{
     cycles_for_waits, rom_force_nonseq, AccessKind, AccessSize, RomWindow, WaitTables,
     EWRAM_DEFAULT_WAITS, ROM_FORCE_N_BLOCK,
