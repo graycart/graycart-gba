@@ -7,6 +7,20 @@
 //!   https://developer.arm.com/documentation/ddi0210/c/
 //! Note: thin [`CpuMem`] surface for CPU pipeline fetch only; waitstates/regions are P2.
 
+pub mod wait;
+pub mod waitcnt;
+
+#[cfg(test)]
+mod tests_wait;
+
+pub use wait::{
+    cycles_for_waits, rom_force_nonseq, AccessKind, AccessSize, RomWindow, WaitTables,
+    EWRAM_DEFAULT_WAITS, ROM_FORCE_N_BLOCK,
+};
+pub use waitcnt::{
+    WaitCnt, COMMERCIAL_COMMON as WAITCNT_COMMERCIAL_COMMON, POWER_ON as WAITCNT_POWER_ON,
+};
+
 /// Minimal CPU-facing memory surface (byte / half / word).
 ///
 /// Endianness: little-endian (GBA). Alignment quirks (ROR on misaligned LDR, etc.)
