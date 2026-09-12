@@ -53,9 +53,10 @@ const MEMORY: JsmolkaRom = JsmolkaRom {
 /// P1/P2 must rows.
 const JSMOLKA_MUST: &[JsmolkaRom] = &[ARM, THUMB, MEMORY];
 
-/// Placeholder suite identities (LICENSE stubs only).
+/// Placeholder suite identities (LICENSE stubs only; matrices in sibling modules).
 const PLACEHOLDER_SUITES: &[(&str, &str)] = &[
     ("mgba-suite/suite.gba", "tests/fixtures/mgba-suite"),
+    ("nba-hw-test/ (BSD-3-Clause)", "tests/fixtures/nba-hw-test"),
     ("fuzzarm/ (GPL-3.0 ROMs)", "tests/fixtures/fuzzarm"),
 ];
 

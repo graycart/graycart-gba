@@ -98,7 +98,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Default CI must stay green **without** BIOS images, commercial ROMs, or ignored ROM matrices. Never `cargo test -- --ignored` in the default workflow. Scaffold crate version is **0.0.1**; first tagged runnable milestone targets **0.1.0**.
+Default CI must stay green **without** BIOS images, commercial ROMs, or ignored ROM matrices. Default `cargo test` **does** assert vendored jsmolka **arm+thumb+memory PASS**. Never `cargo test -- --ignored` in the default workflow. Scaffold crate version is **0.0.1**; first tagged runnable milestone targets **0.1.0**.
 
 Never commit `carts/*.gba`, `.sav`, state dumps, Nintendo BIOS / boot firmware, secrets, or skip hooks. Never force-push `main`.
 
@@ -107,7 +107,7 @@ Do not weaken tests (drop asserts, skip without a reason, title-specific expecte
 ## Docs and research
 
 - In-repo: this file, [`ATTRIBUTION.md`](./ATTRIBUTION.md), `README.md`, `CONTRIBUTING.md`, and (when added) `docs/conformance.md` + BIOS obtain-your-own notes.
-- Research (phases, GBATEK provenance, DMG/CGB compat, core API reuse): Graycart Project store `docs/graycart-gba/` -- especially `08-implementation-plan.md`, `PHASES.md`, `07-test-strategy.md`, `09-dmg-cgb-compatibility.md`, `10-core-api-and-gb-reuse.md`, and `provenance/`.
+- Research (phases, GBATEK provenance, DMG/CGB compat, core API reuse): Graycart Project store `docs/graycart-gba/` -- especially `08-implementation-plan.md`, `PHASES.md`, `07-test-strategy.md`, `11-test-apparatus.md`, `12-test-gates.md`, `09-dmg-cgb-compatibility.md`, `10-core-api-and-gb-reuse.md`, and `provenance/`.
 - Family API: Project store `docs/graycart-family/` (`01-core-api.md`, `02-repo-layout.md`, `repos.md`).
 
-No emulator core implementation until the research review gate in `08-implementation-plan.md` section 7 is accepted. Do not start P1 CPU work during Phase 0 scaffold.
+P1/P2 jsmolka gates are green on `main`. Do not start **P3+** until Project store `12-test-gates.md` freeze allows it and default CI stays honest-green.

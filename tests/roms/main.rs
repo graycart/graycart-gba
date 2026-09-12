@@ -1,13 +1,15 @@
-//! ROM / conformance harnesses (often `#[ignore]` — load + oracle wired).
+//! ROM / conformance harnesses (jsmolka gates in default CI; SoC-depth `#[ignore]`).
 //!
 //! Cited: graycart-gb `tests/roms/main.rs` layout
 //!   https://github.com/graycart/graycart-gb/blob/main/tests/roms/main.rs
 //! Cited: graycart-gba audit-test-harness §4 / workstream D–E
 //!   Project store: `internal/graycart-gba/audit-test-harness.md`
-//! Note: default CI runs only non-ignored tests here; matrices stay opt-in.
+//! Note: default CI asserts jsmolka arm+thumb+memory PASS; mGBA/NBA rows stay ignored.
 
 mod harness;
 mod jsmolka;
+mod mgba_suite;
+mod nba_hw_test;
 
 use harness::{
     jsmolka_r12_oracle, load_gba, run_test_rom, GbaTestRom, Outcome, RomLaunchMode, RunBudget,
