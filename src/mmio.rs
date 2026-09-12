@@ -12,6 +12,7 @@
 use crate::apu::Apu;
 use crate::bus::mirror::io_offset;
 use crate::bus::{Bus, CpuMem};
+use crate::cart::Cart;
 use crate::dma::Dma;
 use crate::hw::Hw;
 use crate::input::Input;
@@ -29,6 +30,7 @@ pub struct MachineMem<'a> {
     pub ppu: &'a mut Ppu,
     pub dma: &'a mut Dma,
     pub apu: &'a mut Apu,
+    pub cart: &'a mut Cart,
 }
 
 impl MachineMem<'_> {
@@ -226,12 +228,19 @@ impl CpuMem for MachineMem<'_> {
         if let Some(off) = io_offset(addr) {
             return self.read_io8(off);
         }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            return self.cart.save.read8(addr);
+        }
         self.bus.read8(addr)
     }
 
     fn write8(&mut self, addr: u32, value: u8) {
         if let Some(off) = io_offset(addr) {
             self.write_io8(off, value);
+            return;
+        }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            self.cart.save.write8(addr, value);
             return;
         }
         self.bus.write8(addr, value);
@@ -241,12 +250,21 @@ impl CpuMem for MachineMem<'_> {
         if let Some(off) = io_offset(addr) {
             return self.read_io16(off);
         }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            let b = u16::from(self.cart.save.read8(addr));
+            return b | (b << 8);
+        }
         self.bus.read16(addr)
     }
 
     fn write16(&mut self, addr: u32, value: u16) {
         if let Some(off) = io_offset(addr) {
             self.write_io16(off, value);
+            return;
+        }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            let rotated = value.rotate_right((addr & 1) * 8);
+            self.cart.save.write8(addr, rotated as u8);
             return;
         }
         self.bus.write16(addr, value);
@@ -258,12 +276,21 @@ impl CpuMem for MachineMem<'_> {
             let hi = u32::from(self.read_io16(off + 2));
             return lo | (hi << 16);
         }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            let b = u32::from(self.cart.save.read8(addr));
+            return b * 0x0101_0101;
+        }
         self.bus.read32(addr)
     }
 
     fn write32(&mut self, addr: u32, value: u32) {
         if let Some(off) = io_offset(addr) {
             self.write_io32(off, value);
+            return;
+        }
+        if crate::bus::region::decode(addr) == crate::bus::region::Region::GamePakSram {
+            let rotated = value.rotate_right((addr & 3) * 8);
+            self.cart.save.write8(addr, rotated as u8);
             return;
         }
         self.bus.write32(addr, value);

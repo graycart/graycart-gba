@@ -12,6 +12,7 @@
 //! P4: real PPU scanline timing replaces crude VBlank toggle.
 //! P5: DMA VBlank/HBlank/FIFO/capture starts hooked from PPU/APU edges.
 //! P6: APU PSG + FIFO timer clock + mixer/PCM; sound MMIO owned by APU.
+//! P7: cart saves + BIOS protect latch + BiosHle SWI/IRQ trampoline.
 
 pub mod apu;
 pub mod bios;
@@ -27,8 +28,11 @@ pub mod mmio;
 pub mod ppu;
 pub mod timer;
 
-use bios::BiosMode;
-use cpu::{soft_boot, step, ExceptionKind, StepHle, StepOutcome};
+use bios::{
+    hle, BiosMode, HLE_IRQ_RETURN, IRQ_HANDLER_PTR, LATCH_AFTER_IRQ, LATCH_AFTER_SWI,
+    LATCH_DURING_IRQ, LATCH_SOFT_RESET,
+};
+use cpu::{soft_boot, step, ExceptionKind, IsaState, Mode, StepHle, StepOutcome};
 use mmio::{BusApuMem, MachineMem};
 use ppu::FRAME_CYCLES;
 
@@ -69,10 +73,17 @@ impl Gba {
         Self::default()
     }
 
-    /// Load Game Pak ROM bytes into cart + bus ROM window.
+    /// Load Game Pak ROM bytes into cart + bus ROM window (detects save type).
     pub fn load_rom(&mut self, bytes: &[u8]) {
         self.cart.load(bytes);
         self.bus.rom = self.cart.rom.clone();
+    }
+
+    /// Load a user-supplied BIOS image into the bus (LLE). Never called by CI.
+    pub fn load_bios(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let img = bios::lle::validate_bios_bytes(bytes)?;
+        self.bus.bios = img;
+        Ok(())
     }
 
     /// Reset CPU/pipeline and apply launch mode. Does not clear cart ROM.
@@ -80,15 +91,22 @@ impl Gba {
     /// `BiosLle` without a mapped BIOS image returns `Err`.
     pub fn reset(&mut self, mode: RomLaunchMode) -> Result<(), String> {
         self.cycles = 0;
+        self.bios.hle_irq_resume = None;
         match mode {
             RomLaunchMode::BiosHle => {
                 self.bios.mode = BiosMode::Hle;
-                soft_boot::apply(&mut self.cpu, soft_boot::CART_ENTRY);
+                let latch = hle::soft_boot_cart(&mut self.cpu);
+                self.bus.open_bus.note_bios_fetch(latch);
+                self.bus.cpu_pc = soft_boot::CART_ENTRY;
+                self.hw.write_postflg(self.hw.read_postflg() | 1);
                 Ok(())
             }
             RomLaunchMode::Multiboot => {
                 self.bios.mode = BiosMode::Hle;
-                soft_boot::apply(&mut self.cpu, soft_boot::MULTIBOOT_ENTRY);
+                let latch = hle::soft_boot_multiboot(&mut self.cpu);
+                self.bus.open_bus.note_bios_fetch(latch);
+                self.bus.cpu_pc = soft_boot::MULTIBOOT_ENTRY;
+                self.hw.write_postflg(self.hw.read_postflg() | 1);
                 Ok(())
             }
             RomLaunchMode::BiosLle => {
@@ -97,6 +115,8 @@ impl Gba {
                 }
                 self.bios.mode = BiosMode::Lle;
                 soft_boot::apply(&mut self.cpu, 0);
+                self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
+                self.bus.cpu_pc = 0;
                 Ok(())
             }
         }
@@ -126,6 +146,7 @@ impl Gba {
             ppu: &mut self.ppu,
             dma: &mut self.dma,
             apu: &mut self.apu,
+            cart: &mut self.cart,
         }
     }
 
@@ -133,6 +154,62 @@ impl Gba {
     fn try_service_irq(&mut self) -> bool {
         if self.irq.try_service_cpu(&mut self.cpu).is_none() {
             return false;
+        }
+        if self.bios.mode == BiosMode::Hle {
+            // BiosHle IRQ trampoline: save r0–r3,r12 (BIOS wrapper), jump to [03007FFC].
+            let resume = self.cpu.regs.get_r14_mode(Mode::Irq).wrapping_sub(4);
+            self.bios.hle_irq_resume = Some(resume);
+            self.bios.hle_irq_regs = [
+                self.cpu.regs.get(0),
+                self.cpu.regs.get(1),
+                self.cpu.regs.get(2),
+                self.cpu.regs.get(3),
+                self.cpu.regs.get(12),
+            ];
+            self.bus.open_bus.note_bios_fetch(LATCH_DURING_IRQ);
+            let handler = {
+                let off = (IRQ_HANDLER_PTR - 0x0300_0000) as usize;
+                let b0 = u32::from(self.bus.iwram.get(off).copied().unwrap_or(0));
+                let b1 = u32::from(self.bus.iwram.get(off + 1).copied().unwrap_or(0));
+                let b2 = u32::from(self.bus.iwram.get(off + 2).copied().unwrap_or(0));
+                let b3 = u32::from(self.bus.iwram.get(off + 3).copied().unwrap_or(0));
+                b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+            };
+            self.cpu.regs.set_r14_mode(Mode::Irq, HLE_IRQ_RETURN);
+            self.cpu.regs.set_pc(handler);
+            self.cpu.pipeline.redirect(handler, IsaState::Arm);
+            {
+                let Self {
+                    bus,
+                    irq,
+                    timer,
+                    input,
+                    hw,
+                    ppu,
+                    dma,
+                    apu,
+                    cart,
+                    cpu,
+                    ..
+                } = self;
+                bus.cpu_pc = handler;
+                let mut mem = MachineMem {
+                    bus,
+                    irq,
+                    timer,
+                    input,
+                    hw,
+                    ppu,
+                    dma,
+                    apu,
+                    cart,
+                };
+                cpu.pipeline.refill(&mut mem);
+            }
+            if let Some(d) = self.cpu.pipeline.decode {
+                self.cpu.regs.set_pc(d.addr);
+            }
+            return true;
         }
         {
             let Self {
@@ -144,6 +221,7 @@ impl Gba {
                 ppu,
                 dma,
                 apu,
+                cart,
                 cpu,
                 ..
             } = self;
@@ -156,6 +234,71 @@ impl Gba {
                 ppu,
                 dma,
                 apu,
+                cart,
+            };
+            cpu.pipeline.refill(&mut mem);
+        }
+        if let Some(d) = self.cpu.pipeline.decode {
+            self.cpu.regs.set_pc(d.addr);
+        }
+        true
+    }
+
+    /// Complete BiosHle IRQ return when PC hits the sentinel.
+    fn try_hle_irq_return(&mut self) -> bool {
+        let pc = self
+            .cpu
+            .pipeline
+            .decode_pc()
+            .unwrap_or_else(|| self.cpu.regs.pc());
+        if pc != HLE_IRQ_RETURN {
+            return false;
+        }
+        let Some(resume) = self.bios.hle_irq_resume.take() else {
+            return false;
+        };
+        self.bus.open_bus.note_bios_fetch(LATCH_AFTER_IRQ);
+        // Restore registers the BIOS IRQ wrapper would have preserved.
+        let saved = self.bios.hle_irq_regs;
+        self.cpu.regs.set(0, saved[0]);
+        self.cpu.regs.set(1, saved[1]);
+        self.cpu.regs.set(2, saved[2]);
+        self.cpu.regs.set(3, saved[3]);
+        self.cpu.regs.set(12, saved[4]);
+        let spsr = self
+            .cpu
+            .regs
+            .spsr_of(Mode::Irq)
+            .unwrap_or(self.cpu.regs.cpsr());
+        self.cpu.regs.set_cpsr(spsr);
+        self.cpu.regs.set_pc(resume);
+        let isa = IsaState::from_cpsr_t(self.cpu.regs.thumb());
+        self.cpu.pipeline.redirect(resume, isa);
+        {
+            let Self {
+                bus,
+                irq,
+                timer,
+                input,
+                hw,
+                ppu,
+                dma,
+                apu,
+                cart,
+                cpu,
+                ..
+            } = self;
+            bus.cpu_pc = resume;
+            let mut mem = MachineMem {
+                bus,
+                irq,
+                timer,
+                input,
+                hw,
+                ppu,
+                dma,
+                apu,
+                cart,
             };
             cpu.pipeline.refill(&mut mem);
         }
@@ -217,6 +360,12 @@ impl Gba {
     pub fn step_instruction(&mut self) -> StepOutcome {
         const STEP_CYCLES: u64 = 1;
 
+        // BiosHle IRQ return sentinel — complete before other work.
+        if self.bios.mode == BiosMode::Hle && self.try_hle_irq_return() {
+            self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
+            return StepOutcome::Ok;
+        }
+
         {
             let Self { bus, irq, ppu, .. } = self;
             ppu.step(STEP_CYCLES as u32, bus, irq);
@@ -244,6 +393,13 @@ impl Gba {
             return StepOutcome::Ok;
         }
 
+        // BIOS-protect gating uses the instruction about to execute.
+        self.bus.cpu_pc = self
+            .cpu
+            .pipeline
+            .decode_pc()
+            .unwrap_or_else(|| self.cpu.regs.pc());
+
         let hle = self.step_hle();
         let outcome = {
             let Self {
@@ -255,6 +411,7 @@ impl Gba {
                 ppu,
                 dma,
                 apu,
+                cart,
                 cpu,
                 ..
             } = self;
@@ -267,9 +424,19 @@ impl Gba {
                 ppu,
                 dma,
                 apu,
+                cart,
             };
             step(cpu, &mut mem, hle)
         };
+        if matches!(outcome, StepOutcome::SwiHle) && self.bios.mode == BiosMode::Hle {
+            // SoftReset resumes at cart/multiboot entry → SoftReset latch; else After-SWI.
+            let pc = self.cpu.regs.pc();
+            if pc == soft_boot::CART_ENTRY || pc == soft_boot::MULTIBOOT_ENTRY {
+                self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
+            } else {
+                self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
+            }
+        }
         // Immediate DMA may have been armed by the instruction's MMIO write.
         if self.dma.is_busy() {
             self.drain_dma();

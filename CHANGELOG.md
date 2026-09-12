@@ -18,6 +18,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P7 Cart/BIOS/saves (`walter/p7-cart-bios-saves-c42d`):** optional BiosLle
+  (`GBA_BIOS` / `load_bios`, never vendored); PC-gated BIOS open-bus latch
+  (jsmolka SoftReset/SWI/IRQ residues); BiosHle SoftReset/Sqrt/CpuSet + IRQ
+  trampoline with register save; cart header parse; save detect + SRAM/Flash/
+  EEPROM backends + `.sav` round-trip; MachineMem routes backup window.
+  Vendored MIT jsmolka `bios` + `save/{none,sram,flash64,flash128}` assert
+  PASS in default CI. Unit gates G7-*; LLE stretch `#[ignore]`.
+  jsmolka arm+thumb+memory stay default-CI PASS.
 - **P6 APU (shared `walter/p6-apu-052e`):** SOUNDCNT_* / SOUNDBIAS / Wave RAM
   register file with master-enable clear of PSG `060`–`081`; PSG ch1–4 (AGB
   wave dual-bank + 75% volume); FIFO A/B with TM0/TM1 sample clock + half-empty

@@ -22,7 +22,7 @@ only. Vendored test ROMs keep their **upstream** copyright and license terms.
 
 | Suite | Path | Upstream | License | Notes |
 |-------|------|----------|---------|-------|
-| jsmolka/gba-tests | [`jsmolka/`](jsmolka/) | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | MIT | `arm`/`thumb`/`memory` prebuilts in-tree (pin in suite README); PPU/bios/save later |
+| jsmolka/gba-tests | [`jsmolka/`](jsmolka/) | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | MIT | `arm`/`thumb`/`memory` + P4 `ppu/*` + P7 `bios`/`save/*` prebuilts in-tree (pin in suite README) |
 | In-house (Graycart) | [`inhouse/`](inhouse/) | this repo | MIT | P3 **G3-irq-rom** simple IRQ stub (`simple-irq/`); no BIOS |
 | mGBA suite | [`mgba-suite/`](mgba-suite/) | [mgba-emu/suite](https://github.com/mgba-emu/suite) | MIT | LICENSE stub + ignored harness row; P5 dma progress log; P3 stretch `io-read` / `timer-irq` stubs; no `suite.gba` yet |
 | alyosha gba-tests | [`alyosha/`](alyosha/) | [alyosha-tas/gba-tests](https://github.com/alyosha-tas/gba-tests) | MIT | P5 **G5-alyosha** path stub; `DMA_*` `#[ignore]` until curated |

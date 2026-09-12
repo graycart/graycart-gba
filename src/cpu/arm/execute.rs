@@ -370,7 +370,8 @@ fn exec_single(
         if byte {
             bus.write8(addr, store_val as u8);
         } else {
-            bus.write32(addr & !3, store_val);
+            // Keep low bits for Game Pak SRAM rotate-write; Bus aligns other regions.
+            bus.write32(addr, store_val);
         }
     }
 
@@ -452,7 +453,7 @@ fn exec_halfword(
         } else {
             value
         };
-        bus.write16(addr & !1, store_val as u16);
+        bus.write16(addr, store_val as u16);
     }
 
     if writeback || !pre {

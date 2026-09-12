@@ -1,8 +1,10 @@
-//! Open-bus and BIOS-protect **placeholders** (not cycle-exact).
+//! Open-bus and BIOS-protect (PC-gated BIOS reads).
 //!
 //! Cited: GBATEK -- GBA Unpredictable Things (BIOS protect / unused memory)
 //!   https://problemkaputt.de/gbatek-gba-unpredictable-things.htm
-//! Cross-check: research `docs/graycart-gba/02-memory-bus-dma.md` §4; TBD B-07.
+//! Cited: jsmolka/gba-tests `bios/bios.asm` (MIT) — SoftReset/SWI/IRQ residues
+//!   https://github.com/jsmolka/gba-tests
+//! Cross-check: research `docs/graycart-gba/02-memory-bus-dma.md` §4; `06` §3.3.
 //!
 //! **TBD — do not invent:** ARM/Thumb pipeline open-bus formulas, IWRAM
 //! OldLO/OldHI model variants, mid-instruction DMA MDR latches, or any
@@ -30,13 +32,10 @@ pub enum OpenBusKind {
 /// Latch state for BIOS-protect / future open-bus consumers.
 ///
 /// Pipeline residue for unused-memory open bus is **not** modeled here yet
-/// (TBD). Only the BIOS last-opcode latch is stored as a wiring hook.
+/// (TBD). Only the BIOS last-opcode latch is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OpenBusState {
     /// Last successfully fetched BIOS opcode (32-bit pipeline residue).
-    ///
-    /// Updated by BIOS fetch paths when those exist; default `0` at power-on
-    /// until the BIOS stream wires real fetches.
     pub last_bios_opcode: u32,
 }
 
@@ -73,13 +72,11 @@ pub const fn pc_in_bios(pc: u32) -> bool {
     pc < BIOS_END
 }
 
-/// Placeholder BIOS-protect read.
+/// BIOS-protect read.
 ///
 /// When `pc` is **outside** BIOS, hardware returns the last successfully
 /// fetched BIOS opcode. When `pc` is inside BIOS, the caller should perform
 /// a normal BIOS ROM read instead of calling this helper.
-///
-/// TBD: exact SoftReset / IRQ / SWI residue examples once BIOS fetch is wired.
 #[inline]
 pub fn bios_protect_read(pc: u32, state: &OpenBusState) -> Option<u32> {
     if pc_in_bios(pc) {
@@ -87,6 +84,13 @@ pub fn bios_protect_read(pc: u32, state: &OpenBusState) -> Option<u32> {
     } else {
         Some(state.last_bios_opcode)
     }
+}
+
+/// Byte lane of a latched BIOS opcode for an unaligned protect read.
+#[inline]
+pub fn bios_protect_byte(latch: u32, addr: u32) -> u8 {
+    let shift = (addr & 3) * 8;
+    (latch >> shift) as u8
 }
 
 /// Placeholder unused-memory open bus.
