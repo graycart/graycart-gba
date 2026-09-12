@@ -2,14 +2,20 @@
 
 Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/graycart).
 
-**Goal:** native GBA software, plus **DMG/CGB** via the GBA hardware compatibility path (prefer reusing [graycart-gb](https://github.com/graycart/graycart-gb)). This repo will eventually supersede graycart-gb as the shipping **app**; GBA-native cores stay greenfield.
+**Goal:** native GBA software, plus **DMG/CGB** via the GBA hardware compatibility path (prefer reusing [graycart-gb](https://github.com/graycart/graycart-gb)). This repo is the long-term shipping **app** for 8-bit + GBA (P12 cutover); GBA-native cores stay greenfield.
 
 ## Status
+
+**P12 Supersede cutover** — graycart-gba is the recommended play host for
+**GBA + DMG/CGB**. Dual-run → default-gba plan:
+[`docs/supersede-cutover.md`](./docs/supersede-cutover.md). Intentional
+whole-crate `graycart` dep remains (supersede the **app**, not the library).
+Crate **0.1.3**. Planned phase ladder **P0–P12** complete.
 
 **P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
 FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
 matrices are `#[ignore]` with thresholds in `docs/conformance.md`. Crate
-**0.1.2**. **P12** supersede cutover is next (not started).
+**0.1.2**.
 
 **P10 DMG/CGB compat bring-up** — `graycart` whole-crate dep behind `compat/`
 (WAITCNT detect, Mode-8/HALT posture, `CompatMachine`). Crate **0.1.1**.
@@ -34,7 +40,8 @@ and `docs/conformance.md`.
 | [`AGENTS.md`](./AGENTS.md) | How agents navigate: build/test, modules, SemVer, no BIOS/ROMs in git, parallel ownership |
 | [`ATTRIBUTION.md`](./ATTRIBUTION.md) | **Mandatory** file-header credit rule (what / URL / inspired-by note) |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Short contributor blurb |
-| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8–P11) |
+| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8–P12) |
+| [`docs/supersede-cutover.md`](./docs/supersede-cutover.md) | P12 dual-run → default-gba handoff |
 | [`tests/fixtures/README.md`](./tests/fixtures/README.md) | Fixture license table + harness layout |
 | [`carts/README.md`](./carts/README.md) | Optional local dumps (gitignored binaries) |
 
@@ -63,7 +70,7 @@ cargo test
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 

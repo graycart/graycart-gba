@@ -14,6 +14,7 @@ mod nba_hw_test;
 mod p10;
 mod p11_cgb;
 mod p11_dmg;
+mod p12;
 mod p3;
 mod p4;
 mod p5;
