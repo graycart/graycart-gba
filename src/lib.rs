@@ -173,7 +173,7 @@ const DISPSTAT_IO: usize = 4;
 fn tick_vblank_hle(bus: &mut bus::Bus, cycles: u64) {
     let mut v = u16::from(bus.io.get(DISPSTAT_IO).copied().unwrap_or(0))
         | (u16::from(bus.io.get(DISPSTAT_IO + 1).copied().unwrap_or(0)) << 8);
-    if cycles % 2 == 0 {
+    if (cycles & 1) == 0 {
         v &= !1;
     } else {
         v |= 1;
