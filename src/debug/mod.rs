@@ -440,13 +440,13 @@ impl DebugTracker {
         ));
     }
 
-    /// BiosHle fell through to the empty SWI vector — commercial carts black-screen here.
-    pub fn on_unhandled_swi(&mut self, vector_pc: u32) {
+    /// BiosHle skipped an unimplemented SWI instead of vectoring into empty BIOS.
+    pub fn on_unhandled_swi(&mut self, number: u8, resume_pc: u32) {
         if !self.enabled() {
             return;
         }
         log_line(&format!(
-            "swi unhandled vector=0x{vector_pc:08X} (BiosHle missing handler → empty BIOS)"
+            "swi unhandled num=0x{number:02X} resume_pc=0x{resume_pc:08X} (BiosHle stub — implement or provide BIOS)"
         ));
     }
 

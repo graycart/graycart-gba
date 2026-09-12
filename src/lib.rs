@@ -608,13 +608,14 @@ impl Gba {
                     self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
                 }
             }
-            StepOutcome::Exception(ExceptionKind::Swi) if self.bios.mode == BiosMode::Hle => {
+            StepOutcome::SwiHleUnhandled(num) => {
                 let pc = self
                     .cpu
                     .pipeline
                     .decode_pc()
                     .unwrap_or_else(|| self.cpu.regs.pc());
-                self.debug.on_unhandled_swi(pc);
+                self.debug.on_unhandled_swi(num, pc);
+                self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
             }
             _ => {}
         }
@@ -625,6 +626,7 @@ impl Gba {
                 | StepOutcome::Exception(_)
                 | StepOutcome::SwiHle
                 | StepOutcome::SwiHleIntrWait(_)
+                | StepOutcome::SwiHleUnhandled(_)
         );
         // Recompute Disable Bug latch with real pc_changed.
         let bug_latch = cpu::price_insn(
@@ -808,6 +810,26 @@ mod tests {
         );
         let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
         assert!(pc >= soft_boot::CART_ENTRY, "pc={pc:#010X}");
+    }
+
+    /// Dave's FireRed log: unhandled SWI → empty BIOS → pc wandering at 0x0011….
+    /// BiosHle must resume past unknown SWIs instead of vectoring to 0x08.
+    #[test]
+    fn bios_hle_unknown_swi_does_not_vector_to_empty_bios() {
+        let mut rom = vec![0u8; 0x100];
+        // ARM SWI 0x11 (LZ77UnCompWram) — not HLE'd yet — then B .
+        rom[0..4].copy_from_slice(&0xEF11_0000u32.to_le_bytes());
+        rom[4..8].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+        let mut gba = Gba::new();
+        gba.load_rom(&rom);
+        gba.reset_bios_hle();
+        gba.step_instruction();
+        let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
+        assert!(
+            pc >= soft_boot::CART_ENTRY,
+            "unknown SWI must not enter empty BIOS; pc={pc:#010X}"
+        );
+        assert_eq!(gba.cpu.regs.mode(), Mode::System);
     }
 
     #[test]

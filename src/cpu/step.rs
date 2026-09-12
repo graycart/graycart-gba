@@ -28,6 +28,8 @@ pub enum StepOutcome {
     SwiHleIntrWait(u16),
     /// Took a real exception vector (no HLE handler).
     Exception(ExceptionKind),
+    /// BiosHle saw an unimplemented SWI comment — resumed past it (no empty-BIOS vector).
+    SwiHleUnhandled(u8),
 }
 
 /// Optional BiosHle hooks used while stepping (Div for jsmolka fail digits).
@@ -171,7 +173,13 @@ fn handle_exception(
                 resume_after_swi_hle(cpu, bus, instr_pc);
                 return StepOutcome::SwiHleIntrWait(mask);
             }
-            hle::SwiHleResult::Unhandled => {}
+            hle::SwiHleResult::Unhandled => {
+                // Critical: with no BIOS image, vectoring to 0x08 executes open-bus
+                // garbage and the PC wanders (FireRed log: pc=0x00112328…). Resume
+                // past the SWI instead; Gba debug logs the missing number.
+                resume_after_swi_hle(cpu, bus, instr_pc);
+                return StepOutcome::SwiHleUnhandled(number);
+            }
         }
     }
 

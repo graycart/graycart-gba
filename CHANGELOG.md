@@ -18,12 +18,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Fixed
 
-- **BiosHle Halt / IntrWait / VBlankIntrWait / RegisterRamReset (`walter/gba-black-screen-bios-hle-ae69`):**
-  unhandled SWI `02h`/`04h`/`05h` vectoring to empty BIOS `0x08` caused commercial
-  carts to black-screen under default BiosHle. HLE now enters HALTCNT Halt, forces
-  IME for IntrWait, polls `[03007FF8]`, and clears RegisterRamReset ranges + forced
-  blank. Debug emits `gba-debug: swi unhandled …` if a SWI still falls through.
-  Crate **0.1.5**.
+- **BiosHle Halt / IntrWait / VBlankIntrWait / RegisterRamReset + no empty-BIOS vector
+  (`walter/gba-black-screen-bios-hle-ae69`):** Dave’s FireRed `--debug` log showed
+  `pc` wandering at `0x00112328` / `0x0258…` / `0x031A…` with `DISPCNT=0` after a
+  normal BiosHle soft-boot — classic unhandled-SWI → empty BIOS `0x08` open-bus
+  runaway (crt0 reached System/`cpsr=0xDF`, then `RegisterRamReset` / friends).
+  BiosHle now implements Halt/Stop/IntrWait/VBlankIntrWait/RegisterRamReset, and
+  **never vectors unknown SWIs into empty BIOS** (resumes + `gba-debug: swi
+  unhandled num=…`). Crate **0.1.5**.
 
 ### Added
 

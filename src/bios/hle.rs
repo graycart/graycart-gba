@@ -36,7 +36,9 @@ pub mod swi {
 /// Result of a BiosHle SWI attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwiHleResult {
-    /// Not implemented — caller should take the real SWI exception vector.
+    /// Not implemented — under BiosHle the CPU must **not** vector into empty
+    /// BIOS (that runaway is what Dave’s FireRed log showed: `pc=0x0011…`).
+    /// Caller resumes past the SWI and logs `swi unhandled`.
     Unhandled,
     /// Finished; resume at the next instruction.
     Done,
