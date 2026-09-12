@@ -80,3 +80,57 @@ fn fifo_b_word_push() {
     assert_eq!(apu.fifos.b.pop_sample() as u8, 0xDD);
     assert_eq!(apu.fifos.b.pop_sample() as u8, 0xCC);
 }
+
+#[test]
+fn synthetic_fifo_stream_signed_pcm_has_energy() {
+    // Drive FIFO A with a repeating signed ramp via word pushes, clock with TM0,
+    // mix to PCM — must be non-silent and not stuck at bias center.
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_X, MASTER_ENABLE);
+    // A → L+R, full volume, TM0; PSG ratio irrelevant
+    apu.write16(OFF_SOUNDCNT_H, 0x0B04);
+    // Signed ramp bytes: -128,-64,0,64 repeated
+    let word = ((-128i8) as u8 as u32)
+        | (((-64i8) as u8 as u32) << 8)
+        | ((0u8 as u32) << 16)
+        | ((64u8 as u32) << 24);
+    for _ in 0..8 {
+        apu.fifos.a.push_word(word);
+    }
+    // Pop through several timer edges and emit PWM frames
+    for _ in 0..64 {
+        apu.on_timer_overflows(1, 0);
+        apu.step(512); // one PWM period at default bias
+    }
+    let frames = apu.pcm.snapshot();
+    assert!(frames.len() >= 32);
+    let rms = super::pcm::soft_rms(&frames);
+    assert!(
+        rms > 100.0,
+        "synthetic FIFO PCM should have energy, rms={rms}"
+    );
+    // Latched sample must stay signed (not reinterpreted as unsigned mid)
+    assert!(
+        apu.fifos.latch_a == 64
+            || apu.fifos.latch_a == -128
+            || apu.fifos.latch_a == -64
+            || apu.fifos.latch_a == 0
+    );
+}
+
+#[test]
+fn batched_timer_overflows_request_dma_each_half_crossing() {
+    // Many overflows in one call must keep requesting DMA whenever ≤ half —
+    // glue must refill between pops (tested via request bit after batch).
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_H, 0); // A uses TM0
+                                    // Exactly half+1 so first pop crosses threshold; further pops stay ≤ half.
+    for i in 0..(FIFO_HALF + 1) {
+        apu.fifos.a.push_sample(i as i8);
+    }
+    let _ = apu.take_fifo_dma_request();
+    apu.on_timer_overflows(20, 0);
+    assert!(apu.fifos.a.len() < FIFO_HALF);
+    let req = apu.take_fifo_dma_request();
+    assert_eq!(req & 1, 1);
+}

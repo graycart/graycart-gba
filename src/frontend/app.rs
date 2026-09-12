@@ -314,7 +314,8 @@ impl GbaApp {
                 if let Some(audio) = self.audio.as_ref() {
                     let n = gba.pull_audio(&mut self.pcm_scratch);
                     if n > 0 {
-                        audio.push_frames(&self.pcm_scratch[..n]);
+                        let src_hz = gba.audio_output_hz();
+                        audio.push_frames(&self.pcm_scratch[..n], src_hz);
                     }
                 }
                 self.pacer.after_present();

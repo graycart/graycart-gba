@@ -82,6 +82,48 @@ fn fifo_dma2_bit_select() {
 }
 
 #[test]
+fn fifo_special_forces_fixed_dest_even_when_increment_programmed() {
+    // Cited: mGBA GBAAudioScheduleFifoDma — dest control forced Fixed + 32-bit.
+    let mut mem = fifo_mem();
+    let src = 0x0300_0100;
+    let dst = 0x0300_0400;
+    for i in 0..4u32 {
+        mem.write32(src + i * 4, 0xB000_0000 + i);
+        mem.write32(dst + i * 4, 0); // poison neighbors
+    }
+
+    let mut dma = Dma::new();
+    let mut irq = Irq::new();
+    dma.write_sad(ChannelId::Ch1, src);
+    dma.write_dad(ChannelId::Ch1, dst);
+    dma.write_count(ChannelId::Ch1, 1);
+    let mut ctrl = control_word(
+        DestControl::Increment, // game mistake / non-Fixed — hardware forces Fixed
+        SrcControl::Increment,
+        StartTiming::Special,
+        false,
+        true,
+    );
+    ctrl |= CONTROL_REPEAT;
+    dma.write_control(ChannelId::Ch1, ctrl);
+
+    let report = dma.on_fifo_request(&mut mem, &mut irq, 0b01);
+    assert_eq!(report.units_transferred, 4);
+    // All four words must land on the same FIFO address (last wins).
+    assert_eq!(mem.read32(dst), 0xB000_0003);
+    assert_eq!(mem.read32(dst + 4), 0, "must not walk dest into neighbor");
+    assert_eq!(
+        dma.channel(ChannelId::Ch1).latched_dad,
+        dst,
+        "latched DAD stays at FIFO"
+    );
+    assert_eq!(
+        dma.channel(ChannelId::Ch1).dest_control(),
+        DestControl::Fixed
+    );
+}
+
+#[test]
 fn fifo_dma0_special_never_starts() {
     let mut mem = fifo_mem();
     let mut dma = Dma::new();

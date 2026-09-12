@@ -52,9 +52,10 @@ impl AudioOut {
         })
     }
 
-    /// Push core PCM frames into the host ring (nearest-neighbor, no resample).
-    pub fn push_frames(&self, frames: &[PcmFrame]) {
-        let interleaved = pcm_to_f32_interleaved(frames);
+    /// Push core PCM frames, resampling from `src_hz` (PWM rate) to the device rate.
+    pub fn push_frames(&self, frames: &[PcmFrame], src_hz: u32) {
+        let resampled = resample_pcm_linear(frames, src_hz, self.sample_rate);
+        let interleaved = pcm_to_f32_interleaved(&resampled);
         self.push_interleaved_f32(&interleaved);
     }
 
@@ -134,6 +135,40 @@ pub fn pcm_to_f32_interleaved(frames: &[PcmFrame]) -> Vec<f32> {
     out
 }
 
+/// Linear-resample stereo PCM from `src_hz` to `dst_hz` (host device rate).
+///
+/// Nearest-neighbor dump of PWM-rate frames into a 44.1/48 kHz cpal stream
+/// underruns hard (silence gaps → pops). This stretch/compresses frame count.
+#[must_use]
+pub fn resample_pcm_linear(frames: &[PcmFrame], src_hz: u32, dst_hz: u32) -> Vec<PcmFrame> {
+    if frames.is_empty() || src_hz == 0 || dst_hz == 0 {
+        return Vec::new();
+    }
+    if src_hz == dst_hz {
+        return frames.to_vec();
+    }
+    let out_len = ((frames.len() as u64) * u64::from(dst_hz) / u64::from(src_hz)).max(1) as usize;
+    let mut out = Vec::with_capacity(out_len);
+    let max_i = frames.len() - 1;
+    for j in 0..out_len {
+        let src_pos = (j as f64) * f64::from(src_hz) / f64::from(dst_hz);
+        let i = (src_pos as usize).min(max_i);
+        let frac = (src_pos - i as f64) as f32;
+        let a = frames[i];
+        let b = frames[(i + 1).min(max_i)];
+        out.push(PcmFrame {
+            left: lerp_i16(a.left, b.left, frac),
+            right: lerp_i16(a.right, b.right, frac),
+        });
+    }
+    out
+}
+
+fn lerp_i16(a: i16, b: i16, t: f32) -> i16 {
+    let v = f32::from(a) + (f32::from(b) - f32::from(a)) * t;
+    v.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +189,39 @@ mod tests {
         let v = pcm_to_f32_interleaved(&frames);
         assert!(v[0] > 0.9);
         assert!(v[1] < -0.9);
+    }
+
+    #[test]
+    fn resample_pwm_to_host_upsamples() {
+        let frames: Vec<PcmFrame> = (0..32768)
+            .map(|i| PcmFrame {
+                left: (i % 200) as i16,
+                right: 0,
+            })
+            .collect();
+        let out = resample_pcm_linear(&frames, 32_768, 48_000);
+        assert!(
+            out.len() > frames.len(),
+            "48 kHz host needs more frames than 32.768 kHz PWM ({} vs {})",
+            out.len(),
+            frames.len()
+        );
+        let expected = (32768u64 * 48_000 / 32_768) as usize;
+        assert_eq!(out.len(), expected);
+    }
+
+    #[test]
+    fn resample_same_rate_is_identity() {
+        let frames = [
+            PcmFrame {
+                left: 10,
+                right: -10,
+            },
+            PcmFrame {
+                left: 20,
+                right: -20,
+            },
+        ];
+        assert_eq!(resample_pcm_linear(&frames, 48000, 48000), frames);
     }
 }

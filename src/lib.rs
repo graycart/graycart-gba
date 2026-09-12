@@ -456,8 +456,15 @@ impl Gba {
         }
 
         let overflows = self.timer.step(cycles, &mut self.irq);
-        self.apu.on_timer_overflows(overflows[0], overflows[1]);
-        self.service_fifo_dma();
+        // Refill FIFO DMA after each overflow edge so a large quantum cannot
+        // drain the FIFO then request only once (underrun → hold/pop garbage).
+        let max_ov = overflows[0].max(overflows[1]);
+        for i in 0..max_ov {
+            let t0 = if i < overflows[0] { 1 } else { 0 };
+            let t1 = if i < overflows[1] { 1 } else { 0 };
+            self.apu.on_timer_overflows(t0, t1);
+            self.service_fifo_dma();
+        }
         self.apu.step(cycles);
 
         self.input.poll_keypad_irq(&mut self.irq);
@@ -714,6 +721,12 @@ impl Gba {
     /// Pull host PCM frames from the APU ring (P6).
     pub fn pull_audio(&mut self, out: &mut [apu::PcmFrame]) -> usize {
         self.apu.pull_samples(out)
+    }
+
+    /// PWM output sample rate from SOUNDBIAS (source rate for host resample).
+    #[must_use]
+    pub fn audio_output_hz(&self) -> u32 {
+        apu::pwm_rate_hz(self.apu.regs.pwm_resolution())
     }
 
     /// Soft WAV bytes of the current PCM snapshot (P6 soft gate / `--audio-out`).
@@ -1010,5 +1023,69 @@ mod tests {
         // May or may not pop depending on overflow this cycle; sound MMIO readable.
         assert_eq!(gba.io16(0x84) & 0x80, 0x80);
         let _ = before;
+    }
+
+    #[test]
+    fn fifo_dma_refills_across_batched_timer_overflows() {
+        // Synthetic: many TM0 overflows in one advance must keep FIFO fed via
+        // interleaved DMA Special (not one refill after draining empty).
+        use crate::bus::CpuMem;
+        use crate::dma::{control_word, ChannelId, DestControl, SrcControl, StartTiming};
+        use crate::timer::{TimerId, CTRL_START};
+
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0084, 0x0080);
+            // A → L+R full vol, TM0, no reset sticky
+            mem.write16(0x0400_0082, 0x0304);
+            // Large PCM buffer in IWRAM for DMA1
+            for i in 0..64u32 {
+                let s = ((i as i8).wrapping_mul(3)) as u8 as u32;
+                let word = s | (s << 8) | (s << 16) | (s << 24);
+                mem.write32(0x0300_0400 + i * 4, word);
+            }
+            mem.write32(0x0400_00BC, 0x0300_0400);
+            mem.write32(0x0400_00C0, 0x0400_00A0);
+            mem.write16(0x0400_00C4, 1);
+            // Intentionally Increment dest — arm_fifo_burst must force Fixed.
+            let ctrl = control_word(
+                DestControl::Increment,
+                SrcControl::Increment,
+                StartTiming::Special,
+                false,
+                true,
+            ) | crate::dma::CONTROL_REPEAT;
+            mem.write16(0x0400_00C6, ctrl);
+        }
+
+        // Seed FIFO above half, then drain with a big cycle quantum.
+        for i in 0..20 {
+            gba.apu.fifos.a.push_sample(i as i8);
+        }
+        // TM0: reload so overflow every 64 cycles (prescale 1).
+        gba.timer.write_reload(TimerId::Tm0, 0xFFFF - 63);
+        gba.timer.write_control(TimerId::Tm0, CTRL_START);
+
+        // ~40 overflows → without interleaving, FIFO empties after ~20 pops
+        // and only one DMA (16 samples) lands; with interleaving, depth stays healthy.
+        gba.advance_subsystems(64 * 40);
+        assert!(
+            gba.apu.fifos.a.len() >= 4,
+            "FIFO A should stay fed across batched overflows, len={}",
+            gba.apu.fifos.a.len()
+        );
+        assert_eq!(
+            gba.dma.channel(ChannelId::Ch1).dest_control(),
+            DestControl::Fixed,
+            "FIFO Special forces Fixed dest"
+        );
+        // Latched sample should be non-zero from the synthetic stream.
+        let latch = gba.apu.fifos.latch_a;
+        assert!(
+            latch != 0 || !gba.apu.fifos.a.is_empty(),
+            "expected FIFO activity"
+        );
+        let _ = latch;
     }
 }

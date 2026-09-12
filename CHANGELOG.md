@@ -16,6 +16,16 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Fixed
+
+- **FIFO Direct Sound / host audio (`walter/firered-fifo-audio-0568`):** FireRed
+  past SWI `0x12` had active DMA1/2 Special FIFO traffic but audible pops /
+  whirrs / bings. Fixes: (1) FIFO Special forces **Fixed** dest + 32-bit (mGBA
+  `GBAAudioScheduleFifoDma`); (2) timer overflow → FIFO pop **interleaves** DMA
+  refill so a large quantum cannot drain then refill once; (3) host cpal path
+  **linear-resamples** PWM rate (typically 32768 Hz) to the device rate instead
+  of nearest-neighbor dump. Synthetic FIFO unit + glue tests. Crate **0.1.8**.
+
 ### Changed
 
 - **Debug UX (`walter/gba-debug-ux-1f81`):** `--debug` is a **summary** level —
