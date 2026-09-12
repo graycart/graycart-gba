@@ -1,9 +1,10 @@
-//! P3 MMIO dispatch — side-effect handlers for timers / IRQ / keypad / hw regs.
+//! P3/P4 MMIO dispatch — timers / IRQ / keypad / hw / LCD ports.
 //!
-//! Cited: GBATEK — Memory Map / Interrupt Control / Timers / Keypad / System Control
+//! Cited: GBATEK — Memory Map / Interrupt Control / Timers / Keypad / LCD I/O
 //!   https://problemkaputt.de/gbatek.htm
 //! Research: Project store `docs/graycart-gba/05-io-timers-irq-input.md` §2.3
-//! Note: LCD/sound/DMA ports stay dumb `bus.io` until their owners wire handlers.
+//!   Project store `docs/graycart-gba/03-ppu.md` §13
+//! Note: sound/DMA ports stay dumb `bus.io` until their owners wire handlers.
 //! IRQ delay / IO write latency TBD (IO-TBD-4).
 
 use crate::bus::mirror::io_offset;
@@ -11,15 +12,17 @@ use crate::bus::{Bus, CpuMem};
 use crate::hw::Hw;
 use crate::input::Input;
 use crate::irq::Irq;
+use crate::ppu::Ppu;
 use crate::timer::Timers;
 
-/// CPU-facing memory view that routes known I/O ports to P3 subsystems.
+/// CPU-facing memory view that routes known I/O ports to subsystems.
 pub struct MachineMem<'a> {
     pub bus: &'a mut Bus,
     pub irq: &'a mut Irq,
     pub timer: &'a mut Timers,
     pub input: &'a mut Input,
     pub hw: &'a mut Hw,
+    pub ppu: &'a mut Ppu,
 }
 
 impl MachineMem<'_> {
@@ -34,6 +37,8 @@ impl MachineMem<'_> {
 
     fn read_io16(&self, off: usize) -> u16 {
         match off {
+            // LCD I/O 0x000–0x056
+            o if o <= 0x56 => self.ppu.read16(o),
             // Timers 0–3
             o if (0x100..0x110).contains(&o) => self.timer.read_mmio16(o - 0x100),
             // SIO data low / high as 16-bit views of sio_data32
@@ -78,6 +83,10 @@ impl MachineMem<'_> {
 
     fn write_io16(&mut self, off: usize, value: u16) {
         match off {
+            o if o <= 0x56 => {
+                self.ppu.write16(o, value);
+                self.mirror_u16(o, self.ppu.read16(o));
+            }
             o if (0x100..0x110).contains(&o) => {
                 self.timer.write_mmio16(o - 0x100, value);
                 self.mirror_u16(o, self.timer.read_mmio16(o - 0x100));
@@ -136,7 +145,7 @@ impl MachineMem<'_> {
 
     fn write_io32(&mut self, off: usize, value: u32) {
         match off {
-            o if (0x100..0x110).contains(&o) && o.is_multiple_of(4) => {
+            o if (0x100..0x110).contains(&o) && (o & 3) == 0 => {
                 self.timer.write_mmio32(o - 0x100, value);
                 self.mirror_u16(o, self.timer.read_mmio16(o - 0x100));
                 self.mirror_u16(o + 2, self.timer.read_mmio16(o + 2 - 0x100));

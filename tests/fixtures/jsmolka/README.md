@@ -64,5 +64,6 @@ jsmolka/
 Harness matrix: [`tests/roms/jsmolka.rs`](../../roms/jsmolka.rs) — arm/thumb/memory
 assert PASS in default CI. No fake green.
 
-Not vendored yet: `ppu/*`, `bios`, `save/*` (later phases). Do not claim
-Graycart MIT covers these ROMs. No Nintendo BIOS / commercial carts.
+Not vendored yet: `bios`, `save/*` (later phases). PPU smoke
+(`ppu/hello`, `shades`, `stripes`) is vendored for P4 goldens.
+Do not claim Graycart MIT covers these ROMs. No Nintendo BIOS / commercial carts.

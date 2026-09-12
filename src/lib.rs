@@ -3,14 +3,13 @@
 //! Module map follows the graycart-gba implementation plan §2.2
 //! (Project store: `docs/graycart-gba/08-implementation-plan.md`).
 //!
-//! Cited: GBATEK — Memory Map / LCD I/O (DISPSTAT VBlank for suite m_vsync)
+//! Cited: GBATEK — Memory Map / LCD I/O (DISPSTAT / VCOUNT)
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: graycart-gba test apparatus §4 (harness hooks)
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
-//! Note: cycle counts are crude (1 per insn) until waitstate scheduling; VBlank
-//! bit is toggled in the run loop so jsmolka `m_vsync` can exit without a PPU.
-//! P3: timers / keypad poll / Halt wake / IRQ sample run each step; MMIO for
-//! those ports is dispatched via [`mmio::MachineMem`].
+//! Note: cycle counts are crude (1 per insn) until waitstate scheduling.
+//! P3: timers / keypad / Halt wake / IRQ sample.
+//! P4: real PPU scanline timing replaces crude VBlank toggle.
 
 pub mod apu;
 pub mod bios;
@@ -29,6 +28,7 @@ pub mod timer;
 use bios::BiosMode;
 use cpu::{soft_boot, step, ExceptionKind, StepHle, StepOutcome};
 use mmio::MachineMem;
+use ppu::FRAME_CYCLES;
 
 /// How a ROM is launched (mirrors harness [`RomLaunchMode`] names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +86,6 @@ impl Gba {
             }
             RomLaunchMode::Multiboot => {
                 self.bios.mode = BiosMode::Hle;
-                // Expect caller to have placed the image in EWRAM already.
                 soft_boot::apply(&mut self.cpu, soft_boot::MULTIBOOT_ENTRY);
                 Ok(())
             }
@@ -95,7 +94,6 @@ impl Gba {
                     return Err("BiosLle requires user-provided gba_bios.bin (never in git)".into());
                 }
                 self.bios.mode = BiosMode::Lle;
-                // LLE: start at BIOS reset vector 0; not used by jsmolka CI path.
                 soft_boot::apply(&mut self.cpu, 0);
                 Ok(())
             }
@@ -114,7 +112,7 @@ impl Gba {
         }
     }
 
-    /// Borrow bus + P3 peripherals as a [`CpuMem`] view (MMIO side effects).
+    /// Borrow bus + peripherals as a [`CpuMem`] view (MMIO side effects).
     #[cfg(test)]
     fn machine_mem(&mut self) -> MachineMem<'_> {
         MachineMem {
@@ -123,12 +121,11 @@ impl Gba {
             timer: &mut self.timer,
             input: &mut self.input,
             hw: &mut self.hw,
+            ppu: &mut self.ppu,
         }
     }
 
     /// Sample IE∧IF∧IME∧!CPSR.I → IRQ exception + pipeline refill.
-    ///
-    /// Returns `true` when an IRQ was taken.
     fn try_service_irq(&mut self) -> bool {
         if self.irq.try_service_cpu(&mut self.cpu).is_none() {
             return false;
@@ -140,6 +137,7 @@ impl Gba {
                 timer,
                 input,
                 hw,
+                ppu,
                 cpu,
                 ..
             } = self;
@@ -149,22 +147,25 @@ impl Gba {
                 timer,
                 input,
                 hw,
+                ppu,
             };
             cpu.pipeline.refill(&mut mem);
         }
-        // IRQ always enters ARM; keep regs.pc aligned with Decode.
         if let Some(d) = self.cpu.pipeline.decode {
             self.cpu.regs.set_pc(d.addr);
         }
         true
     }
 
-    /// One machine step: timer/keypad/halt → IRQ sample → (optional) CPU insn.
-    ///
-    /// Crude 1-cycle-per-step proxy (same as pre-P3). Halt/Stop skips CPU
-    /// retirement but still advances timers so IE∧IF can wake.
+    /// One machine step: PPU + timer/keypad/halt → IRQ sample → (optional) CPU.
     pub fn step_instruction(&mut self) -> StepOutcome {
         const STEP_CYCLES: u64 = 1;
+
+        {
+            let Self { bus, irq, ppu, .. } = self;
+            ppu.step(STEP_CYCLES as u32, bus, irq);
+            ppu.mirror_status_to_io(bus);
+        }
 
         self.timer.step(STEP_CYCLES, &mut self.irq);
         self.input.poll_keypad_irq(&mut self.irq);
@@ -180,7 +181,6 @@ impl Gba {
             return StepOutcome::Ok;
         }
 
-        tick_vblank_hle(&mut self.bus, self.cycles);
         let hle = self.step_hle();
         let outcome = {
             let Self {
@@ -189,6 +189,7 @@ impl Gba {
                 timer,
                 input,
                 hw,
+                ppu,
                 cpu,
                 ..
             } = self;
@@ -198,6 +199,7 @@ impl Gba {
                 timer,
                 input,
                 hw,
+                ppu,
             };
             step(cpu, &mut mem, hle)
         };
@@ -212,11 +214,9 @@ impl Gba {
         }
     }
 
-    /// Headless frame advance stub (PPU not scheduled yet). Uses a fixed insn budget.
+    /// Headless frame advance via PPU frame cycle count.
     pub fn run_frames(&mut self, n: u64) {
-        // ~280k cycles/frame @ 16.78 MHz / 60 — crude stand-in until PPU owns frames.
-        const STEPS_PER_FRAME: u64 = 280_896;
-        self.run_cycles(n.saturating_mul(STEPS_PER_FRAME));
+        self.run_cycles(n.saturating_mul(u64::from(FRAME_CYCLES)));
     }
 
     /// Architectural R12 (jsmolka fail# / pass=0 after `m_test_eval`).
@@ -235,6 +235,7 @@ impl Gba {
     #[must_use]
     pub fn io16(&self, offset: usize) -> u16 {
         match offset {
+            o if o <= 0x56 => self.ppu.read16(o),
             o if (0x100..0x110).contains(&o) => self.timer.read_mmio16(o - 0x100),
             0x130 => self.input.read_keyinput(),
             0x132 => self.input.read_keycnt(),
@@ -259,27 +260,23 @@ impl Gba {
         self.bus.vram.get(offset).copied().unwrap_or(0)
     }
 
+    /// RGB888 presentment buffer (240×160×3).
+    #[must_use]
+    pub fn framebuffer_rgb(&self) -> Vec<u8> {
+        self.ppu.framebuffer_rgb()
+    }
+
+    /// SHA-256 hex of the RGB888 framebuffer.
+    #[must_use]
+    pub fn frame_hash_sha256(&self) -> String {
+        self.ppu.frame_hash_sha256()
+    }
+
     /// PC of the instruction currently in Decode (if any).
     #[must_use]
     pub fn decode_pc(&self) -> Option<u32> {
         self.cpu.pipeline.decode_pc()
     }
-}
-
-/// DISPSTAT at `0x04000004` — bit 0 = VBlank flag.
-const DISPSTAT_IO: usize = 4;
-
-/// Toggle VBlank each step so jsmolka `m_vsync` (wait !VBlank then VBlank) can proceed.
-fn tick_vblank_hle(bus: &mut bus::Bus, cycles: u64) {
-    let mut v = u16::from(bus.io.get(DISPSTAT_IO).copied().unwrap_or(0))
-        | (u16::from(bus.io.get(DISPSTAT_IO + 1).copied().unwrap_or(0)) << 8);
-    if (cycles & 1) == 0 {
-        v &= !1;
-    } else {
-        v |= 1;
-    }
-    bus.io[DISPSTAT_IO] = v as u8;
-    bus.io[DISPSTAT_IO + 1] = (v >> 8) as u8;
 }
 
 #[cfg(test)]
@@ -321,12 +318,11 @@ mod tests {
         {
             let mut mem = gba.machine_mem();
             mem.write16(0x0400_0200, 0xFFFF);
-            mem.write16(0x0400_0202, 0); // no-op ack
+            mem.write16(0x0400_0202, 0);
             mem.write32(0x0400_0208, 1);
         }
         assert_eq!(gba.irq.read_ie(), 0x3FFF);
         assert!(gba.irq.ime());
-        // Raise IF then W1C-ack bit0 only.
         gba.irq.raise(0x0005);
         {
             let mut mem = gba.machine_mem();
@@ -343,16 +339,13 @@ mod tests {
         let mut gba = Gba::new();
         gba.hw.enter_halt();
         gba.irq.write_ie(irq::IRQ_TIMER0);
-        // IME clear — Halt wake must still occur (IME don't-care).
         gba.irq.set_ime(false);
         {
             let mut mem = gba.machine_mem();
-            // Reload 0xFFFF; start + IRQ enable; one more tick overflows.
             mem.write16(0x0400_0100, 0xFFFF);
             mem.write16(0x0400_0102, CTRL_START | CTRL_IRQ);
         }
         assert_eq!(gba.timer.read_counter(TimerId::Tm0), 0xFFFF);
-        // One step: timer increments → overflow → IF → Halt wake.
         gba.step_instruction();
         assert!(
             !gba.hw.cpu_sleeping(),
@@ -372,5 +365,26 @@ mod tests {
         assert_eq!(ki & button::A, 0);
         assert_eq!(ki & button::START, 0);
         assert_ne!(ki & button::B, 0);
+    }
+
+    #[test]
+    fn framebuffer_hash_stable_empty() {
+        let gba = Gba::new();
+        let h1 = gba.frame_hash_sha256();
+        let h2 = gba.frame_hash_sha256();
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn dispcnt_via_mmio_reaches_ppu() {
+        use crate::bus::CpuMem;
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0000, 0x0404);
+        }
+        assert_eq!(gba.ppu.regs.bg_mode(), 4);
+        assert_eq!(gba.io16(0), 0x0404);
     }
 }

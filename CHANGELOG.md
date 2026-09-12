@@ -18,6 +18,12 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P4 PPU (shared `dev/p4-ppu`):** scanline timing 1232×228; DISPSTAT
+  VBlank/HBlank/VCounter + IRQs; LCD I/O register file; modes 0–5 + OBJ
+  basics; windows/blend/affine functional; headless `--frames N --hash-out`
+  (SHA-256 of 240×160 RGB888). Vendored jsmolka MIT `ppu/{hello,shades,stripes}`
+  + golden hash path; Tonc ≥3 demos stay `#[ignore]` until CC0 binaries land.
+  jsmolka arm+thumb+memory stay default-CI PASS.
 - **P3 kickoff (timers / IRQ / input):** shared branch `dev/p3-timers-irq`;
   harness gates wired early (`tests/roms/p3.rs`) — in-house simple IRQ ROM
   stub + mGBA `io-read` / `timer-irq` stretch stubs (`#[ignore]` until
