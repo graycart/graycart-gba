@@ -19,6 +19,10 @@ fn seed_halfwords(mem: &mut FlatRam, base: u32, words: &[u16]) {
     }
 }
 
+fn settle(dma: &mut Dma) {
+    dma.tick_startup(2);
+}
+
 fn read_halfwords(mem: &mut FlatRam, base: u32, n: usize) -> Vec<u16> {
     (0..n)
         .map(|i| mem.read16(base.wrapping_add((i as u32) * 2)))
@@ -53,6 +57,8 @@ fn register_file_masks_and_mmio() {
         true,
     );
     dma.write_mmio16(10, cnt); // DMA0 CNT_H
+    assert!(!dma.channel(ChannelId::Ch0).pending_immediate);
+    settle(&mut dma);
     assert!(dma.channel(ChannelId::Ch0).pending_immediate);
     assert_eq!(dma.read_mmio16(10) & CONTROL_ENABLE, CONTROL_ENABLE);
 }

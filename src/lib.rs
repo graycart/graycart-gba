@@ -7,12 +7,13 @@
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: graycart-gba test apparatus §4 (harness hooks)
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
-//! Note: cycle counts are crude (1 per insn) until waitstate scheduling.
-//! P3: timers / keypad / Halt wake / IRQ sample.
+//! Note: P8 prices N/S/I per insn via [`cpu::timing`]; `run_cycles` is a cycle budget.
+//! P3: timers / keypad / Halt wake / IRQ sample (7-cycle recognition delay).
 //! P4: real PPU scanline timing replaces crude VBlank toggle.
 //! P5: DMA VBlank/HBlank/FIFO/capture starts hooked from PPU/APU edges.
 //! P6: APU PSG + FIFO timer clock + mixer/PCM; sound MMIO owned by APU.
 //! P7: cart saves + BIOS protect latch + BiosHle SWI/IRQ trampoline.
+//! P8: prefetch FSM, Disable Bug latch, DMA 2-cycle startup, waitstate step.
 
 pub mod apu;
 pub mod bios;
@@ -32,7 +33,7 @@ use bios::{
     hle, BiosMode, HLE_IRQ_RETURN, IRQ_HANDLER_PTR, LATCH_AFTER_IRQ, LATCH_AFTER_SWI,
     LATCH_DURING_IRQ, LATCH_SOFT_RESET,
 };
-use cpu::{soft_boot, step, ExceptionKind, IsaState, Mode, StepHle, StepOutcome};
+use cpu::{soft_boot, step, ExceptionKind, IsaState, Mode, StepHle, StepOutcome, TimingInput};
 use mmio::{BusApuMem, MachineMem};
 use ppu::FRAME_CYCLES;
 
@@ -98,6 +99,7 @@ impl Gba {
                 let latch = hle::soft_boot_cart(&mut self.cpu);
                 self.bus.open_bus.note_bios_fetch(latch);
                 self.bus.cpu_pc = soft_boot::CART_ENTRY;
+                self.bus.force_next_fetch_n = true;
                 self.hw.write_postflg(self.hw.read_postflg() | 1);
                 Ok(())
             }
@@ -106,6 +108,7 @@ impl Gba {
                 let latch = hle::soft_boot_multiboot(&mut self.cpu);
                 self.bus.open_bus.note_bios_fetch(latch);
                 self.bus.cpu_pc = soft_boot::MULTIBOOT_ENTRY;
+                self.bus.force_next_fetch_n = true;
                 self.hw.write_postflg(self.hw.read_postflg() | 1);
                 Ok(())
             }
@@ -117,6 +120,7 @@ impl Gba {
                 soft_boot::apply(&mut self.cpu, 0);
                 self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
                 self.bus.cpu_pc = 0;
+                self.bus.force_next_fetch_n = true;
                 Ok(())
             }
         }
@@ -347,49 +351,106 @@ impl Gba {
         let _ = dma.run_pending(&mut mem, irq);
     }
 
+    /// Advance PPU / timers / APU / DMA startup / IRQ delay / prefetch by `cycles`.
+    fn advance_subsystems(&mut self, cycles: u64) {
+        if cycles == 0 {
+            return;
+        }
+        let cyc_u32 = cycles.min(u64::from(u32::MAX)) as u32;
+        {
+            let Self { bus, irq, ppu, .. } = self;
+            ppu.step(cyc_u32, bus, irq);
+            ppu.mirror_status_to_io(bus);
+        }
+        self.service_dma_edges();
+        self.dma.tick_startup(cyc_u32);
+        // Drain bursts whose startup just elapsed (before CPU runs).
+        if self.dma.is_busy() {
+            let _ = self.drain_dma();
+        }
+
+        let overflows = self.timer.step(cycles, &mut self.irq);
+        self.apu.on_timer_overflows(overflows[0], overflows[1]);
+        self.service_fifo_dma();
+        self.apu.step(cycles);
+
+        self.input.poll_keypad_irq(&mut self.irq);
+        self.hw.poll_halt_wake(self.irq.ie_and_if());
+        self.irq.tick(cyc_u32);
+
+        // Prefetch fill during cart-idle portion (use full quantum as idle proxy).
+        let tables = self.bus.wait_tables;
+        {
+            let prefetch = &mut self.bus.prefetch;
+            let rom = &self.bus.rom;
+            prefetch.tick_idle(cyc_u32, tables, |addr| {
+                // All WS windows share one ROM image; low 25 bits index the file.
+                let off = (addr & 0x01FF_FFFF) as usize;
+                if off + 1 < rom.len() {
+                    u16::from(rom[off]) | (u16::from(rom[off + 1]) << 8)
+                } else {
+                    0
+                }
+            });
+        }
+    }
+
     /// Drain pending Immediate (or already-armed) bursts only — no edge re-fire.
-    fn drain_dma(&mut self) {
+    /// Returns true if any channel completed (caller may force next fetch N).
+    fn drain_dma(&mut self) -> bool {
         let Self {
             bus, irq, dma, apu, ..
         } = self;
         let mut mem = BusApuMem { bus, apu };
-        let _ = dma.run_pending(&mut mem, irq);
+        let report = dma.run_pending(&mut mem, irq);
+        !report.completed.is_empty()
     }
 
-    /// One machine step: PPU → DMA edges → timer/keypad/halt → IRQ → (optional) CPU.
+    /// One machine step: price cycles → advance peripherals → IRQ → CPU.
     pub fn step_instruction(&mut self) -> StepOutcome {
-        const STEP_CYCLES: u64 = 1;
-
         // BiosHle IRQ return sentinel — complete before other work.
         if self.bios.mode == BiosMode::Hle && self.try_hle_irq_return() {
-            self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
+            self.advance_subsystems(1);
+            self.cycles = self.cycles.wrapping_add(1);
             return StepOutcome::Ok;
         }
 
-        {
-            let Self { bus, irq, ppu, .. } = self;
-            ppu.step(STEP_CYCLES as u32, bus, irq);
-            ppu.mirror_status_to_io(bus);
-        }
+        // Snapshot decode for pricing (pipe may be empty → 1-cycle NOP quantum).
+        let (code_addr, isa, raw) = match self.cpu.pipeline.decode {
+            Some(slot) => (slot.addr, self.cpu.pipeline.isa, slot.raw),
+            None => (self.cpu.regs.pc(), self.cpu.pipeline.isa, 0),
+        };
+        let force_n = self.bus.force_next_fetch_n;
+        self.bus.force_next_fetch_n = false;
+        let prefetch_on = self.bus.prefetch.enabled() || self.hw.waitcnt.prefetch_enable();
+        // Keep FSM enable in sync even if WAITCNT was set before Bus existed.
+        self.bus
+            .prefetch
+            .set_enabled(self.hw.waitcnt.prefetch_enable());
 
-        self.service_dma_edges();
+        let priced = cpu::price_insn(
+            TimingInput {
+                isa,
+                code_addr,
+                opcode_raw: raw,
+                pc_changed: false, // refined after execute
+                prefetch_enabled: prefetch_on,
+                force_fetch_n: force_n,
+            },
+            self.bus.wait_tables,
+            &self.bus.prefetch,
+        );
+        let step_cycles = u64::from(priced.total.max(1));
 
-        let overflows = self.timer.step(STEP_CYCLES, &mut self.irq);
-        self.apu.on_timer_overflows(overflows[0], overflows[1]);
-        // FIFO DMA request may have been raised by timer sampling.
-        self.service_fifo_dma();
-        self.apu.step(STEP_CYCLES);
-
-        self.input.poll_keypad_irq(&mut self.irq);
-        self.hw.poll_halt_wake(self.irq.ie_and_if());
+        self.advance_subsystems(step_cycles);
 
         if self.try_service_irq() {
-            self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
+            self.cycles = self.cycles.wrapping_add(step_cycles);
             return StepOutcome::Exception(ExceptionKind::Irq);
         }
 
         if self.hw.cpu_sleeping() {
-            self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
+            self.cycles = self.cycles.wrapping_add(step_cycles);
             return StepOutcome::Ok;
         }
 
@@ -429,7 +490,6 @@ impl Gba {
             step(cpu, &mut mem, hle)
         };
         if matches!(outcome, StepOutcome::SwiHle) && self.bios.mode == BiosMode::Hle {
-            // SoftReset resumes at cart/multiboot entry → SoftReset latch; else After-SWI.
             let pc = self.cpu.regs.pc();
             if pc == soft_boot::CART_ENTRY || pc == soft_boot::MULTIBOOT_ENTRY {
                 self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
@@ -437,18 +497,46 @@ impl Gba {
                 self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
             }
         }
-        // Immediate DMA may have been armed by the instruction's MMIO write.
-        if self.dma.is_busy() {
-            self.drain_dma();
+
+        let pc_changed = matches!(
+            outcome,
+            StepOutcome::Branched | StepOutcome::Exception(_) | StepOutcome::SwiHle
+        );
+        // Recompute Disable Bug latch with real pc_changed.
+        let bug_latch = cpu::price_insn(
+            TimingInput {
+                isa,
+                code_addr,
+                opcode_raw: raw,
+                pc_changed,
+                prefetch_enabled: self.hw.waitcnt.prefetch_enable(),
+                force_fetch_n: false,
+            },
+            self.bus.wait_tables,
+            &self.bus.prefetch,
+        )
+        .latch_disable_bug;
+        if bug_latch || pc_changed {
+            self.bus.force_next_fetch_n = true;
         }
-        self.cycles = self.cycles.wrapping_add(STEP_CYCLES);
+
+        // DMA startup ticks in `advance_subsystems` (next insn). Drain any
+        // already-pending bursts (edge/FIFO settled earlier this quantum).
+        if self.dma.is_busy() && self.drain_dma() {
+            self.bus.force_next_fetch_n = true;
+        }
+        self.cycles = self.cycles.wrapping_add(step_cycles);
         outcome
     }
 
-    /// Run up to `max_steps` instructions (crude cycle budget).
-    pub fn run_cycles(&mut self, max_steps: u64) {
-        for _ in 0..max_steps {
+    /// Run until `self.cycles` advances by at least `max_cycles`.
+    pub fn run_cycles(&mut self, max_cycles: u64) {
+        let target = self.cycles.saturating_add(max_cycles);
+        // Cap instruction iterations so a stuck machine cannot hang CI.
+        let mut guard = max_cycles.saturating_add(1).saturating_mul(4).max(1);
+        while self.cycles < target && guard > 0 {
             self.step_instruction();
+            guard -= 1;
         }
     }
 

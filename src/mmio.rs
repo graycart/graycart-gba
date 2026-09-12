@@ -153,6 +153,7 @@ impl MachineMem<'_> {
             }
             0x204 => {
                 self.hw.write_waitcnt(value);
+                self.bus.apply_waitcnt(self.hw.waitcnt);
                 self.mirror_u16(0x204, self.hw.read_waitcnt());
             }
             0x208 => {

@@ -18,6 +18,13 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P8 Timing (`walter/p8-timing-e812`):** Game Pak prefetch FSM (8×16 fill/drain/
+  hit); Prefetch Disable Bug latch; IRQ recognition delay (7 cycles, Halt wake
+  immediate); coarse N/S/I waitstate step + `run_cycles` as cycle budget; DMA
+  Enable 0→1 startup delay (2 cycles) + post-DMA force-N. Unit gates G8-*;
+  `docs/conformance.md` records mGBA timing/dma thresholds (0 / not run until
+  `suite.gba`); `tests/roms/p8.rs` hygiene + `#[ignore]` matrices. jsmolka
+  arm+thumb+memory stay default-CI PASS.
 - **P7 Cart/BIOS/saves (`walter/p7-cart-bios-saves-c42d`):** optional BiosLle
   (`GBA_BIOS` / `load_bios`, never vendored); PC-gated BIOS open-bus latch
   (jsmolka SoftReset/SWI/IRQ residues); BiosHle SoftReset/Sqrt/CpuSet + IRQ
