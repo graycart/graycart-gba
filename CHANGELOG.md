@@ -18,6 +18,12 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **Test harness scaffolding (apparatus only — no accuracy claim):** shared
+  `tests/roms/{harness,jsmolka,main}.rs` with `GbaTestRom` + outcomes
+  (`PASS`/`FAIL`/`TIMEOUT`/`UNSUPPORTED`/`SKIPPED`); ignored jsmolka
+  arm/thumb/memory matrix; LICENSE/path stubs kept; optional
+  `tests/fixtures/jsmolka/fetch-sketch.sh` (does not download). Default CI
+  stays ROM-free.
 - **P2 bus/memory (in progress):** region map + mirrors, WAITCNT waitstates, video STRB / open-bus stubs, DMA register file + Immediate (shared branch `dev/p2-bus`).
 - **P0 scaffold (in progress):** fixture layout under `tests/fixtures/` with a
   mandatory upstream license table (jsmolka MIT, mGBA suite MIT, FuzzARM

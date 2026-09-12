@@ -1,12 +1,17 @@
 <!--
 Cited: graycart-gb tests/fixtures/README.md (layout + license-table posture)
 URL: https://github.com/graycart/graycart-gb/blob/main/tests/fixtures/README.md
-Note: adapted for GBA suites from docs/graycart-gba/07-test-strategy.md §4–§7.
+Note: adapted for GBA suites from docs/graycart-gba/07-test-strategy.md §4–§7
+  and 11-test-apparatus.md §3–§4; harness lives under tests/roms/.
 -->
 # Test ROM fixtures
 
 Commercial carts stay under `carts/` (local only, gitignored). Nintendo BIOS /
 `gba_bios.bin` is **never** committed. Conformance fixtures live here.
+
+Shared runner + ignored matrices: [`tests/roms/`](../roms/) (`harness.rs`,
+`jsmolka.rs`). Apparatus only until ROMs are vendored and the machine can boot
+them — **no accuracy claim** from a green default `cargo test`.
 
 ## Licensing / provenance
 
@@ -14,8 +19,8 @@ Commercial carts stay under `carts/` (local only, gitignored). Nintendo BIOS /
 
 Graycart’s root [`LICENSE`](../../LICENSE) applies to Graycart source and docs
 only. Vendored test ROMs (when present) keep their **upstream** copyright and
-license terms. Suite directories below are P0 stubs — **no `.gba` binaries are
-committed yet**.
+license terms. Suite directories below are path/LICENSE stubs — **no `.gba`
+binaries are committed yet**.
 
 | Suite | Path | Upstream | License | Notes |
 |-------|------|----------|---------|-------|
@@ -37,16 +42,22 @@ Do not add commercial cartridges or BIOS dumps under this tree.
 ## Layout
 
 ```text
-tests/fixtures/
-├── README.md          # this license table (mandatory)
-├── jsmolka/           # MIT — LICENSE + arm/thumb path stubs (ROMs later)
-├── mgba-suite/        # MIT — empty until suite.gba / build script
-├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
-└── tonc/              # CC0 — empty until selected demos
+tests/
+├── fixtures/
+│   ├── README.md          # this license table (mandatory)
+│   ├── jsmolka/           # MIT — LICENSE + arm/thumb/memory path stubs
+│   ├── mgba-suite/        # MIT — empty until suite.gba / build script
+│   ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
+│   └── tonc/              # CC0 — empty until selected demos
+└── roms/
+    ├── harness.rs         # Outcome + RomLaunchMode + GbaTestRom
+    ├── jsmolka.rs         # #[ignore] arm/thumb/memory matrix
+    └── main.rs            # CI-blocking apparatus smoke
 ```
 
 Default `cargo test` stays ROM-free. Conformance matrices that need these
 fixtures are marked `#[ignore]` and are **not** run in CI
 (`cargo test -- --ignored` is opt-in only).
 
-Outcomes (when harness exists): `PASS` / `FAIL` / `TIMEOUT` / `UNSUPPORTED`.
+Outcomes: `PASS` / `FAIL` / `TIMEOUT` / `UNSUPPORTED` / `SKIPPED`
+(apparatus or absent ROM).
