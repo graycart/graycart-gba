@@ -14,6 +14,7 @@
 //! P6: APU PSG + FIFO timer clock + mixer/PCM; sound MMIO owned by APU.
 //! P7: cart saves + BIOS protect latch + BiosHle SWI/IRQ trampoline.
 //! P8: prefetch FSM, Disable Bug latch, DMA 2-cycle startup, waitstate step.
+//! P9: host seam — buttons / framebuffer / PCM / battery `.sav` (GUI stays in `frontend/`).
 
 pub mod apu;
 pub mod bios;
@@ -129,6 +130,23 @@ impl Gba {
     /// Soft-boot convenience for BiosHle homebrew / jsmolka.
     pub fn reset_bios_hle(&mut self) {
         let _ = self.reset(RomLaunchMode::BiosHle);
+    }
+
+    /// Host pad → KEYINPUT (host-logical: `1` = pressed). GUI maps keys here.
+    pub fn set_buttons(&mut self, mask: u16) {
+        self.input.set_pressed(mask);
+    }
+
+    /// Raw battery `.sav` image for the active backup backend (`None` → empty).
+    #[must_use]
+    pub fn battery_sav(&self) -> Vec<u8> {
+        self.cart.save.to_sav()
+    }
+
+    /// Replace backup storage from a raw `.sav` (size must match detected kind).
+    pub fn load_battery_sav(&mut self, bytes: &[u8]) {
+        let kind = self.cart.save_kind();
+        self.cart.save.load_sav(kind, bytes);
     }
 
     fn step_hle(&self) -> StepHle {
@@ -713,6 +731,22 @@ mod tests {
         let h2 = gba.frame_hash_sha256();
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn host_api_buttons_and_battery_sav_roundtrip() {
+        // G9-api: host seam without GUI crates.
+        let mut gba = Gba::new();
+        gba.set_buttons(input::button::A | input::button::START);
+        assert_eq!(
+            gba.input.read_keyinput() & input::BUTTON_MASK,
+            (!(input::button::A | input::button::START)) & input::BUTTON_MASK
+        );
+        gba.cart.set_save_kind(cart::detect::SaveKind::Sram);
+        let mut sav = vec![0xFF; cart::sav::sav_len(cart::detect::SaveKind::Sram)];
+        sav[0] = 0x42;
+        gba.load_battery_sav(&sav);
+        assert_eq!(gba.battery_sav()[0], 0x42);
     }
 
     #[test]
