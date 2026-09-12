@@ -1,6 +1,6 @@
-//! DMG/CGB-via-GBA hardware compat (P10) — prefer graycart reuse.
+//! DMG/CGB-via-GBA hardware compat (P10 bring-up / P11 accuracy) — prefer graycart reuse.
 //!
-//! Cited: graycart-gba implementation plan §2.2 / §3.11 / PHASES P10
+//! Cited: graycart-gba implementation plan §2.2 / §3.11–3.12 / PHASES P10–P11
 //!   Project store: `docs/graycart-gba/08-implementation-plan.md`
 //! Cited: `09-dmg-cgb-compatibility.md`, `10-core-api-and-gb-reuse.md`
 //! Note: wrapper around graycart SM83/PPU/APU — do not reinvent cores here.
@@ -19,7 +19,7 @@ pub use dep::{GRAYCART_DEP_LABEL, GRAYCART_GIT_REV};
 pub use detect::{
     header_cgb_byte, hint_from_extension, select_profile, CartClass, LoadPathHint, MachineProfile,
 };
-pub use machine::CompatMachine;
+pub use machine::{CompatMachine, CompatSilicon};
 
 use crate::bus::waitcnt::WaitCnt;
 

@@ -6,14 +6,16 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 
 ## Status
 
-**P10 DMG/CGB compat bring-up** — `graycart` whole-crate dep behind `compat/`
-(WAITCNT detect, Mode-8/HALT posture, `CompatMachine` load/run/FB/PCM). Blargg
-`01-special.gb` smoke when vendored; full suite boards are **P11**. Crate
-**0.1.1**. Frontend still does **not** claim shipping 8-bit picker UX (P11).
+**P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
+FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
+matrices are `#[ignore]` with thresholds in `docs/conformance.md`. Crate
+**0.1.2**. **P12** supersede cutover is next (not started).
 
-**P9 Frontend** — windowed host (eframe / winit+wgpu+egui + cpal): ROM picker,
-pause/reset, `.sav` beside ROM. Headless `--frames` / `--hash-out` / `--audio-out`
-unchanged. First tagged runnable milestone: **0.1.0**.
+**P10 DMG/CGB compat bring-up** — `graycart` whole-crate dep behind `compat/`
+(WAITCNT detect, Mode-8/HALT posture, `CompatMachine`). Crate **0.1.1**.
+
+**P9 Frontend** — windowed host (eframe / winit+wgpu+egui + cpal). First tagged
+runnable milestone: **0.1.0**.
 
 Default CI still gates vendored **jsmolka** MIT prebuilts:
 **`arm.gba` + `thumb.gba` + `memory.gba` PASS** under BiosHle + r12/idle oracle.
@@ -32,7 +34,7 @@ and `docs/conformance.md`.
 | [`AGENTS.md`](./AGENTS.md) | How agents navigate: build/test, modules, SemVer, no BIOS/ROMs in git, parallel ownership |
 | [`ATTRIBUTION.md`](./ATTRIBUTION.md) | **Mandatory** file-header credit rule (what / URL / inspired-by note) |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Short contributor blurb |
-| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8–P10) |
+| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8–P11) |
 | [`tests/fixtures/README.md`](./tests/fixtures/README.md) | Fixture license table + harness layout |
 | [`carts/README.md`](./carts/README.md) | Optional local dumps (gitignored binaries) |
 
@@ -61,7 +63,7 @@ cargo test
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 patch **0.1.1**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 

@@ -150,7 +150,7 @@ fn conformance_mentions_p10() {
 fn crate_version_patch_after_p9() {
     let v = env!("CARGO_PKG_VERSION");
     assert!(
-        v == "0.1.1" || v.starts_with("0.1."),
-        "P10 expected patch on 0.1.x, got {v}"
+        v.starts_with("0.1."),
+        "compat phases stay on 0.1.x, got {v}"
     );
 }
