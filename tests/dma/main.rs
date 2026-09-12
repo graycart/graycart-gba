@@ -2,7 +2,7 @@
 //!
 //! Cited: jsmolka/gba-tests memory/ (MIT) — P2 bus gate ROM path stub
 //!   https://github.com/jsmolka/gba-tests/tree/master/memory
-//! Note: no `.gba` binaries committed; license + path presence only.
+//! Note: memory.gba is vendored (workstream C); execute/oracle still D/E.
 
 use std::path::Path;
 
@@ -28,7 +28,6 @@ fn jsmolka_license_still_covers_memory_stub() {
     );
 }
 
-#[ignore = "requires vendored tests/fixtures/jsmolka/memory/memory.gba"]
 #[test]
 fn jsmolka_memory_rom_present() {
     let path = Path::new("tests/fixtures/jsmolka/memory/memory.gba");

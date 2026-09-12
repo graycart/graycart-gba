@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Sketch only — do not run in CI. Workstream C will harden this.
+# Sketch / docs helper — prefer ./fetch.sh for real downloads.
 #
 # Cited: jsmolka/gba-tests (MIT) prebuilt .gba layout
 #   https://github.com/jsmolka/gba-tests
-# Note: fetches upstream MIT prebuilts into path stubs; never fetches BIOS or
-# commercial ROMs. Pin a commit SHA before treating as a gate.
+# Note: prints curl examples only. Never fetches BIOS or commercial ROMs.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-# Replace with a pinned commit once workstream C lands.
-UPSTREAM_REF="${JSMOLKA_REF:-master}"
-BASE_URL="https://raw.githubusercontent.com/jsmolka/gba-tests/${UPSTREAM_REF}"
+PIN="${JSMOLKA_REF:-a7113b67e63f83a9b321696ddd7042ccfad6c881}"
+BASE_URL="https://raw.githubusercontent.com/jsmolka/gba-tests/${PIN}"
 
-echo "fetch-sketch: would download MIT prebuilts into ${ROOT}/{arm,thumb,memory}/"
-echo "  pin JSMOLKA_REF=<git-sha> before relying on hashes"
+echo "fetch-sketch: curl examples for MIT prebuilts into ${ROOT}/{arm,thumb,memory}/"
+echo "  pin: ${PIN}"
+echo "  preferred: ${ROOT}/fetch.sh"
 echo "  example (manual):"
 echo "    curl -fsSL ${BASE_URL}/arm/arm.gba       -o ${ROOT}/arm/arm.gba"
 echo "    curl -fsSL ${BASE_URL}/thumb/thumb.gba   -o ${ROOT}/thumb/thumb.gba"
 echo "    curl -fsSL ${BASE_URL}/memory/memory.gba -o ${ROOT}/memory/memory.gba"
-echo "refusing to download automatically in this sketch (exit 0)."
+echo "refusing to download (exit 0). Use fetch.sh to actually vendor."
 exit 0

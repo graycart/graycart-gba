@@ -5,8 +5,8 @@
 //! Cited: graycart-gba test gates / apparatus (P1–P2 musts)
 //!   Project store: `docs/graycart-gba/12-test-gates.md`
 //!   Project store: `docs/graycart-gba/11-test-apparatus.md`
-//! Note: default CI never runs these (`#[ignore]`). Rows stay SKIPPED until
-//! ROMs are vendored (workstream C) and the runner can load+oracle (D/E).
+//! Note: default CI never runs these (`#[ignore]`). arm/thumb/memory `.gba`
+//! are vendored (workstream C); rows stay SKIPPED until load+oracle (D/E).
 
 use crate::harness::{fixture_path, run_test_rom, GbaTestRom, Outcome, RomLaunchMode};
 use std::path::Path;
@@ -32,7 +32,7 @@ impl GbaTestRom for JsmolkaRom {
     }
 }
 
-/// P1/P2 must rows (binaries not committed — path stubs + LICENSE only).
+/// P1/P2 must rows (MIT prebuilts vendored; runner still stub → SKIPPED).
 const JSMOLKA_MUST: &[JsmolkaRom] = &[
     JsmolkaRom {
         id: "jsmolka/arm",
@@ -93,7 +93,17 @@ fn jsmolka_license_and_path_stubs_present() {
             "missing {}/README.md path stub",
             dir.display()
         );
-        // `.gba` binaries are optional until workstream C; absence → SKIPPED in runner.
+        let gba = fixture_path(rom.relative_path());
+        assert!(
+            gba.is_file(),
+            "missing vendored {} — workstream C requires MIT prebuilts in-tree",
+            gba.display()
+        );
+        assert!(
+            gba.metadata().map(|m| m.len() > 0).unwrap_or(false),
+            "{} must be non-empty",
+            gba.display()
+        );
     }
 
     for (label, dir) in PLACEHOLDER_SUITES {
@@ -111,13 +121,13 @@ fn jsmolka_license_and_path_stubs_present() {
 }
 
 #[test]
-fn jsmolka_runner_skipped_without_roms() {
+fn jsmolka_runner_skipped_until_oracle() {
     for rom in JSMOLKA_MUST {
         let outcome = run_test_rom(rom);
         assert_eq!(
             outcome.label(),
             "SKIPPED",
-            "{} expected SKIPPED (absent ROM or stub runner), got {} ({})",
+            "{} expected SKIPPED (stub runner until D/E), got {} ({})",
             rom.id,
             outcome.label(),
             outcome.detail()
@@ -130,11 +140,11 @@ fn jsmolka_runner_skipped_without_roms() {
     }
 }
 
-/// Opt-in matrix: prints SKIPPED rows until ROMs + runner land.
+/// Opt-in matrix: prints SKIPPED rows until load+oracle (D/E) land.
 ///
 /// Run locally: `cargo test -p graycart-gba --test roms -- --ignored --nocapture`
 #[test]
-#[ignore = "jsmolka arm/thumb/memory matrix; apparatus stub — no accuracy claim"]
+#[ignore = "jsmolka arm/thumb/memory matrix; ROMs vendored — stub runner until D/E"]
 fn jsmolka_arm_thumb_memory_matrix() {
     eprintln!();
     eprintln!("{:<40} result", "ROM");

@@ -10,21 +10,20 @@ Commercial carts stay under `carts/` (local only, gitignored). Nintendo BIOS /
 `gba_bios.bin` is **never** committed. Conformance fixtures live here.
 
 Shared runner + ignored matrices: [`tests/roms/`](../roms/) (`harness.rs`,
-`jsmolka.rs`). Apparatus only until ROMs are vendored and the machine can boot
-them — **no accuracy claim** from a green default `cargo test`.
+`jsmolka.rs`). jsmolka arm/thumb/memory `.gba` are vendored; the stub runner
+still returns **SKIPPED** until load+oracle (D/E) — **no accuracy claim** from
+a green default `cargo test`.
 
 ## Licensing / provenance
 
 **These fixtures are not covered by this repository’s MIT license.**
 
 Graycart’s root [`LICENSE`](../../LICENSE) applies to Graycart source and docs
-only. Vendored test ROMs (when present) keep their **upstream** copyright and
-license terms. Suite directories below are path/LICENSE stubs — **no `.gba`
-binaries are committed yet**.
+only. Vendored test ROMs keep their **upstream** copyright and license terms.
 
 | Suite | Path | Upstream | License | Notes |
 |-------|------|----------|---------|-------|
-| jsmolka/gba-tests | [`jsmolka/`](jsmolka/) | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | MIT | P1 ARM/Thumb gate; also memory / PPU smoke / saves |
+| jsmolka/gba-tests | [`jsmolka/`](jsmolka/) | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | MIT | `arm`/`thumb`/`memory` prebuilts in-tree (pin in suite README); PPU/bios/save later |
 | mGBA suite | [`mgba-suite/`](mgba-suite/) | [mgba-emu/suite](https://github.com/mgba-emu/suite) | MIT | Timing / DMA / memory board; late-phase gates |
 | FuzzARM | [`fuzzarm/`](fuzzarm/) | [DenSinH/FuzzARM](https://github.com/DenSinH/FuzzARM) | **GPL-3.0** | Do not relicense; prefer download/submodule over copying generator source |
 | Tonc examples | [`tonc/`](tonc/) | [gbadev-org/libtonc-examples](https://github.com/gbadev-org/libtonc-examples) | CC0-1.0 | Golden-frame demos (P4+); tutorial text is CC BY-NC-SA — cite, don’t paste |
@@ -45,7 +44,7 @@ Do not add commercial cartridges or BIOS dumps under this tree.
 tests/
 ├── fixtures/
 │   ├── README.md          # this license table (mandatory)
-│   ├── jsmolka/           # MIT — LICENSE + arm/thumb/memory path stubs
+│   ├── jsmolka/           # MIT — LICENSE + arm/thumb/memory .gba (pinned)
 │   ├── mgba-suite/        # MIT — empty until suite.gba / build script
 │   ├── fuzzarm/           # GPL-3.0 notice — empty until opted-in ROMs
 │   └── tonc/              # CC0 — empty until selected demos

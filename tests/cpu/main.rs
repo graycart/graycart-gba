@@ -66,9 +66,8 @@ fn jsmolka_arm_thumb_fixture_dirs_exist() {
     }
 }
 
-/// P1 exit gate — runs only when vendored ROMs are present (opt-in).
+/// P1 fixture presence — vendored MIT prebuilts (workstream C).
 #[test]
-#[ignore = "requires vendored tests/fixtures/jsmolka/arm/arm.gba"]
 fn jsmolka_arm_rom_present() {
     let path = Path::new("tests/fixtures/jsmolka/arm/arm.gba");
     assert!(
@@ -79,7 +78,6 @@ fn jsmolka_arm_rom_present() {
 }
 
 #[test]
-#[ignore = "requires vendored tests/fixtures/jsmolka/thumb/thumb.gba"]
 fn jsmolka_thumb_rom_present() {
     let path = Path::new("tests/fixtures/jsmolka/thumb/thumb.gba");
     assert!(
