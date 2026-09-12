@@ -6,17 +6,31 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 
 ## Status
 
-P1 CPU + P2 bus/DMA Immediate are gated by vendored **jsmolka** MIT prebuilts:
-**`arm.gba` + `thumb.gba` + `memory.gba` PASS** under BiosHle + r12/idle oracle
-(default CI). Crate **0.0.1**. P3+ (timers/IRQ/…) not started. Deeper SoC suites
-(mGBA suite, NBA hw-test) are LICENSE/path stubs with `#[ignore]` matrices only.
+**P9 Frontend** — windowed host (eframe / winit+wgpu+egui + cpal): ROM picker,
+pause/reset, `.sav` beside ROM. Headless `--frames` / `--hash-out` / `--audio-out`
+unchanged. Crate **0.1.0** (first tagged runnable milestone). DMG/CGB cart UX is
+**not** shipping yet (compat P10+).
+
+Default CI still gates vendored **jsmolka** MIT prebuilts:
+**`arm.gba` + `thumb.gba` + `memory.gba` PASS** under BiosHle + r12/idle oracle.
+Deeper SoC suites (mGBA suite, NBA hw-test) stay LICENSE/path stubs with
+`#[ignore]` until fixtures land. Optional commercial smoke: local `carts/*.gba`
+(skip if missing — never commit dumps).
+
+### BIOS (obtain your own)
+
+Default play uses **BiosHle** (no firmware file required). For BiosLle, supply
+your own `gba_bios.bin` (never commit Nintendo BIOS). See [`AGENTS.md`](./AGENTS.md)
+and `docs/conformance.md`.
 
 | Doc | What |
 |-----|------|
 | [`AGENTS.md`](./AGENTS.md) | How agents navigate: build/test, modules, SemVer, no BIOS/ROMs in git, parallel ownership |
 | [`ATTRIBUTION.md`](./ATTRIBUTION.md) | **Mandatory** file-header credit rule (what / URL / inspired-by note) |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Short contributor blurb |
+| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8 timing, P9 frontend) |
 | [`tests/fixtures/README.md`](./tests/fixtures/README.md) | Fixture license table + harness layout |
+| [`carts/README.md`](./carts/README.md) | Optional local dumps (gitignored binaries) |
 
 Research, phases, and provenance live in the Graycart Project store under `docs/graycart-gba/` until linked or copied here. Family core API: Project store `docs/graycart-family/` (especially `01-core-api.md`).
 
@@ -43,7 +57,7 @@ cargo test
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. Scaffold is **0.0.1**; first tagged runnable milestone targets **0.1.0** (Project store `08-implementation-plan.md` section 5). Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 

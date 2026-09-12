@@ -86,7 +86,7 @@ Same posture as [graycart-gb `AGENTS.md`](https://github.com/graycart/graycart-g
 
 - `Cargo.toml` `[package].version` is the only product version (window title, About, any save-header version field).
 - Completed slices bump **patch** unless the change is a real 0.x **minor**.
-- Scaffold starts at **`0.0.1`**; first tagged runnable milestone targets **`0.1.0`** (intermediate merges may stay untagged).
+- Scaffold started at **`0.0.1`**; first tagged runnable milestone is **`0.1.0`** (P9 playable host).
 - **Do not** ship `1.0.0` until native GBA (and agreed compat) are stable enough, installers/settings/save compatibility are trusted, and basic cross-platform play is trusted.
 - Git tag **`vX.Y.Z` must equal** the crate version. Release jobs should fail on mismatch.
 
@@ -98,7 +98,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Default CI must stay green **without** BIOS images, commercial ROMs, or ignored ROM matrices. Default `cargo test` **does** assert vendored jsmolka **arm+thumb+memory PASS**. Never `cargo test -- --ignored` in the default workflow. Scaffold crate version is **0.0.1**; first tagged runnable milestone targets **0.1.0**.
+Default CI must stay green **without** BIOS images, commercial ROMs, or ignored ROM matrices. Default `cargo test` **does** assert vendored jsmolka **arm+thumb+memory PASS**. Never `cargo test -- --ignored` in the default workflow. Crate version **0.1.0** is the first tagged runnable milestone (P9).
 
 Never commit `carts/*.gba`, `.sav`, state dumps, Nintendo BIOS / boot firmware, secrets, or skip hooks. Never force-push `main`.
 

@@ -18,6 +18,12 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **P9 Frontend (`walter/p9-frontend-ca20`):** windowed host via eframe
+  (winit/wgpu/egui) + cpal; ROM picker, pause/reset, `.sav` sidecar flush;
+  lib host seam (`set_buttons`, `battery_sav` / `load_battery_sav`); headless
+  `--frames` path unchanged; `carts/` smoke skip-if-missing; docs/conformance
+  P9 board; crate **0.1.0**. Unit gates G9-*; GUI window smoke `#[ignore]`.
+  jsmolka arm+thumb+memory stay default-CI PASS. DMG/CGB UX deferred to P10+.
 - **P8 Timing (`walter/p8-timing-e812`):** Game Pak prefetch FSM (8×16 fill/drain/
   hit); Prefetch Disable Bug latch; IRQ recognition delay (7 cycles, Halt wake
   immediate); coarse N/S/I waitstate step + `run_cycles` as cycle budget; DMA
