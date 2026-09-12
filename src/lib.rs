@@ -109,6 +109,7 @@ impl Gba {
     pub fn reset(&mut self, mode: RomLaunchMode) -> Result<(), String> {
         self.cycles = 0;
         self.bios.hle_irq_resume = None;
+        self.bios.hle_intr_wait_mask = None;
         match mode {
             RomLaunchMode::BiosHle => {
                 self.bios.mode = BiosMode::Hle;
@@ -362,6 +363,24 @@ impl Gba {
         true
     }
 
+    /// Poll pending BiosHle IntrWait against `[03007FF8]`; re-Halt if unmet.
+    fn poll_hle_intr_wait(&mut self) {
+        let Some(mask) = self.bios.hle_intr_wait_mask else {
+            return;
+        };
+        if self.hw.cpu_sleeping() {
+            return;
+        }
+        let flags = irq::read_intr_wait_flags(&self.bus.iwram);
+        if flags & mask != 0 {
+            irq::clear_intr_wait_flags(&mut self.bus.iwram, flags & mask);
+            self.bios.hle_intr_wait_mask = None;
+        } else {
+            // Still waiting — sleep again until IE∧IF wakes and ISR updates flags.
+            self.hw.write_haltcnt(0x00);
+        }
+    }
+
     /// Fire VBlank/HBlank/FIFO/capture starts from current PPU/APU edges, then drain.
     fn service_dma_edges(&mut self) {
         let vblank = self.ppu.timing.entered_vblank_edge();
@@ -529,6 +548,10 @@ impl Gba {
             return outcome;
         }
 
+        // BiosHle IntrWait: after IRQ trampoline may have ORed [03007FF8], decide
+        // whether to leave Halt or re-sleep until the requested flags appear.
+        self.poll_hle_intr_wait();
+
         if self.hw.cpu_sleeping() {
             self.cycles = self.cycles.wrapping_add(step_cycles);
             let mut dbg = std::mem::take(&mut self.debug);
@@ -572,18 +595,36 @@ impl Gba {
             };
             step(cpu, &mut mem, hle)
         };
-        if matches!(outcome, StepOutcome::SwiHle) && self.bios.mode == BiosMode::Hle {
-            let pc = self.cpu.regs.pc();
-            if pc == soft_boot::CART_ENTRY || pc == soft_boot::MULTIBOOT_ENTRY {
-                self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
-            } else {
+        match outcome {
+            StepOutcome::SwiHleIntrWait(mask) => {
+                self.bios.hle_intr_wait_mask = Some(mask);
                 self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
             }
+            StepOutcome::SwiHle if self.bios.mode == BiosMode::Hle => {
+                let pc = self.cpu.regs.pc();
+                if pc == soft_boot::CART_ENTRY || pc == soft_boot::MULTIBOOT_ENTRY {
+                    self.bus.open_bus.note_bios_fetch(LATCH_SOFT_RESET);
+                } else {
+                    self.bus.open_bus.note_bios_fetch(LATCH_AFTER_SWI);
+                }
+            }
+            StepOutcome::Exception(ExceptionKind::Swi) if self.bios.mode == BiosMode::Hle => {
+                let pc = self
+                    .cpu
+                    .pipeline
+                    .decode_pc()
+                    .unwrap_or_else(|| self.cpu.regs.pc());
+                self.debug.on_unhandled_swi(pc);
+            }
+            _ => {}
         }
 
         let pc_changed = matches!(
             outcome,
-            StepOutcome::Branched | StepOutcome::Exception(_) | StepOutcome::SwiHle
+            StepOutcome::Branched
+                | StepOutcome::Exception(_)
+                | StepOutcome::SwiHle
+                | StepOutcome::SwiHleIntrWait(_)
         );
         // Recompute Disable Bug latch with real pc_changed.
         let bug_latch = cpu::price_insn(
@@ -727,6 +768,46 @@ mod tests {
         gba.load_rom(&[0x00; 0x100]);
         gba.reset_bios_hle();
         assert_eq!(gba.cpu.regs.pc(), soft_boot::CART_ENTRY);
+    }
+
+    /// Commercial carts (and libtonc) call VBlankIntrWait early; under BiosHle an
+    /// unhandled SWI would vector to empty BIOS (`0x08`) and black-screen forever.
+    #[test]
+    fn bios_hle_vblank_intrwait_stays_in_cart() {
+        let mut rom = vec![0u8; 0x100];
+        // ARM `SWI 0x05` (VBlankIntrWait) then `B .`
+        rom[0..4].copy_from_slice(&0xEF05_0000u32.to_le_bytes());
+        rom[4..8].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+        let mut gba = Gba::new();
+        gba.load_rom(&rom);
+        gba.reset_bios_hle();
+        gba.step_instruction();
+        let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
+        assert!(
+            pc >= soft_boot::CART_ENTRY,
+            "VBlankIntrWait must be BiosHle'd — stuck in BIOS pc={pc:#010X}"
+        );
+        assert!(
+            gba.hw.cpu_sleeping(),
+            "expected HALTCNT Halt after VBlankIntrWait HLE"
+        );
+    }
+
+    #[test]
+    fn bios_hle_halt_swi_enters_halt() {
+        let mut rom = vec![0u8; 0x100];
+        rom[0..4].copy_from_slice(&0xEF02_0000u32.to_le_bytes());
+        rom[4..8].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+        let mut gba = Gba::new();
+        gba.load_rom(&rom);
+        gba.reset_bios_hle();
+        gba.step_instruction();
+        assert!(
+            gba.hw.cpu_sleeping(),
+            "SWI Halt must enter HALTCNT Halt under BiosHle"
+        );
+        let pc = gba.decode_pc().unwrap_or_else(|| gba.cpu.regs.pc());
+        assert!(pc >= soft_boot::CART_ENTRY, "pc={pc:#010X}");
     }
 
     #[test]

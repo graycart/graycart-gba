@@ -16,6 +16,15 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Fixed
+
+- **BiosHle Halt / IntrWait / VBlankIntrWait / RegisterRamReset (`walter/gba-black-screen-bios-hle-ae69`):**
+  unhandled SWI `02h`/`04h`/`05h` vectoring to empty BIOS `0x08` caused commercial
+  carts to black-screen under default BiosHle. HLE now enters HALTCNT Halt, forces
+  IME for IntrWait, polls `[03007FF8]`, and clears RegisterRamReset ranges + forced
+  blank. Debug emits `gba-debug: swi unhandled …` if a SWI still falls through.
+  Crate **0.1.5**.
+
 ### Added
 
 - **Console debug (`walter/gba-console-debug-a3a2`):** GB-style breadcrumbs for

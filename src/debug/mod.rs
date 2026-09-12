@@ -440,6 +440,16 @@ impl DebugTracker {
         ));
     }
 
+    /// BiosHle fell through to the empty SWI vector — commercial carts black-screen here.
+    pub fn on_unhandled_swi(&mut self, vector_pc: u32) {
+        if !self.enabled() {
+            return;
+        }
+        log_line(&format!(
+            "swi unhandled vector=0x{vector_pc:08X} (BiosHle missing handler → empty BIOS)"
+        ));
+    }
+
     /// True when headless `--trace N` has exhausted its dump budget.
     #[must_use]
     pub fn trace_exhausted(&self) -> bool {

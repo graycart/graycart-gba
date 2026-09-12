@@ -39,6 +39,10 @@ pub struct Bios {
     pub hle_irq_resume: Option<u32>,
     /// Saved r0–r3,r12 across BiosHle IRQ user ISR (BIOS wrapper semantics).
     pub hle_irq_regs: [u32; 5],
+    /// Pending IntrWait / VBlankIntrWait mask (`None` when idle).
+    ///
+    /// While `Some`, Gba re-enters Halt until BIOS flags @ `03007FF8` match.
+    pub hle_intr_wait_mask: Option<u16>,
 }
 
 impl Bios {
