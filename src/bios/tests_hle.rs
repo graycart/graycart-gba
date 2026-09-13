@@ -1,8 +1,9 @@
 //! G7-hle unit tests.
 //!
-//! Cited: GBATEK — BIOS Div / Sqrt / Decompression Functions
-//!   https://problemkaputt.de/gbatek.htm
-//! Note: synthetic LZ77/RL/Diff payloads only — no commercial ROM data.
+//! Cited: GBATEK — BIOS Div / Sqrt / Affine / ArcTan / MidiKey2Freq / Decompression
+//!   https://problemkaputt.de/gbatek.htm#biosfunctionsummary
+//! Cross-check: mGBA `src/gba/bios.c` affine / MidiKey2Freq / ArcTan (secondary)
+//! Note: synthetic payloads only — no commercial ROM data.
 
 use super::hle::{self, swi};
 use crate::bus::{CpuMem, FlatRam};
@@ -199,4 +200,139 @@ fn diff8_unfilter_swi_16() {
     assert_eq!(mem.read8(dst + 1), 3);
     assert_eq!(mem.read8(dst + 2), 6);
     assert_eq!(mem.read8(dst + 3), 10);
+}
+
+/// ObjAffineSet identity: scale 1.0 / angle 0 → PA=0x100, PB=0, PC=0, PD=0x100.
+#[test]
+fn obj_affine_set_swi_0f_identity() {
+    let mut mem = FlatRam::new(0x100);
+    let src = 0x20u32;
+    let dst = 0x40u32;
+    // sx, sy as 8.8; angle (full circle = 0x10000).
+    mem.write16(src, 0x0100);
+    mem.write16(src + 2, 0x0100);
+    mem.write16(src + 4, 0);
+    let mut cpu = Cpu::new();
+    cpu.regs.set(0, src);
+    cpu.regs.set(1, dst);
+    cpu.regs.set(2, 1); // count
+    cpu.regs.set(3, 2); // halfword stride (contiguous OAM matrix)
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::OBJ_AFFINE_SET),
+        hle::SwiHleResult::Done
+    ));
+    assert_eq!(mem.read16(dst) as i16, 0x0100);
+    assert_eq!(mem.read16(dst + 2) as i16, 0);
+    assert_eq!(mem.read16(dst + 4) as i16, 0);
+    assert_eq!(mem.read16(dst + 6) as i16, 0x0100);
+}
+
+/// ObjAffineSet 90° (angle high-byte 0x40): cos=0, sin=1 → A=0,B=-sx,C=sy,D=0.
+#[test]
+fn obj_affine_set_swi_0f_quarter_turn() {
+    let mut mem = FlatRam::new(0x100);
+    let src = 0x20u32;
+    let dst = 0x60u32;
+    mem.write16(src, 0x0100);
+    mem.write16(src + 2, 0x0100);
+    mem.write16(src + 4, 0x4000);
+    let mut cpu = Cpu::new();
+    cpu.regs.set(0, src);
+    cpu.regs.set(1, dst);
+    cpu.regs.set(2, 1);
+    cpu.regs.set(3, 8); // OAM affine parameter spacing
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::OBJ_AFFINE_SET),
+        hle::SwiHleResult::Done
+    ));
+    let a = mem.read16(dst) as i16;
+    let b = mem.read16(dst + 8) as i16;
+    let c = mem.read16(dst + 16) as i16;
+    let d = mem.read16(dst + 24) as i16;
+    assert!(a.abs() <= 1, "A≈0 got {a}");
+    assert!((b - (-0x0100)).abs() <= 1, "B≈-0x100 got {b}");
+    assert!((c - 0x0100).abs() <= 1, "C≈0x100 got {c}");
+    assert!(d.abs() <= 1, "D≈0 got {d}");
+}
+
+#[test]
+fn bg_affine_set_swi_0e_identity() {
+    let mut mem = FlatRam::new(0x100);
+    let src = 0x10u32;
+    let dst = 0x40u32;
+    // ox, oy (26.8), cx, cy, sx, sy, angle
+    mem.write32(src, 0); // ox
+    mem.write32(src + 4, 0); // oy
+    mem.write16(src + 8, 0); // cx
+    mem.write16(src + 10, 0); // cy
+    mem.write16(src + 12, 0x0100); // sx
+    mem.write16(src + 14, 0x0100); // sy
+    mem.write16(src + 16, 0); // angle
+    let mut cpu = Cpu::new();
+    cpu.regs.set(0, src);
+    cpu.regs.set(1, dst);
+    cpu.regs.set(2, 1);
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::BG_AFFINE_SET),
+        hle::SwiHleResult::Done
+    ));
+    assert_eq!(mem.read16(dst) as i16, 0x0100); // PA
+    assert_eq!(mem.read16(dst + 2) as i16, 0); // PB
+    assert_eq!(mem.read16(dst + 4) as i16, 0); // PC
+    assert_eq!(mem.read16(dst + 6) as i16, 0x0100); // PD
+    assert_eq!(mem.read32(dst + 8), 0); // x
+    assert_eq!(mem.read32(dst + 12), 0); // y
+}
+
+#[test]
+fn arctan_swi_09_zero() {
+    let mut cpu = Cpu::new();
+    let mut mem = FlatRam::new(16);
+    cpu.regs.set(0, 0);
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::ARCTAN),
+        hle::SwiHleResult::Done
+    ));
+    assert_eq!(cpu.regs.get(0) as i16, 0);
+}
+
+#[test]
+fn arctan2_swi_0a_axes() {
+    let mut cpu = Cpu::new();
+    let mut mem = FlatRam::new(16);
+    // +x → 0
+    cpu.regs.set(0, 0x1000);
+    cpu.regs.set(1, 0);
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::ARCTAN2),
+        hle::SwiHleResult::Done
+    ));
+    assert_eq!(cpu.regs.get(0) as u16, 0);
+    // +y → 0x4000
+    cpu.regs.set(0, 0);
+    cpu.regs.set(1, 0x1000);
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::ARCTAN2),
+        hle::SwiHleResult::Done
+    ));
+    assert_eq!(cpu.regs.get(0) as u16, 0x4000);
+}
+
+/// MidiKey2Freq: key / 2^((180 - mk - fine/256)/12).
+#[test]
+fn midi_key2freq_swi_1f() {
+    let mut mem = FlatRam::new(0x40);
+    let wave = 0x10u32;
+    // Frequency base at WaveData+4.
+    mem.write32(wave + 4, 0x1_0000);
+    let mut cpu = Cpu::new();
+    cpu.regs.set(0, wave);
+    cpu.regs.set(1, 60); // midi key
+    cpu.regs.set(2, 0); // fine
+    assert!(matches!(
+        hle::try_swi(&mut cpu, &mut mem, swi::MIDI_KEY2FREQ),
+        hle::SwiHleResult::Done
+    ));
+    // 2^((180-60)/12) = 2^10 = 1024 → 0x10000 / 1024 = 64
+    assert_eq!(cpu.regs.get(0), 64);
 }

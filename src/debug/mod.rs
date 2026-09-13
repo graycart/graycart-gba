@@ -1087,6 +1087,12 @@ impl DebugTracker {
         }
     }
 
+    /// Snapshot of unhandled SWI counts for the final AV / SWI report.
+    #[must_use]
+    pub fn unhandled_swi_counts(&self) -> &BTreeMap<u8, u64> {
+        &self.swi.by_num
+    }
+
     /// True when headless `--trace N` has exhausted its dump budget.
     #[must_use]
     pub fn trace_exhausted(&self) -> bool {
@@ -1149,6 +1155,19 @@ pub fn format_av_report(gba: &crate::Gba, frames: u64) -> String {
         },
         gba.apu.health.clip_hits
     );
+    let swi = gba.debug.unhandled_swi_counts();
+    if swi.is_empty() {
+        let _ = writeln!(&mut out, "SWI unhandled=(none)");
+    } else {
+        let mut parts = String::new();
+        for (&num, &n) in swi {
+            if !parts.is_empty() {
+                parts.push(',');
+            }
+            let _ = write!(&mut parts, "0x{num:02X}:{n}");
+        }
+        let _ = writeln!(&mut out, "SWI unhandled=[{parts}]");
+    }
     out
 }
 

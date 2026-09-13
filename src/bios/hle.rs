@@ -7,14 +7,20 @@
 //!   https://problemkaputt.de/gbatek-bios-reset-functions.htm
 //! Cited: GBATEK — BIOS Decompression Functions (LZ77 / RL / Diff)
 //!   https://problemkaputt.de/gbatek.htm#biosdecompressionfunctions
+//! Cited: GBATEK — BIOS Math / Affine / Sound (ArcTan / BgAffineSet / ObjAffineSet / MidiKey2Freq)
+//!   https://problemkaputt.de/gbatek.htm#biosarithmeticfunctions
+//!   https://problemkaputt.de/gbatek.htm#biosaffinefunctions
+//!   https://problemkaputt.de/gbatek.htm#biossoundfunctions
 //! Cited: jsmolka/gba-tests — Div + Sqrt used by suite ROMs (MIT)
-//! Cross-check: mGBA `src/gba/bios.c` `_unLz77` / `_unRl` / `_unFilter` (secondary)
+//! Cross-check: mGBA `src/gba/bios.c` `_unLz77` / `_ObjAffineSet` / `_MidiKey2Freq` / `_ArcTan`
 //! Research: Project store `docs/graycart-gba/06-cart-bios-saves.md` §3
 //! Note: Div remains the arm/thumb fail-digit path; Sqrt needed for `bios.gba`.
 //!   Halt/IntrWait/VBlankIntrWait are required for commercial carts under BiosHle
 //!   (unhandled SWI vectors to empty BIOS `0x08` → permanent black screen).
 //!   LZ77 SWI `12h` is required after that fix — FireRed resumes but leaves
 //!   garbage tiles when VRAM decompress is stubbed.
+//!   ObjAffineSet SWI `0Fh` (not MidiKey2Freq — that is `1Fh`) is hit when FireRed
+//!   enables windows / affine OBJ; leave unhandled and matrices stay identity-zero.
 
 use crate::bus::CpuMem;
 use crate::cpu::{soft_boot, Cpu};
@@ -33,8 +39,14 @@ pub mod swi {
     pub const DIV: u8 = 0x06;
     pub const DIV_ARM: u8 = 0x07;
     pub const SQRT: u8 = 0x08;
+    pub const ARCTAN: u8 = 0x09;
+    pub const ARCTAN2: u8 = 0x0A;
     pub const CPU_SET: u8 = 0x0B;
     pub const CPU_FAST_SET: u8 = 0x0C;
+    /// BgAffineSet — compute BG PA/PB/PC/PD + origin.
+    pub const BG_AFFINE_SET: u8 = 0x0E;
+    /// ObjAffineSet — compute OBJ affine matrix (FireRed SWI `0Fh`).
+    pub const OBJ_AFFINE_SET: u8 = 0x0F;
     /// LZ77UnCompReadNormalWrite8bit (WRAM byte stores).
     pub const LZ77_UNCOMP_WRITE8: u8 = 0x11;
     /// LZ77UnCompReadNormalWrite16bit (VRAM halfword stores).
@@ -49,6 +61,8 @@ pub mod swi {
     pub const DIFF8_UNFILTER_WRITE16: u8 = 0x17;
     /// Diff16bitUnFilter.
     pub const DIFF16_UNFILTER: u8 = 0x18;
+    /// MidiKey2Freq — music pitch from WaveData key + midi/fine.
+    pub const MIDI_KEY2FREQ: u8 = 0x1F;
     pub const CUSTOM_HALT: u8 = 0x27;
 }
 
@@ -156,8 +170,32 @@ pub fn try_swi(cpu: &mut Cpu, bus: &mut impl CpuMem, number: u8) -> SwiHleResult
             cpu.regs.set(0, isqrt_u32(v));
             SwiHleResult::Done
         }
+        swi::ARCTAN => {
+            let (out, a, b) = arctan_i32(cpu.regs.get(0) as i32);
+            cpu.regs.set(0, out as u32);
+            cpu.regs.set(1, a as u32);
+            cpu.regs.set(3, b as u32);
+            SwiHleResult::Done
+        }
+        swi::ARCTAN2 => {
+            let x = cpu.regs.get(0) as i32;
+            let y = cpu.regs.get(1) as i32;
+            let (out, scratch) = arctan2_i32(x, y);
+            cpu.regs.set(0, u32::from(out));
+            cpu.regs.set(1, scratch as u32);
+            cpu.regs.set(3, 0x170);
+            SwiHleResult::Done
+        }
         swi::CPU_SET | swi::CPU_FAST_SET => {
             hle_cpu_set(cpu, bus, number == swi::CPU_FAST_SET);
+            SwiHleResult::Done
+        }
+        swi::BG_AFFINE_SET => {
+            hle_bg_affine_set(cpu, bus);
+            SwiHleResult::Done
+        }
+        swi::OBJ_AFFINE_SET => {
+            hle_obj_affine_set(cpu, bus);
             SwiHleResult::Done
         }
         swi::LZ77_UNCOMP_WRITE8 => {
@@ -186,6 +224,10 @@ pub fn try_swi(cpu: &mut Cpu, bus: &mut impl CpuMem, number: u8) -> SwiHleResult
         }
         swi::DIFF16_UNFILTER => {
             hle_diff(cpu, bus, /*in_half=*/ true, StoreWidth::Half);
+            SwiHleResult::Done
+        }
+        swi::MIDI_KEY2FREQ => {
+            hle_midi_key2freq(cpu, bus);
             SwiHleResult::Done
         }
         _ => SwiHleResult::Unhandled,
@@ -313,6 +355,135 @@ fn isqrt_u32(n: u32) -> u32 {
         z = (y.saturating_add(n / y)) / 2;
     }
     y
+}
+
+/// GBA angle high-byte → radians (full circle = 256 units → 2π).
+fn gba_theta(angle: u16) -> f32 {
+    f32::from(angle >> 8) / 128.0 * std::f32::consts::PI
+}
+
+/// Truncate float→i16 the way C `store16(..., float)` does (toward zero).
+fn f32_to_i16_trunc(v: f32) -> i16 {
+    v as i32 as i16
+}
+
+fn hle_obj_affine_set(cpu: &mut Cpu, bus: &mut impl CpuMem) {
+    let mut src = cpu.regs.get(0);
+    let mut dst = cpu.regs.get(1);
+    let mut count = cpu.regs.get(2);
+    let stride = cpu.regs.get(3);
+    while count > 0 {
+        count -= 1;
+        let sx = f32::from(bus.read16(src) as i16) / 256.0;
+        let sy = f32::from(bus.read16(src.wrapping_add(2)) as i16) / 256.0;
+        let theta = gba_theta(bus.read16(src.wrapping_add(4)));
+        src = src.wrapping_add(8);
+        let (sin, cos) = theta.sin_cos();
+        // [sx 0; 0 sy] * [cos -sin; sin cos]
+        let a = cos * sx;
+        let b = -sin * sx;
+        let c = sin * sy;
+        let d = cos * sy;
+        bus.write16(dst, f32_to_i16_trunc(a * 256.0) as u16);
+        bus.write16(dst.wrapping_add(stride), f32_to_i16_trunc(b * 256.0) as u16);
+        bus.write16(
+            dst.wrapping_add(stride.wrapping_mul(2)),
+            f32_to_i16_trunc(c * 256.0) as u16,
+        );
+        bus.write16(
+            dst.wrapping_add(stride.wrapping_mul(3)),
+            f32_to_i16_trunc(d * 256.0) as u16,
+        );
+        dst = dst.wrapping_add(stride.wrapping_mul(4));
+    }
+}
+
+fn hle_bg_affine_set(cpu: &mut Cpu, bus: &mut impl CpuMem) {
+    let mut src = cpu.regs.get(0);
+    let mut dst = cpu.regs.get(1);
+    let mut count = cpu.regs.get(2);
+    while count > 0 {
+        count -= 1;
+        let ox = (bus.read32(src) as i32) as f32 / 256.0;
+        let oy = (bus.read32(src.wrapping_add(4)) as i32) as f32 / 256.0;
+        let cx = f32::from(bus.read16(src.wrapping_add(8)) as i16);
+        let cy = f32::from(bus.read16(src.wrapping_add(10)) as i16);
+        let sx = f32::from(bus.read16(src.wrapping_add(12)) as i16) / 256.0;
+        let sy = f32::from(bus.read16(src.wrapping_add(14)) as i16) / 256.0;
+        let theta = gba_theta(bus.read16(src.wrapping_add(16)));
+        src = src.wrapping_add(20);
+        let (sin, cos) = theta.sin_cos();
+        let a = cos * sx;
+        let b = -sin * sx;
+        let c = sin * sy;
+        let d = cos * sy;
+        let rx = ox - (a * cx + b * cy);
+        let ry = oy - (c * cx + d * cy);
+        bus.write16(dst, f32_to_i16_trunc(a * 256.0) as u16);
+        bus.write16(dst.wrapping_add(2), f32_to_i16_trunc(b * 256.0) as u16);
+        bus.write16(dst.wrapping_add(4), f32_to_i16_trunc(c * 256.0) as u16);
+        bus.write16(dst.wrapping_add(6), f32_to_i16_trunc(d * 256.0) as u16);
+        bus.write32(dst.wrapping_add(8), (rx * 256.0) as i32 as u32);
+        bus.write32(dst.wrapping_add(12), (ry * 256.0) as i32 as u32);
+        dst = dst.wrapping_add(16);
+    }
+}
+
+fn hle_midi_key2freq(cpu: &mut Cpu, bus: &mut impl CpuMem) {
+    let wave = cpu.regs.get(0);
+    let key = bus.read32(wave.wrapping_add(4));
+    let mk = cpu.regs.get(1) as f32;
+    let fine = cpu.regs.get(2) as f32 / 256.0;
+    let denom = ((180.0 - mk - fine) / 12.0).exp2();
+    cpu.regs.set(0, (key as f32 / denom) as u32);
+}
+
+/// BIOS ArcTan fixed-point polynomial (mGBA / GBATEK). Returns (r0, r1, r3).
+fn arctan_i32(i: i32) -> (i16, i32, i32) {
+    let a = -((i.wrapping_mul(i)) >> 14);
+    let mut b = ((0xA9i32.wrapping_mul(a)) >> 14).wrapping_add(0x390);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0x91C);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0xFB6);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0x16AA);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0x2081);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0x3651);
+    b = (b.wrapping_mul(a) >> 14).wrapping_add(0xA2F9);
+    let out = (i.wrapping_mul(b) >> 16) as i16;
+    (out, a, b)
+}
+
+fn arctan2_i32(x: i32, y: i32) -> (u16, i32) {
+    if y == 0 {
+        return (if x >= 0 { 0 } else { 0x8000 }, 0);
+    }
+    if x == 0 {
+        return (if y >= 0 { 0x4000 } else { 0xC000 }, 0);
+    }
+    if y >= 0 {
+        if x >= 0 {
+            if x >= y {
+                let (v, a, _) = arctan_i32((y << 14) / x);
+                return (v as u16, a);
+            }
+        } else if -x >= y {
+            let (v, a, _) = arctan_i32((y << 14) / x);
+            return ((v as u16).wrapping_add(0x8000), a);
+        }
+        let (v, a, _) = arctan_i32((x << 14) / y);
+        return (0x4000u16.wrapping_sub(v as u16), a);
+    }
+    if x <= 0 {
+        if -x > -y {
+            let (v, a, _) = arctan_i32((y << 14) / x);
+            return ((v as u16).wrapping_add(0x8000), a);
+        }
+    } else if x >= -y {
+        // mGBA: ArcTan(...) + 0x10000, then store as uint16_t (wrap).
+        let (v, a, _) = arctan_i32((y << 14) / x);
+        return ((i32::from(v).wrapping_add(0x1_0000)) as u16, a);
+    }
+    let (v, a, _) = arctan_i32((x << 14) / y);
+    (0xC000u16.wrapping_sub(v as u16), a)
 }
 
 fn hle_cpu_set(cpu: &mut Cpu, bus: &mut impl CpuMem, fast: bool) {
