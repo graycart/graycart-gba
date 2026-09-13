@@ -459,6 +459,8 @@ impl Gba {
         // Interleave FIFO timer edges with PWM emission so a large quantum
         // cannot pop N samples then emit all PWM frames from only the final
         // latch (decimated / slow saw-rumble under batched cycles).
+        // DMA half-empty refill runs *before* each pop (mGBA / jsgroth) so an
+        // empty FIFO with Special DMA armed does not underrun on the first edge.
         let max_ov = overflows[0].max(overflows[1]);
         if max_ov == 0 {
             self.apu.step(cycles);
@@ -471,9 +473,13 @@ impl Gba {
                 left -= slice;
                 let t0 = u64::from(i < overflows[0]);
                 let t1 = u64::from(i < overflows[1]);
-                self.apu.on_timer_overflows(t0, t1);
+                self.apu.request_fifo_dma_for_timer_edges(t0, t1);
                 self.service_fifo_dma();
+                self.apu.on_timer_overflows(t0, t1);
             }
+            // Drain post-pop half-crossing requests from the last edge so the
+            // FIFO is topped up before the trailing PWM slice / next CPU insn.
+            self.service_fifo_dma();
             if left > 0 {
                 self.apu.step(left);
             }
@@ -1099,6 +1105,143 @@ mod tests {
             "expected FIFO activity"
         );
         let _ = latch;
+    }
+
+    #[test]
+    fn fifo_empty_start_no_underrun_when_special_dma_armed() {
+        // Startup: empty FIFO + timer start with DMA1 Special armed must refill
+        // *before* the first pop (mGBA SampleFIFO order) — underrun/empty_drain
+        // stay zero under scripted traffic.
+        use crate::bus::CpuMem;
+        use crate::dma::{control_word, ChannelId, DestControl, SrcControl, StartTiming};
+        use crate::timer::{TimerId, CTRL_START};
+
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0084, 0x0080);
+            // A → L+R full vol, TM0
+            mem.write16(0x0400_0082, 0x0B04);
+            for i in 0..128u32 {
+                // Non-zero bytes so a successful DMA→pop is visible on the latch.
+                let s = 0x20u8.wrapping_add((i as u8).wrapping_mul(3)) | 1;
+                let word = u32::from(s)
+                    | (u32::from(s) << 8)
+                    | (u32::from(s) << 16)
+                    | (u32::from(s) << 24);
+                mem.write32(0x0300_0500 + i * 4, word);
+            }
+            mem.write32(0x0400_00BC, 0x0300_0500);
+            mem.write32(0x0400_00C0, 0x0400_00A0);
+            mem.write16(0x0400_00C4, 1);
+            let ctrl = control_word(
+                DestControl::Fixed,
+                SrcControl::Increment,
+                StartTiming::Special,
+                true,
+                true,
+            ) | crate::dma::CONTROL_REPEAT;
+            mem.write16(0x0400_00C6, ctrl);
+        }
+        assert!(gba.dma.channel(ChannelId::Ch1).enabled());
+        assert!(gba.apu.fifos.a.is_empty());
+
+        gba.timer.write_reload(TimerId::Tm0, 0xFFFF - 63);
+        gba.timer.write_control(TimerId::Tm0, CTRL_START);
+
+        gba.advance_subsystems(64 * 48);
+        assert_eq!(
+            gba.apu.fifos.a.underruns, 0,
+            "empty-start must not underrun when Special DMA is armed"
+        );
+        assert_eq!(
+            gba.apu.health.empty_drain_a, 0,
+            "empty_drain must stay 0 with pre-pop DMA refill"
+        );
+        assert!(
+            gba.apu.fifos.a.len() >= 4,
+            "FIFO A should stay fed, len={}",
+            gba.apu.fifos.a.len()
+        );
+        assert_ne!(
+            gba.apu.fifos.latch_a, 0,
+            "expected non-zero latch from DMA stream"
+        );
+    }
+
+    #[test]
+    fn fifo_warmup_keeps_underrun_and_empty_drain_zero() {
+        // After a brief prime, extended scripted FIFO+timer traffic must not
+        // accumulate underrun / empty_drain (Dave FireRed AV signal).
+        use crate::bus::CpuMem;
+        use crate::dma::{control_word, DestControl, SrcControl, StartTiming};
+        use crate::timer::{TimerId, CTRL_START};
+
+        let mut gba = Gba::new();
+        {
+            let mut mem = gba.machine_mem();
+            mem.write16(0x0400_0084, 0x0080);
+            // A+B → L+R full, both TM0 (stereo pair)
+            mem.write16(0x0400_0082, 0x0B0F);
+            for i in 0..256u32 {
+                let sa = (0x40u8).wrapping_add(i as u8) as u32;
+                let sb = (0xC0u8).wrapping_sub(i as u8) as u32;
+                mem.write32(
+                    0x0300_0600 + i * 4,
+                    sa | (sa << 8) | (sa << 16) | (sa << 24),
+                );
+                mem.write32(
+                    0x0300_0A00 + i * 4,
+                    sb | (sb << 8) | (sb << 16) | (sb << 24),
+                );
+            }
+            // DMA1 → FIFO A, DMA2 → FIFO B
+            mem.write32(0x0400_00BC, 0x0300_0600);
+            mem.write32(0x0400_00C0, 0x0400_00A0);
+            mem.write16(0x0400_00C4, 1);
+            let ctrl1 = control_word(
+                DestControl::Fixed,
+                SrcControl::Increment,
+                StartTiming::Special,
+                true,
+                true,
+            ) | crate::dma::CONTROL_REPEAT;
+            mem.write16(0x0400_00C6, ctrl1);
+
+            mem.write32(0x0400_00C8, 0x0300_0A00);
+            mem.write32(0x0400_00CC, 0x0400_00A4);
+            mem.write16(0x0400_00D0, 1);
+            let ctrl2 = control_word(
+                DestControl::Fixed,
+                SrcControl::Increment,
+                StartTiming::Special,
+                true,
+                true,
+            ) | crate::dma::CONTROL_REPEAT;
+            mem.write16(0x0400_00D2, ctrl2);
+        }
+
+        // Warm-up: one quantum primes both FIFOs from empty.
+        gba.timer.write_reload(TimerId::Tm0, 0xFFFF - 63);
+        gba.timer.write_control(TimerId::Tm0, CTRL_START);
+        gba.advance_subsystems(64 * 8);
+
+        let ua0 = gba.apu.fifos.a.underruns;
+        let ub0 = gba.apu.fifos.b.underruns;
+        let ea0 = gba.apu.health.empty_drain_a;
+        let eb0 = gba.apu.health.empty_drain_b;
+        assert_eq!(ua0, 0, "warm-up A underrun");
+        assert_eq!(ub0, 0, "warm-up B underrun");
+        assert_eq!(ea0, 0, "warm-up A empty_drain");
+        assert_eq!(eb0, 0, "warm-up B empty_drain");
+
+        // Extended run — counters must not climb.
+        gba.advance_subsystems(64 * 200);
+        assert_eq!(gba.apu.fifos.a.underruns, ua0);
+        assert_eq!(gba.apu.fifos.b.underruns, ub0);
+        assert_eq!(gba.apu.health.empty_drain_a, ea0);
+        assert_eq!(gba.apu.health.empty_drain_b, eb0);
+        assert!(gba.apu.fifos.a.len() >= 4 && gba.apu.fifos.b.len() >= 4);
     }
 
     #[test]

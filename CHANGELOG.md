@@ -18,6 +18,15 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Fixed
 
+- **FIFO startup underrun / empty_drain (`walter/apu-fifo-underrun-drain-9bf8`):** After
+  rumble #27, Dave’s FireRed AV report still showed `underrun=2/2 empty_drain=2/2`
+  — timer edges popped an empty FIFO **before** Special DMA could refill on the
+  same edge (GBATEK lists pop-then-request; mGBA/jsgroth schedule DMA before
+  consuming a FIFO word). Glue now raises + services FIFO DMA **before** each
+  timer pop and drains post-pop half-crossing requests at quantum end. Synthetic
+  empty-start + warm-up tests assert underrun/empty_drain stay zero under
+  scripted FIFO+timer traffic. Crate **0.1.14** (after #29’s 0.1.12 and #30’s 0.1.13).
+
 - **FireRed mid-run video corruption (`walter/firered-midrun-video-9d2d`):** After
   #24 looked good early, rendering fell apart once WIN0|WIN1 came up. Root cause:
   window hit-tests treated X1>X2 / Y1>Y2 as “clamp end to screen edge” (GBATEK

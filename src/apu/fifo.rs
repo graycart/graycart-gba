@@ -4,10 +4,13 @@
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: jsgroth — GBA audio (7-word + hold; secondary)
 //!   https://jsgroth.dev/blog/posts/gba-audio/
+//! Cited: mGBA `GBAAudioSampleFIFO` — DMA when empty slots > 4, before word consume
+//!   https://github.com/mgba-emu/mgba/blob/master/src/gba/audio.c
 //! Research: Project store `docs/graycart-gba/04-apu.md` §4–§5
 //! Note: capacity modelled as 32 samples (GBATEK); half-empty ≤16 → DMA request.
 //! Underrun: hold last sample (Gericom / mGBA #1847).
 //! Overflow: reset empty then accept the new write (Gericom secondary).
+//! Glue must service FIFO DMA *before* pop on each timer edge (startup underrun).
 
 /// Logical FIFO depth in samples (GBATEK: 8×32-bit = 32 bytes).
 pub const FIFO_CAPACITY: usize = 32;
