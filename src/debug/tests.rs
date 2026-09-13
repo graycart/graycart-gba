@@ -361,6 +361,23 @@ fn format_av_report_mentions_apu_and_ppu() {
 }
 
 #[test]
+fn format_av_report_includes_unhandled_swi_counts() {
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        ..DebugConfig::default()
+    });
+    gba.debug.on_unhandled_swi(0x0F, 0x0800_1000);
+    gba.debug.on_unhandled_swi(0x0F, 0x0800_1004);
+    gba.debug.on_unhandled_swi(0x1F, 0x0800_2000);
+    let report = format_av_report(&gba, 42);
+    assert!(
+        report.contains("SWI") && report.contains("0x0F:2") && report.contains("0x1F:1"),
+        "expected SWI counts in final AV report, got {report}"
+    );
+}
+
+#[test]
 fn dispcnt_mode_flip_is_logged() {
     capture_start();
     let mut gba = Gba::new();

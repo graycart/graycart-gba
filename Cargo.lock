@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "graycart-gba"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "cpal",
  "eframe",

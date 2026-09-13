@@ -16,6 +16,16 @@ stay untagged until a playable or gate-complete slice ships.
 
 ## Unreleased
 
+### Fixed
+
+- **BiosHle ObjAffineSet / math / MidiKey2Freq (`walter/bios-hle-swi-0f-071b`):**
+  Dave’s FireRed headless run hit `swi unhandled num=0x0F` (~frame 841 when
+  WIN0|WIN1 flip). GBATEK: SWI `0Fh` is **ObjAffineSet** (MidiKey2Freq is
+  `1Fh`). Implement generic BiosHle for ObjAffineSet (`0Fh`), BgAffineSet
+  (`0Eh`), ArcTan/ArcTan2 (`09h`/`0Ah`), and MidiKey2Freq (`1Fh`). Div/Sqrt
+  already present. Synthetic unit tests; final `--debug` AV report now includes
+  `SWI unhandled=[…]` counts. Crate **0.1.11**.
+
 ### Added
 
 - **AV health in `--debug` summary (`walter/gba-av-debug-health-7491`):** periodic
