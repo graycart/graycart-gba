@@ -1,6 +1,6 @@
 [package]
 name = "graycart-gba"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 description = "Graycart Game Boy Advance emulator"
 license = "MIT"

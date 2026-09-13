@@ -138,6 +138,33 @@ fn synthetic_fifo_stream_signed_pcm_has_energy() {
 }
 
 #[test]
+fn pre_pop_dma_request_when_empty() {
+    // Empty FIFO that will be clocked must raise DMA1 *before* pop so glue can
+    // refill on the same edge (startup underrun fix).
+    let mut apu = Apu::new();
+    apu.write16(OFF_SOUNDCNT_H, 0x0200); // A→right, TM0
+    assert!(apu.fifos.a.is_empty());
+    let _ = apu.take_fifo_dma_request();
+    apu.request_fifo_dma_for_timer_edges(1, 0);
+    let req = apu.take_fifo_dma_request();
+    assert_eq!(req & 1, 1, "empty FIFO A must request DMA1 before pop");
+    assert!(apu.fifos.a.is_empty(), "pre-request must not pop");
+}
+
+#[test]
+fn pre_pop_dma_skips_when_above_half() {
+    let mut apu = Apu::new();
+    // A on TM0; keep B on TM1 so an empty B does not spuriously request DMA2.
+    apu.write16(OFF_SOUNDCNT_H, 1 << 14);
+    for i in 0..(FIFO_HALF + 2) {
+        apu.fifos.a.push_sample(i as i8);
+    }
+    let _ = apu.take_fifo_dma_request();
+    apu.request_fifo_dma_for_timer_edges(1, 0);
+    assert_eq!(apu.take_fifo_dma_request(), 0);
+}
+
+#[test]
 fn batched_timer_overflows_request_dma_each_half_crossing() {
     // Many overflows in one call must keep requesting DMA whenever ≤ half —
     // glue must refill between pops (tested via request bit after batch).

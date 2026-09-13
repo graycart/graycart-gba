@@ -5,6 +5,8 @@
 //!   https://problemkaputt.de/gbatek.htm
 //! Cited: jsgroth — GBA audio (secondary mixing / FIFO notes)
 //!   https://jsgroth.dev/blog/posts/gba-audio/
+//! Cited: mGBA `GBAAudioSampleFIFO` — schedule FIFO DMA before word consume
+//!   https://github.com/mgba-emu/mgba/blob/master/src/gba/audio.c
 //! Research: Project store `docs/graycart-gba/04-apu.md`
 //! Note: P5 FIFO DMA request latch retained for DMA1/2 Special coupling.
 
@@ -151,7 +153,37 @@ impl Apu {
         (0x60..=0xA6).contains(&off)
     }
 
+    /// Raise FIFO DMA request bits for channels clocked by these timer edges
+    /// when already at/under half-full — call and service **before**
+    /// [`Self::on_timer_overflows`] so an empty FIFO can refill on the same
+    /// edge (mGBA `GBAAudioSampleFIFO` schedules DMA before consuming a word;
+    /// jsgroth half-empty check before pop).
+    pub fn request_fifo_dma_for_timer_edges(&mut self, tm0: u64, tm1: u64) {
+        if tm0 == 0 && tm1 == 0 {
+            return;
+        }
+        let a_tm1 = self.regs.fifo_a_timer1();
+        let b_tm1 = self.regs.fifo_b_timer1();
+        let fire_a = if a_tm1 { tm1 > 0 } else { tm0 > 0 };
+        let fire_b = if b_tm1 { tm1 > 0 } else { tm0 > 0 };
+        let mut dma1 = false;
+        let mut dma2 = false;
+        if fire_a && self.fifos.a.needs_dma() {
+            dma1 = true;
+        }
+        if fire_b && self.fifos.b.needs_dma() {
+            dma2 = true;
+        }
+        if dma1 || dma2 {
+            self.health.on_dma_req(dma1, dma2);
+            self.request_fifo_dma(dma1, dma2);
+        }
+    }
+
     /// TM0/TM1 overflow counts → FIFO sample clock + DMA request bits.
+    ///
+    /// Prefer [`Self::request_fifo_dma_for_timer_edges`] + DMA service *before*
+    /// this pop so startup/empty edges do not underrun when Special DMA is armed.
     pub fn on_timer_overflows(&mut self, tm0: u64, tm1: u64) {
         if tm0 == 0 && tm1 == 0 {
             return;
