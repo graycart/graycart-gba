@@ -9,6 +9,8 @@
 #
 # Default cargo test MUST assert jsmolka arm.gba + thumb.gba + memory.gba PASS
 # (BiosHle + r12/idle oracle). Never fake green.
+# Also asserts synthetic AV health gates (SWI/FIFO/black-frame/write-storm/clip +
+# MIT jsmolka arm.gba in-process --debug frames). No commercial ROMs.
 #
 # Policy: deeper ROM matrices marked `#[ignore]` (mGBA suite, NBA hw-test, full
 # matrix printout) are manual / opt-in only. Do not run `cargo test -- --ignored`

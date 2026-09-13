@@ -40,11 +40,15 @@ pub const ENV_TRACE: &str = "GRAYCART_TRACE";
 pub const LOG_PREFIX: &str = "gba-debug:";
 
 /// VRAM+OAM writes in one period above this → write-storm one-liner.
-const VIDEO_WRITE_STORM: u64 = 8_000;
+pub const VIDEO_WRITE_STORM: u64 = 8_000;
 /// FIFO empty drains in one period above this → loud warn.
-const FIFO_EMPTY_STORM: u64 = 64;
+pub const FIFO_EMPTY_STORM: u64 = 64;
 /// Host ring underrun events in one report above this → warn.
-const HOST_UNDERRUN_WARN: u64 = 1;
+pub const HOST_UNDERRUN_WARN: u64 = 1;
+/// Consecutive all-black frames before `warn ppu all-black`.
+pub const BLACK_FRAME_WARN_FRAMES: u64 = 30;
+/// Consecutive backdrop-only frames before `warn ppu backdrop-only`.
+pub const BACKDROP_ONLY_WARN_FRAMES: u64 = 60;
 
 /// How chatty the breadcrumb stream is (independent of [`Verbosity`] load lines).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -700,7 +704,7 @@ impl DebugTracker {
         let health = analyze_framebuffer(&gba.ppu.fb, bd);
         if health.is_all_black() {
             self.black_frames = self.black_frames.saturating_add(1);
-            if self.black_frames >= 30 && !self.black_announced {
+            if self.black_frames >= BLACK_FRAME_WARN_FRAMES && !self.black_announced {
                 self.black_announced = true;
                 log_line(&format!(
                     "warn ppu all-black frames={} black_pct={}% layers={} mode={} dispcnt=0x{:04X} (silent black screen?)",
@@ -717,7 +721,7 @@ impl DebugTracker {
         }
         if health.is_backdrop_only() {
             self.backdrop_only_frames = self.backdrop_only_frames.saturating_add(1);
-            if self.backdrop_only_frames == 60 {
+            if self.backdrop_only_frames == BACKDROP_ONLY_WARN_FRAMES {
                 log_line(&format!(
                     "warn ppu backdrop-only frames={} bd=0x{bd:04X} layers={} mode={}",
                     self.backdrop_only_frames,

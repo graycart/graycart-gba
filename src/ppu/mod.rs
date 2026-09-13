@@ -20,6 +20,8 @@ pub mod vram_fetch;
 pub mod window;
 
 #[cfg(test)]
+mod tests_health;
+#[cfg(test)]
 mod tests_modes;
 #[cfg(test)]
 mod tests_obj;
