@@ -18,6 +18,8 @@ mod regs;
 #[cfg(test)]
 mod tests_fifo;
 #[cfg(test)]
+mod tests_health;
+#[cfg(test)]
 mod tests_mixer;
 #[cfg(test)]
 mod tests_pcm;

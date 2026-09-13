@@ -28,6 +28,14 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Added
 
+- **AV health CI gates (`walter/gba-av-health-ci-gates-cff7`):** Automated
+  unit/integration tests drive synthetic bus/PPU/APU scenarios and assert health
+  counters + greppable `gba-debug: warn` lines — stubbed SWI warn/`swi summary`,
+  FIFO empty-drain/underrun storm, all-black + backdrop-only heuristics, VRAM
+  write-storm threshold, clip/DC bias, plus in-process `--debug` frames on MIT
+  jsmolka `arm.gba` emitting `apu health` / `ppu health` / AV report. No
+  commercial ROMs. Serialized after #28’s 0.1.11 → crate **0.1.12**.
+
 - **AV health in `--debug` summary (`walter/gba-av-debug-health-7491`):** periodic
   `apu health` / `ppu health` one-liners plus loud `warn` for FIFO
   underrun/overrun/empty-drain/refill-lag, extreme peaks / DC / clipping,

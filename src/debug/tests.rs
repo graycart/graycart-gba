@@ -402,3 +402,265 @@ fn dispcnt_mode_flip_is_logged() {
         "expected mode flip, got {lines:?}"
     );
 }
+
+#[test]
+fn stubbed_swi_instruction_emits_warn_and_summary() {
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    let mut rom = vec![0u8; 0x200];
+    // ARM SWI 0x13 (HuffUnComp) — BiosHle stub — then B .
+    rom[0..4].copy_from_slice(&0xEF13_0000u32.to_le_bytes());
+    rom[4..8].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+    gba.load_rom(&rom);
+    gba.reset_bios_hle();
+    let outcome = gba.step_instruction();
+    assert!(
+        matches!(outcome, crate::cpu::StepOutcome::SwiHleUnhandled(0x13)),
+        "expected unhandled SWI 0x13, got {outcome:?}"
+    );
+    // Force a period flush so `swi summary` is emitted.
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn swi unhandled") && l.contains("0x13")),
+        "expected SWI warn from stubbed insn, got {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("swi summary") && l.contains("0x13")),
+        "expected swi summary counter, got {lines:?}"
+    );
+}
+
+#[test]
+fn fifo_starvation_asserts_health_counters_and_warn() {
+    use crate::apu::{MASTER_ENABLE, OFF_SOUNDCNT_H, OFF_SOUNDCNT_X};
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    gba.apu.write16(OFF_SOUNDCNT_X, MASTER_ENABLE);
+    gba.apu.write16(OFF_SOUNDCNT_H, 0x0300); // A L+R, TM0
+    for _ in 0..FIFO_EMPTY_STORM + 16 {
+        gba.apu.on_timer_overflows(1, 0);
+        gba.apu.step(256);
+    }
+    assert!(
+        gba.apu.health.empty_drain_a >= FIFO_EMPTY_STORM,
+        "empty_drain_a={} below storm threshold {}",
+        gba.apu.health.empty_drain_a,
+        FIFO_EMPTY_STORM
+    );
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn apu fifo empty-drain/underrun")),
+        "expected FIFO underrun warn, got {lines:?}"
+    );
+    let report = format_av_report(&gba, 1);
+    assert!(
+        report.contains("empty_drain=") && !report.contains("empty_drain=0/0"),
+        "AV report must surface empty_drain, got {report}"
+    );
+}
+
+#[test]
+fn all_black_frames_emit_warn() {
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 10_000,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    let mut rom = vec![0u8; 0x200];
+    rom[0..4].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+    gba.load_rom(&rom);
+    gba.reset_bios_hle();
+    // No layers + palette0=0 → compositor paints all-black every frame.
+    gba.ppu.regs.dispcnt = 0;
+    gba.bus.palette[0] = 0;
+    gba.bus.palette[1] = 0;
+    gba.run_frames(BLACK_FRAME_WARN_FRAMES);
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn ppu all-black") && l.contains("black_pct=")),
+        "expected all-black warn after {BLACK_FRAME_WARN_FRAMES} frames, got {lines:?}"
+    );
+}
+
+#[test]
+fn backdrop_only_frames_emit_warn() {
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 10_000,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    let mut rom = vec![0u8; 0x200];
+    rom[0..4].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+    gba.load_rom(&rom);
+    gba.reset_bios_hle();
+    let bd: u16 = 0x001F;
+    gba.bus.palette[0] = (bd & 0xFF) as u8;
+    gba.bus.palette[1] = (bd >> 8) as u8;
+    // No layers → every pixel is non-zero backdrop (not all-black).
+    gba.ppu.regs.dispcnt = 0;
+    gba.run_frames(BACKDROP_ONLY_WARN_FRAMES);
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn ppu backdrop-only") && l.contains("bd=0x001F")),
+        "expected backdrop-only warn, got {lines:?}"
+    );
+}
+
+#[test]
+fn write_storm_threshold_emits_warn() {
+    use crate::bus::CpuMem;
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    // Seed baseline so period delta is the storm itself.
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.last_vram_writes = 0;
+    dbg.last_oam_writes = 0;
+    gba.debug = dbg;
+    for i in 0..VIDEO_WRITE_STORM {
+        gba.bus
+            .write16(0x0600_0000 + ((i as u32 % 0x8000) * 2), 0x1111);
+    }
+    assert!(gba.bus.vram_write_count >= VIDEO_WRITE_STORM);
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("warn ppu write-storm") && l.contains("vram=")),
+        "expected write-storm warn at threshold {VIDEO_WRITE_STORM}, got {lines:?}"
+    );
+}
+
+#[test]
+fn clip_and_dc_bias_emit_apu_warns() {
+    use crate::apu::{PcmFrame, CLIP_ABS, DC_WARN_ABS};
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    for _ in 0..32 {
+        gba.apu.health.on_pcm(PcmFrame {
+            left: CLIP_ABS,
+            right: DC_WARN_ABS as i16,
+        });
+    }
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines.iter().any(|l| l.contains("warn apu clipping")),
+        "expected clip warn, got {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("warn apu dc bias")),
+        "expected DC bias warn, got {lines:?}"
+    );
+}
+
+#[test]
+fn jsmolka_arm_headless_debug_frames_emit_av_health() {
+    // MIT fixture only — in-process stand-in for `--debug --frames N`.
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jsmolka/arm/arm.gba");
+    let rom = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 10,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    gba.load_rom(&rom);
+    gba.reset_bios_hle();
+    gba.run_frames(20);
+    let lines = capture_take();
+    assert!(
+        lines.iter().any(|l| l.contains("apu health")),
+        "expected apu health on MIT arm.gba, got {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("ppu health")),
+        "expected ppu health on MIT arm.gba, got {lines:?}"
+    );
+    let report = format_av_report(&gba, 20);
+    assert!(
+        report.contains("=== graycart-gba AV report"),
+        "missing AV report header: {report}"
+    );
+    assert!(report.contains("PPU ") && report.contains("APU "));
+}

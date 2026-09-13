@@ -10,7 +10,7 @@ Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/g
 **GBA + DMG/CGB**. Dual-run → default-gba plan:
 [`docs/supersede-cutover.md`](./docs/supersede-cutover.md). Intentional
 whole-crate `graycart` dep remains (supersede the **app**, not the library).
-Crate **0.1.9** (AV health debug). Planned phase ladder **P0–P12** complete.
+Crate **0.1.12** (AV health CI gates). Planned phase ladder **P0–P12** complete.
 
 **P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
 FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
@@ -69,8 +69,10 @@ cargo run --release -- --debug=trace --frames 60 path/to/your.gba 2>gba-trace.lo
 cargo run --release -- --trace 64 path/to/your.gba   # GB-style insn dump
 GRAYCART_DEBUG=1 cargo run --release -- path/to/your.gba   # GUI + summary
 
-# greppable — faults + AV health first
+# Dave's greps — faults + AV health first
 grep -E 'gba-debug: (warn |stuck|swi|openbus|blank|halt|apu health|ppu health)' gba-debug.log
+grep 'gba-debug: warn' gba-debug.log
+grep -E 'gba-debug: (apu health|ppu health|swi summary)' gba-debug.log
 grep '^gba-debug:' gba-debug.log
 # end-of-run structured report is also on stderr under --debug --frames N
 grep -E '^(=== graycart-gba AV|PPU |APU )' gba-debug.log
@@ -87,6 +89,13 @@ Expect `gba-debug: rom …`, `bios launch=…`, periodic `cpu`/`ppu`/`dma summar
 blank / FIFO underrun / all-black / write-storm when something is wrong.
 `--quiet`/`--verbose` only affect the stdout load summary.
 
+**What CI already asserts (no commercial ROMs):** `cargo test` includes synthetic
+AV health gates — stubbed SWI warn + summary, FIFO empty-drain storm, all-black /
+backdrop-only warns, write-storm threshold, clip/DC bias, and MIT jsmolka
+`arm.gba` in-process `--debug` frames emitting `apu health` / `ppu health` + AV
+report. If those regress, default CI fails before Dave has to describe the AV
+symptom again.
+
 ### CI matrix (`.github/workflows/ci.yml`)
 
 | Job name | Runner | What it runs |
@@ -96,13 +105,14 @@ blank / FIFO underrun / all-black / write-storm when something is wrong.
 | `windows-latest` | Windows | same rust checks |
 
 - **`fail-fast: false`** — one OS flake does not cancel the others.
-- **Default `cargo test` asserts** jsmolka **arm + thumb + memory** → **PASS** (honest green; never fake).
+- **Default `cargo test` asserts** jsmolka **arm + thumb + memory** → **PASS** (honest green; never fake), plus synthetic **AV health** gates (stubbed SWI, FIFO underrun storm, black/backdrop heuristics, write-storm, clip/DC, MIT `arm.gba` debug frames).
 - **Not in default CI:** `cargo test -- --ignored` (mGBA suite / NBA hw-test / full matrix printout). Those need future fixtures or local opt-in — never merge-blocking until SoC-depth thresholds are agreed. No BIOS images required.
 - Optional later: a `workflow_dispatch` / nightly that runs `--ignored` for logging only — not wired yet on purpose.
 
 ## SemVer
 
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**, BiosHle black-screen **0.1.5**, BiosHle decompress **0.1.6**, debug UX **0.1.7**, FIFO+video **0.1.8**, AV health debug **0.1.9**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
+`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**, BiosHle black-screen **0.1.5**, BiosHle decompress **0.1.6**, debug UX **0.1.7**, FIFO+video **0.1.8**, AV health debug **0.1.9**, rumble fix **0.1.10**, AV health CI
+gates **0.1.12**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
 
 ## Legal / dumps
 
