@@ -107,6 +107,14 @@ pub fn text_pixel(
     };
     let screen_off = screen_base(bgcnt) + usize::from(sb_y * 2 + sb_x) * 0x800;
     let entry_off = screen_off + (usize::from(ty) * 32 + usize::from(tx)) * 2;
+    // Map data past BG VRAM (64 KiB) → empty tile (no OBJ-VRAM map bleed).
+    if entry_off >= 0x1_0000 {
+        return BgPixel {
+            color: 0,
+            priority: prio,
+            transparent: true,
+        };
+    }
     let entry = vram_fetch::half(vram, entry_off);
     let tile = entry & 0x3FF;
     let hflip = entry & (1 << 10) != 0;
@@ -125,6 +133,14 @@ pub fn text_pixel(
     let char0 = char_base(bgcnt);
     if is_8bpp(bgcnt) {
         let tile_off = char0 + usize::from(tile) * 64 + usize::from(fy) * 8 + usize::from(fx);
+        // Hardware: BG char data lives in lower 64 KiB only (Tonc / mGBA).
+        if tile_off >= 0x1_0000 {
+            return BgPixel {
+                color: 0,
+                priority: prio,
+                transparent: true,
+            };
+        }
         let idx = u16::from(vram_fetch::byte(vram, tile_off));
         if idx == 0 {
             return BgPixel {
@@ -140,6 +156,13 @@ pub fn text_pixel(
         }
     } else {
         let tile_off = char0 + usize::from(tile) * 32 + usize::from(fy) * 4 + usize::from(fx / 2);
+        if tile_off >= 0x1_0000 {
+            return BgPixel {
+                color: 0,
+                priority: prio,
+                transparent: true,
+            };
+        }
         let byte = vram_fetch::byte(vram, tile_off);
         let nibble = if fx & 1 == 0 { byte & 0xF } else { byte >> 4 };
         if nibble == 0 {
@@ -208,9 +231,19 @@ pub fn affine_tile_pixel(
     let map_off = screen_base(bgcnt)
         + usize::from(tile_y) * usize::from(map_tiles as u16)
         + usize::from(tile_x);
+    if map_off >= 0x1_0000 {
+        return BgPixel::TRANSPARENT;
+    }
     let tile = u16::from(vram_fetch::byte(vram, map_off));
     let char0 = char_base(bgcnt);
     let tile_off = char0 + usize::from(tile) * 64 + usize::from(fy) * 8 + usize::from(fx);
+    if tile_off >= 0x1_0000 {
+        return BgPixel {
+            color: 0,
+            priority: prio,
+            transparent: true,
+        };
+    }
     let idx = u16::from(vram_fetch::byte(vram, tile_off));
     if idx == 0 {
         return BgPixel {
