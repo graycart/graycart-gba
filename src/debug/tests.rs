@@ -378,6 +378,82 @@ fn format_av_report_includes_unhandled_swi_counts() {
 }
 
 #[test]
+fn normal_oam_full_rewrite_is_not_write_storm() {
+    // FireRed rewrites all OAM every frame (~512 halfwords × period).
+    // That must stay below the OAM storm threshold (2× rewrite/frame).
+    use crate::bus::CpuMem;
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 60,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    // Simulate one period of 1× full OAM rewrite per frame.
+    for _frame in 0..60u32 {
+        for i in 0..512u32 {
+            gba.bus.write16(0x0700_0000 + i * 2, 0);
+        }
+    }
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("ppu health") && l.contains("oam=30720")),
+        "expected oam=30720 in health, got {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("write-storm")),
+        "1× OAM rewrite/frame must not warn write-storm, got {lines:?}"
+    );
+}
+
+#[test]
+fn oam_storm_above_two_rewrites_per_frame_warns() {
+    use crate::bus::CpuMem;
+
+    capture_start();
+    let mut gba = Gba::new();
+    gba.debug.set_config(DebugConfig {
+        level: DebugLevel::Debug,
+        period_frames: 1,
+        stuck_frames: 10_000,
+        ..DebugConfig::default()
+    });
+    // >2× full OAM in one frame period.
+    for i in 0..(512u32 * 3) {
+        gba.bus.write16(0x0700_0000 + (i % 512) * 2, 0);
+    }
+    let mut dbg = std::mem::take(&mut gba.debug);
+    dbg.frames = 0;
+    dbg.last_period_frame = 0;
+    dbg.on_step(
+        &mut gba,
+        u64::from(crate::ppu::FRAME_CYCLES),
+        crate::cpu::StepOutcome::Ok,
+    );
+    gba.debug = dbg;
+    let lines = capture_take();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("write-storm") && l.contains("kind=oam")),
+        "expected oam write-storm, got {lines:?}"
+    );
+}
+
+#[test]
 fn dispcnt_mode_flip_is_logged() {
     capture_start();
     let mut gba = Gba::new();
@@ -570,11 +646,11 @@ fn write_storm_threshold_emits_warn() {
     dbg.last_vram_writes = 0;
     dbg.last_oam_writes = 0;
     gba.debug = dbg;
-    for i in 0..VIDEO_WRITE_STORM {
+    for i in 0..VIDEO_WRITE_STORM_VRAM {
         gba.bus
             .write16(0x0600_0000 + ((i as u32 % 0x8000) * 2), 0x1111);
     }
-    assert!(gba.bus.vram_write_count >= VIDEO_WRITE_STORM);
+    assert!(gba.bus.vram_write_count >= VIDEO_WRITE_STORM_VRAM);
     let mut dbg = std::mem::take(&mut gba.debug);
     dbg.frames = 0;
     dbg.last_period_frame = 0;
@@ -586,10 +662,10 @@ fn write_storm_threshold_emits_warn() {
     gba.debug = dbg;
     let lines = capture_take();
     assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("warn ppu write-storm") && l.contains("vram=")),
-        "expected write-storm warn at threshold {VIDEO_WRITE_STORM}, got {lines:?}"
+        lines.iter().any(|l| {
+            l.contains("warn ppu write-storm") && l.contains("kind=vram") && l.contains("vram=")
+        }),
+        "expected vram write-storm warn at threshold {VIDEO_WRITE_STORM_VRAM}, got {lines:?}"
     );
 }
 

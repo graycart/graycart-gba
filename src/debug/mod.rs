@@ -39,8 +39,14 @@ pub const ENV_TRACE: &str = "GRAYCART_TRACE";
 /// Greppable stderr prefix for all breadcrumbs.
 pub const LOG_PREFIX: &str = "gba-debug:";
 
-/// VRAM+OAM writes in one period above this → write-storm one-liner.
-pub const VIDEO_WRITE_STORM: u64 = 8_000;
+/// VRAM halfword writes in one period above this → VRAM write-storm warn.
+/// (~tile churn beyond ordinary streaming; independent of OAM.)
+pub const VIDEO_WRITE_STORM_VRAM: u64 = 12_000;
+/// Full OAM is 1 KiB = 512 halfword stores. Commercial titles often rewrite
+/// all of OAM every frame (FireRed ≈ 30720 / 60-frame period) — that is normal.
+/// Only flag OAM when sustained rate exceeds ~2× full OAM rewrite per frame.
+pub const OAM_HALFWORDS: u64 = 512;
+pub const OAM_STORM_PER_FRAME: u64 = OAM_HALFWORDS * 2;
 /// FIFO empty drains in one period above this → loud warn.
 pub const FIFO_EMPTY_STORM: u64 = 64;
 /// Host ring underrun events in one report above this → warn.
@@ -960,6 +966,9 @@ impl DebugTracker {
         let bd = backdrop_from_palette(&gba.bus.palette);
         let pixels = analyze_framebuffer(&gba.ppu.fb, bd);
         let regs = &gba.ppu.regs;
+        let period = self.config.period_frames.max(1);
+        // One full OAM rewrite/frame is normal; storm = sustained >2× that.
+        let oam_storm = OAM_STORM_PER_FRAME.saturating_mul(period);
         log_line(&format!(
             "ppu health frame={} mode={} layers={} blank={} mosaic={} blend={} objwin={} black={}% backdrop={}% writes vram={vram} oam={oam} pal={pal}",
             self.frames,
@@ -972,9 +981,14 @@ impl DebugTracker {
             pixels.black_pct(),
             pixels.backdrop_pct(),
         ));
-        if vram + oam >= VIDEO_WRITE_STORM {
+        if vram >= VIDEO_WRITE_STORM_VRAM || oam > oam_storm {
+            let kind = match (vram >= VIDEO_WRITE_STORM_VRAM, oam > oam_storm) {
+                (true, true) => "vram+oam",
+                (true, false) => "vram",
+                _ => "oam",
+            };
             log_line(&format!(
-                "warn ppu write-storm vram={vram} oam={oam} pal={pal} (tile/OBJ churn)"
+                "warn ppu write-storm kind={kind} vram={vram} oam={oam} pal={pal} (tile/OBJ churn)"
             ));
         }
     }

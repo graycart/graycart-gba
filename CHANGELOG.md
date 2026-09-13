@@ -18,6 +18,17 @@ stay untagged until a playable or gate-complete slice ships.
 
 ### Fixed
 
+- **FireRed mid-run video corruption (`walter/firered-midrun-video-9d2d`):** After
+  #24 looked good early, rendering fell apart once WIN0|WIN1 came up. Root cause:
+  window hit-tests treated X1>X2 / Y1>Y2 as “clamp end to screen edge” (GBATEK
+  oversimplification). Real hardware / mGBA / ares **wrap** into two strips
+  `[X1,240)∪[0,X2)` (same for Y), so inverted window dims punched the wrong
+  layer/blend enables mid-scene. Also: BG char/map fetches that spill into OBJ
+  VRAM (≥64 KiB) now read as transparent (Tonc/hardware), and `--debug` write-storm
+  classifies VRAM vs OAM so a normal full-OAM rewrite every frame (FireRed
+  ≈30720/period) no longer cries wolf while real storms stay visible. Crate
+  **0.1.13** (serialized after SWI #28’s 0.1.11 and AV-health CI #29’s 0.1.12).
+
 - **BiosHle ObjAffineSet / math / MidiKey2Freq (`walter/bios-hle-swi-0f-071b`):**
   Dave’s FireRed headless run hit `swi unhandled num=0x0F` (~frame 841 when
   WIN0|WIN1 flip). GBATEK: SWI `0Fh` is **ObjAffineSet** (MidiKey2Freq is

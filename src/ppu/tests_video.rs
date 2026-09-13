@@ -1,8 +1,10 @@
 //! Synthetic commercial-title PPU gaps — blend targets, mosaic, affine OBJ,
-//! OBJWIN, VRAM mirrors (no commercial ROMs).
+//! OBJWIN, VRAM mirrors, window wrap (X1>X2 / Y1>Y2), BG char past 64K
+//! (no commercial ROMs).
 //!
 //! Cited: GBATEK — Color Special Effects / Window / Mosaic / OBJ Affine / VRAM
 //!   https://problemkaputt.de/gbatek.htm
+//! Cross-check: mGBA window wrap (`_breakWindow`), Tonc BG charblock limits
 //! Research: Project store `docs/graycart-gba/03-ppu.md`
 
 use super::bg::text_pixel;
@@ -190,4 +192,91 @@ fn win1_mode0_scanline_composites_without_panic() {
     render_scanline(&regs, 0, &vram, &palette, &oam, (0, 0), (0, 0), &mut out);
     // Backdrop only — should be zero, not panic / white.
     assert!(out.iter().all(|&c| c == 0));
+}
+
+#[test]
+fn win_x1_gt_x2_wraps_two_strips() {
+    // Hardware / mGBA: X1>X2 → [X1,240) ∪ [0,X2), not “clamp X2=240 only”.
+    let regs = LcdRegs {
+        dispcnt: 1 << 13, // WIN0 only
+        win0_h: 0xC8_28,  // X1=200, X2=40
+        win0_v: 0x00_A0,  // full height
+        winin: 0x0001,    // inside WIN0: BG0 only
+        winout: 0x0000,   // outside: nothing
+        ..Default::default()
+    };
+    let oam = [0u8; 1024];
+    let vram = [0u8; 96 * 1024];
+    assert_eq!(region_at(&regs, 0, 0, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 39, 0, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 40, 0, &oam, &vram), WinRegion::Outside);
+    assert_eq!(region_at(&regs, 199, 0, &oam, &vram), WinRegion::Outside);
+    assert_eq!(region_at(&regs, 200, 0, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 239, 0, &oam, &vram), WinRegion::Win0);
+}
+
+#[test]
+fn win_y1_gt_y2_wraps_vertically() {
+    let regs = LcdRegs {
+        dispcnt: 1 << 13,
+        win0_h: 0x00_F0,
+        win0_v: 0x64_14, // Y1=100, Y2=20
+        winin: 0x0001,
+        winout: 0x0000,
+        ..Default::default()
+    };
+    let oam = [0u8; 1024];
+    let vram = [0u8; 96 * 1024];
+    assert_eq!(region_at(&regs, 0, 0, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 0, 19, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 0, 20, &oam, &vram), WinRegion::Outside);
+    assert_eq!(region_at(&regs, 0, 99, &oam, &vram), WinRegion::Outside);
+    assert_eq!(region_at(&regs, 0, 100, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 0, 159, &oam, &vram), WinRegion::Win0);
+}
+
+#[test]
+fn win0_over_win1_on_overlap_when_both_wrap() {
+    // Mid-run FireRed-ish: both windows on; WIN0 wins on overlap.
+    let regs = LcdRegs {
+        dispcnt: (1 << 13) | (1 << 14),
+        win0_h: 0xC8_28, // wrap strips
+        win0_v: 0x00_A0,
+        win1_h: 0x00_F0, // full width
+        win1_v: 0x00_A0,
+        winin: 0x1F_01, // WIN0: BG0; WIN1: BG0–3+OBJ
+        winout: 0x0000,
+        ..Default::default()
+    };
+    let oam = [0u8; 1024];
+    let vram = [0u8; 96 * 1024];
+    assert_eq!(region_at(&regs, 10, 0, &oam, &vram), WinRegion::Win0);
+    assert_eq!(region_at(&regs, 100, 0, &oam, &vram), WinRegion::Win1);
+    let en0 = enables_at(&regs, 10, 0, &oam, &vram);
+    assert!(en0.bg[0] && !en0.obj);
+    let en1 = enables_at(&regs, 100, 0, &oam, &vram);
+    assert!(en1.obj);
+}
+
+#[test]
+fn bg_char_fetch_past_64k_is_transparent() {
+    // Tonc / hardware: BG tiles cannot read OBJ charblocks (VRAM ≥ 0x10000).
+    let mut regs = LcdRegs {
+        dispcnt: 1 << 8,
+        ..Default::default()
+    };
+    // charbase 3 (0xC000) + tile 512*32 = 0x10000 for 4bpp.
+    regs.bgcnt[0] = 0x000C; // charbase 3, screenbase 0
+    let mut vram = vec![0u8; 96 * 1024];
+    let mut palette = vec![0u8; 1024];
+    palette[2] = 0x1F;
+    // Map entry: tile 512 at (0,0)
+    vram[0] = 0x00;
+    vram[1] = 0x02; // tile = 0x200
+                    // Opaque garbage in OBJ VRAM — hardware must not sample this as a BG tile.
+    for i in 0..32 {
+        vram[0x10000 + i] = 0x11;
+    }
+    let pix = text_pixel(&regs, 0, 0, 0, &vram, &palette);
+    assert!(pix.transparent, "BG char past 64K must not sample OBJ VRAM");
 }

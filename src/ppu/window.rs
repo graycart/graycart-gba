@@ -2,8 +2,11 @@
 //!
 //! Cited: GBATEK — Window Feature
 //!   https://problemkaputt.de/gbatek.htm
+//! Cross-check: mGBA `video-software.c` `_breakWindow` (X1>X2 → two strips);
+//!   ares `ppu/window.cpp` edge toggle (natural wrap).
 //! Research: Project store `docs/graycart-gba/03-ppu.md` §6
-//! Note: functional regions; not cycle-perfect.
+//! Note: functional regions; not cycle-perfect. GBATEK’s “X1>X2 → X2=240”
+//!   oversimplifies — real HW wraps [X1,240)∪[0,X2) (same for Y).
 
 use super::obj::obj_window_covers;
 use super::regs::LcdRegs;
@@ -51,24 +54,48 @@ pub fn windows_active(regs: &LcdRegs) -> bool {
     regs.layer_enable(13) || regs.layer_enable(14) || regs.layer_enable(15)
 }
 
+/// Horizontal hit-test. X2>240 clamps to 240; X1>X2 wraps two strips.
 #[must_use]
 fn in_win_x(x: u16, win_h: u16) -> bool {
-    let x1 = win_h >> 8;
+    let mut x1 = win_h >> 8;
     let mut x2 = win_h & 0xFF;
-    if x2 > 240 || x1 > x2 {
-        x2 = 240;
+    // mGBA: start past screen + start>end → treat start as 0 (left strip only).
+    if x1 > 240 && x1 > x2 {
+        x1 = 0;
     }
-    x >= x1 && x < x2
+    if x2 > 240 {
+        x2 = 240;
+        if x1 > 240 {
+            x1 = 240; // empty
+        }
+    }
+    if x1 <= x2 {
+        x >= x1 && x < x2
+    } else {
+        // Wrap: [x1, 240) ∪ [0, x2)
+        x >= x1 || x < x2
+    }
 }
 
+/// Vertical hit-test. Y2>160 clamps to 160; Y1>Y2 wraps two strips.
 #[must_use]
 fn in_win_y(y: u16, win_v: u16) -> bool {
-    let y1 = win_v >> 8;
+    let mut y1 = win_v >> 8;
     let mut y2 = win_v & 0xFF;
-    if y2 > 160 || y1 > y2 {
-        y2 = 160;
+    if y1 > 160 && y1 > y2 {
+        y1 = 0;
     }
-    y >= y1 && y < y2
+    if y2 > 160 {
+        y2 = 160;
+        if y1 > 160 {
+            y1 = 160;
+        }
+    }
+    if y1 <= y2 {
+        y >= y1 && y < y2
+    } else {
+        y >= y1 || y < y2
+    }
 }
 
 #[must_use]
