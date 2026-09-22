@@ -1,9 +1,0 @@
-# Credits: adapted from graycart-gb `.github/ISSUE_TEMPLATE/config.yml`
-blank_issues_enabled: false
-contact_links:
-  - name: Graycart family umbrella
-    url: https://github.com/graycart/graycart
-    about: Meta / submodule issues for the Graycart umbrella (not this emulator).
-  - name: graycart-gb (interim DMG/CGB host)
-    url: https://github.com/graycart/graycart-gb
-    about: Issues for the interim Game Boy / Color app until graycart-gba supersedes it.

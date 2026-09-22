@@ -1,6 +1,6 @@
 [package]
 name = "graycart-gba"
-version = "0.1.14"
+version = "0.0.1"
 edition = "2021"
 description = "Graycart Game Boy Advance emulator"
 license = "MIT"
@@ -8,22 +8,6 @@ repository = "https://github.com/graycart/graycart-gba"
 readme = "README.md"
 keywords = ["emulator", "gba", "gameboy-advance"]
 categories = ["emulators"]
-
-[[bin]]
-name = "graycart-gba"
-path = "src/main.rs"
+publish = false
 
 [dependencies]
-# P10: interim whole-crate DMG/CGB reuse (machine surface only; see src/compat/dep.rs).
-graycart = { git = "https://github.com/graycart/graycart-gb.git", rev = "80833e3f8732be8baa1442d3e6bdeb09d7b5f533" }
-# Host-only (binary / `frontend/`). Lib modules must not import these.
-cpal = "0.15"
-eframe = { version = "0.34", default-features = false, features = [
-    "wgpu",
-    "default_fonts",
-    "accesskit",
-] }
-egui = "0.34"
-rfd = "0.17"
-
-[dev-dependencies]

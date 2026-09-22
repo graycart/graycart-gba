@@ -2,52 +2,9 @@
 
 Game Boy Advance emulator in the [Graycart family](https://github.com/graycart/graycart).
 
-**Goal:** native GBA software, plus **DMG/CGB** via the GBA hardware compatibility path (prefer reusing [graycart-gb](https://github.com/graycart/graycart-gb)). This repo is the long-term shipping **app** for 8-bit + GBA (P12 cutover); GBA-native cores stay greenfield.
+Greenfield rewrite. The previous 0.1.x machine was removed from this working tree. Nothing here runs a ROM yet.
 
-## Status
-
-**P12 Supersede cutover** — graycart-gba is the recommended play host for
-**GBA + DMG/CGB**. Dual-run → default-gba plan:
-[`docs/supersede-cutover.md`](./docs/supersede-cutover.md). Intentional
-whole-crate `graycart` dep remains (supersede the **app**, not the library).
-Crate **0.1.12** (AV health CI gates). Planned phase ladder **P0–P12** complete.
-
-**P11 Compat accuracy** — Blargg/Mooneye boards via `CompatMachine` (FastDmg /
-FastCgb); frontend loads `.gba` / `.gb` / `.gbc` with 8-bit `.sav`. Suite
-matrices are `#[ignore]` with thresholds in `docs/conformance.md`. Crate
-**0.1.2**.
-
-**P10 DMG/CGB compat bring-up** — `graycart` whole-crate dep behind `compat/`
-(WAITCNT detect, Mode-8/HALT posture, `CompatMachine`). Crate **0.1.1**.
-
-**P9 Frontend** — windowed host (eframe / winit+wgpu+egui + cpal). First tagged
-runnable milestone: **0.1.0**.
-
-Default CI still gates vendored **jsmolka** MIT prebuilts:
-**`arm.gba` + `thumb.gba` + `memory.gba` PASS** under BiosHle + r12/idle oracle.
-Deeper SoC suites (mGBA suite, NBA hw-test) stay LICENSE/path stubs with
-`#[ignore]` until fixtures land. Optional commercial smoke: local `carts/*.gba`
-(skip if missing — never commit dumps).
-
-### BIOS (obtain your own)
-
-Default play uses **BiosHle** (no firmware file required). For BiosLle, supply
-your own `gba_bios.bin` (never commit Nintendo BIOS). See [`AGENTS.md`](./AGENTS.md)
-and `docs/conformance.md`.
-
-| Doc | What |
-|-----|------|
-| [`AGENTS.md`](./AGENTS.md) | How agents navigate: build/test, modules, SemVer, no BIOS/ROMs in git, parallel ownership |
-| [`ATTRIBUTION.md`](./ATTRIBUTION.md) | **Mandatory** file-header credit rule (what / URL / inspired-by note) |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Short contributor blurb |
-| [`docs/conformance.md`](./docs/conformance.md) | Accuracy / phase gate board (P8–P12) |
-| [`docs/supersede-cutover.md`](./docs/supersede-cutover.md) | P12 dual-run → default-gba handoff |
-| [`tests/fixtures/README.md`](./tests/fixtures/README.md) | Fixture license table + harness layout |
-| [`carts/README.md`](./carts/README.md) | Optional local dumps (gitignored binaries) |
-
-Research, phases, and provenance live in the Graycart Project store under `docs/graycart-gba/` until linked or copied here. Family core API: Project store `docs/graycart-family/` (especially `01-core-api.md`).
-
-## Build / test
+Peer library for DMG/CGB: [graycart-gb](https://github.com/graycart/graycart-gb). Reuse that crate for 8-bit behavior when a compatibility path exists. Do not reimplement the SM83 machine inside this repo.
 
 ```bash
 cargo fmt --check
@@ -55,71 +12,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-### Console debug (local dumps)
+Local dumps belong under `carts/` and stay untracked. Never commit commercial ROMs or Nintendo BIOS.
 
-Default is quiet. `--debug` is a **summary** for bring-up (not DMA spam).
-Your own dumps only — never commit commercial ROMs or BIOS blobs:
-
-```bash
-# summary: rom/bios, warn faults, blanking, stuck, dma/irq + apu/ppu health
-cargo run --release -- --debug --frames 180 path/to/your.gba 2>gba-debug.log
-
-# verbose DMA/IRQ/insn (when you need the firehose)
-cargo run --release -- --debug=trace --frames 60 path/to/your.gba 2>gba-trace.log
-cargo run --release -- --trace 64 path/to/your.gba   # GB-style insn dump
-GRAYCART_DEBUG=1 cargo run --release -- path/to/your.gba   # GUI + summary
-
-# Dave's greps — faults + AV health first
-grep -E 'gba-debug: (warn |stuck|swi|openbus|blank|halt|apu health|ppu health)' gba-debug.log
-grep 'gba-debug: warn' gba-debug.log
-grep -E 'gba-debug: (apu health|ppu health|swi summary)' gba-debug.log
-grep '^gba-debug:' gba-debug.log
-# end-of-run structured report is also on stderr under --debug --frames N
-grep -E '^(=== graycart-gba AV|PPU |APU )' gba-debug.log
-```
-
-| Flag / env | Level |
-|------------|--------|
-| *(none)* | Quiet |
-| `--debug` / `--debug=summary` / `GRAYCART_DEBUG=1` | Summary |
-| `--debug=trace` / `--trace` / `GRAYCART_DEBUG=trace` | Trace |
-
-Expect `gba-debug: rom …`, `bios launch=…`, periodic `cpu`/`ppu`/`dma summary` /
-`apu health` / `ppu health`, and loud `warn` lines for SWI / openbus / stuck /
-blank / FIFO underrun / all-black / write-storm when something is wrong.
-`--quiet`/`--verbose` only affect the stdout load summary.
-
-**What CI already asserts (no commercial ROMs):** `cargo test` includes synthetic
-AV health gates — stubbed SWI warn + summary, FIFO empty-drain storm, all-black /
-backdrop-only warns, write-storm threshold, clip/DC bias, and MIT jsmolka
-`arm.gba` in-process `--debug` frames emitting `apu health` / `ppu health` + AV
-report. If those regress, default CI fails before Dave has to describe the AV
-symptom again.
-
-### CI matrix (`.github/workflows/ci.yml`)
-
-| Job name | Runner | What it runs |
-|----------|--------|--------------|
-| `ubuntu-latest` | Linux | `fmt` + `clippy -D warnings` + `cargo test` (+ alsa/udev pkgs) |
-| `macos-latest` | macOS | same rust checks |
-| `windows-latest` | Windows | same rust checks |
-
-- **`fail-fast: false`** — one OS flake does not cancel the others.
-- **Default `cargo test` asserts** jsmolka **arm + thumb + memory** → **PASS** (honest green; never fake), plus synthetic **AV health** gates (stubbed SWI, FIFO underrun storm, black/backdrop heuristics, write-storm, clip/DC, MIT `arm.gba` debug frames).
-- **Not in default CI:** `cargo test -- --ignored` (mGBA suite / NBA hw-test / full matrix printout). Those need future fixtures or local opt-in — never merge-blocking until SoC-depth thresholds are agreed. No BIOS images required.
-- Optional later: a `workflow_dispatch` / nightly that runs `--ignored` for logging only — not wired yet on purpose.
-
-## SemVer
-
-`Cargo.toml` `[package].version` is the only product version; git tag `vX.Y.Z` must equal it. First tagged runnable milestone is **0.1.0** (P9 playable host). P10 **0.1.1**, P11 **0.1.2**, P12 **0.1.3**, console debug **0.1.4**, BiosHle black-screen **0.1.5**, BiosHle decompress **0.1.6**, debug UX **0.1.7**, FIFO+video **0.1.8**, AV health debug **0.1.9**, rumble fix **0.1.10**, AV health CI
-gates **0.1.12**. Do not ship `1.0.0` until native GBA (and agreed compat) are stable enough.
-
-## Legal / dumps
-
-- Never commit Nintendo BIOS/boot firmware or commercial ROMs.
-- Local dumps belong under `carts/` (gitignored) or outside the tree.
-- Code is MIT (see [`LICENSE`](./LICENSE)). Fixture suites keep upstream licenses.
-
-## License
-
-[MIT](LICENSE) - Copyright (c) 2026 Graycart.
+MIT — Copyright (c) 2026 Graycart.
