@@ -236,3 +236,56 @@ fn timer_byte_write_updates_reload_not_counter() {
     bus.write16(0x0400_0102, 0x80);
     assert_eq!(bus.timers.counter(0), 0x00AB);
 }
+
+#[test]
+fn wait_line_at_reset_reports_ws0_n4_s2() {
+    let bus = Bus::new(Vec::new());
+    let line = bus.wait_line(0, 0);
+    assert!(
+        line.contains("rom_n=4") && line.contains("rom_s=2") && line.contains("sram=4"),
+        "reset WAITCNT must not still print placeholder 1s: {line}"
+    );
+    assert!(!line.contains("rom_n=1"), "{line}");
+}
+
+#[test]
+fn rom_sequential_survives_iwram_access() {
+    let mut bus = Bus::new(vec![0; 0x100]);
+
+    bus.begin_step();
+    let _ = bus.fetch16(0x0800_0000);
+    assert_eq!(bus.take_step_cycles(), 4, "first ROM halfword is N");
+
+    bus.begin_step();
+    let _ = bus.read32(0x0300_0000);
+    assert_eq!(bus.take_step_cycles(), 1, "IWRAM word is 1I");
+
+    bus.begin_step();
+    let _ = bus.fetch16(0x0800_0002);
+    assert_eq!(
+        bus.take_step_cycles(),
+        2,
+        "cart N/S is address-based; IWRAM must not force N"
+    );
+}
+
+#[test]
+fn sram_access_does_not_force_rom_n_by_address_gap() {
+    // Page 11 keeps cart N/S address-based across 0x0E probes so flash ROMs
+    // stay inside the 30-frame budget (same rationale as one-cost word accesses).
+    let mut rom = vec![0u8; 0xC0];
+    rom.extend_from_slice(b"SRAM_V");
+    let mut bus = Bus::new(rom);
+
+    bus.begin_step();
+    let _ = bus.fetch16(0x0800_0000);
+    let _ = bus.take_step_cycles();
+
+    bus.begin_step();
+    let _ = bus.read8(0x0E00_0000);
+    let _ = bus.take_step_cycles();
+
+    bus.begin_step();
+    let _ = bus.fetch16(0x0800_0002);
+    assert_eq!(bus.take_step_cycles(), 2);
+}

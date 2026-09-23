@@ -10,6 +10,7 @@ use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
 use crate::timer::Timers;
+use crate::timing::{internal_cycles, rom_cycles, sram_cycles, ws0_ns, Prefetch, Width};
 
 const EWRAM: usize = 256 * 1024;
 const IWRAM: usize = 32 * 1024;
@@ -59,11 +60,19 @@ pub struct Bus {
     pub warn_lines: Vec<String>,
     openbus_logged: HashSet<u32>,
     sio_warned: bool,
-    /// Placeholder waitstate costs (still 1 everywhere until page 11).
+    /// WS0 N/S and related costs mirrored from WAITCNT for the debug wait line.
     pub wait_rom_n: u32,
     pub wait_rom_s: u32,
     pub wait_rom_i: u32,
     pub wait_sram: u32,
+    /// Game Pak opcode prefetch buffer.
+    pub prefetch: Prefetch,
+    /// Cycles charged for the current CPU instruction (not DMA).
+    step_cycles: u32,
+    /// True when this step touched ROM or SRAM (not internal-only).
+    step_pak: bool,
+    /// Previous Game Pak ROM access, for N/S sequential detection.
+    last_rom: Option<(u32, u32)>,
 }
 
 impl Bus {
@@ -104,10 +113,15 @@ impl Bus {
             warn_lines: Vec::new(),
             openbus_logged: HashSet::new(),
             sio_warned: false,
-            wait_rom_n: 1,
-            wait_rom_s: 1,
+            // WAITCNT reset is 0 → WS0 N=4, S=2, I=1, SRAM=4.
+            wait_rom_n: 4,
+            wait_rom_s: 2,
             wait_rom_i: 1,
-            wait_sram: 1,
+            wait_sram: 4,
+            prefetch: Prefetch::new(),
+            step_cycles: 0,
+            step_pak: false,
+            last_rom: None,
         }
     }
 
@@ -162,11 +176,58 @@ impl Bus {
             .push("gba-debug: warn halt forever".to_string());
     }
 
-    pub fn wait_line(&self, frame: u32) -> String {
+    pub fn wait_line(&self, frame: u32, stall: u64) -> String {
         format!(
-            "gba-debug: wait frame={frame} rom_n={} rom_s={} rom_i={} sram={}",
-            self.wait_rom_n, self.wait_rom_s, self.wait_rom_i, self.wait_sram
+            "gba-debug: wait frame={frame} rom_n={} rom_s={} rom_i={} sram={} stall={stall} prefetch={}",
+            self.wait_rom_n,
+            self.wait_rom_s,
+            self.wait_rom_i,
+            self.wait_sram,
+            self.prefetch.hits()
         )
+    }
+
+    /// Clear per-instruction wait accounting before [`Cpu::step`](crate::cpu::Cpu::step).
+    pub fn begin_step(&mut self) {
+        self.step_cycles = 0;
+        self.step_pak = false;
+    }
+
+    /// After an internal-only instruction, fill the prefetch buffer during those cycles.
+    /// Only seeds Game Pak PCs so IWRAM/BIOS execution does not pollute the buffer.
+    pub fn finish_step(&mut self, next_opcode: u32) {
+        if self.step_pak || self.step_cycles == 0 {
+            return;
+        }
+        let region = next_opcode >> 24;
+        if !(0x08..=0x0D).contains(&region) {
+            return;
+        }
+        let waitcnt = self.waitcnt();
+        let s = rom_cycles(waitcnt, next_opcode, Width::Half, true);
+        self.prefetch.idle(self.step_cycles, next_opcode, s);
+    }
+
+    /// Cycles charged for the instruction just stepped (at least 1 for the machine).
+    pub fn take_step_cycles(&mut self) -> u32 {
+        let n = self.step_cycles.max(1);
+        self.step_cycles = 0;
+        n
+    }
+
+    /// WAITCNT halfword at I/O 0x04000204.
+    pub fn waitcnt(&self) -> u16 {
+        slice_load(&self.io, 0x204, 2) as u16
+    }
+
+    fn sync_waitcnt(&mut self) {
+        let waitcnt = self.waitcnt();
+        let (n, s) = ws0_ns(waitcnt);
+        self.wait_rom_n = n;
+        self.wait_rom_s = s;
+        self.wait_rom_i = 1;
+        self.wait_sram = sram_cycles(waitcnt);
+        self.prefetch.set_enabled(waitcnt & (1 << 14) != 0);
     }
 
     /// DISPCNT halfword at I/O offset 0.
@@ -207,41 +268,102 @@ impl Bus {
 
     pub fn fetch16(&mut self, addr: u32) -> u16 {
         let addr = addr & !1;
+        self.charge(addr, Width::Half, Access::Fetch);
         let bits = self.access(addr, 2, Access::Fetch);
         bits as u16
     }
 
     pub fn fetch32(&mut self, addr: u32) -> u32 {
-        self.access(addr & !3, 4, Access::Fetch)
+        let addr = addr & !3;
+        self.charge(addr, Width::Word, Access::Fetch);
+        self.access(addr, 4, Access::Fetch)
     }
 
     pub fn read8(&mut self, addr: u32) -> u8 {
+        self.charge(addr, Width::Byte, Access::Data);
         self.access(addr, 1, Access::Data).to_le_bytes()[0]
     }
 
     pub fn read16(&mut self, addr: u32) -> u16 {
         let addr = align_data(addr, 2);
+        self.charge(addr, Width::Half, Access::Data);
         let bits = self.access(addr, 2, Access::Data);
         bits as u16
     }
 
     pub fn read32(&mut self, addr: u32) -> u32 {
         let addr = align_data(addr, 4);
+        self.charge(addr, Width::Word, Access::Data);
         self.access(addr, 4, Access::Data)
     }
 
     pub fn write8(&mut self, addr: u32, value: u8) {
+        self.charge(addr, Width::Byte, Access::Data);
         self.store(addr, value as u32, 1);
     }
 
     pub fn write16(&mut self, addr: u32, value: u16) {
         let addr = align_data(addr, 2);
+        self.charge(addr, Width::Half, Access::Data);
         self.store(addr, value as u32, 2);
     }
 
     pub fn write32(&mut self, addr: u32, value: u32) {
         let addr = align_data(addr, 4);
+        self.charge(addr, Width::Word, Access::Data);
         self.store(addr, value, 4);
+    }
+
+    /// Charge waitstates for one CPU access. Skipped while DMA owns the bus.
+    fn charge(&mut self, addr: u32, width: Width, kind: Access) {
+        if self.dma.busy {
+            return;
+        }
+
+        let waitcnt = self.waitcnt();
+        let region = addr >> 24;
+
+        if (0x08..=0x0D).contains(&region) {
+            self.step_pak = true;
+            if kind == Access::Data {
+                self.prefetch.invalidate();
+            }
+
+            let sequential = match self.last_rom {
+                Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
+                None => false,
+            };
+            let width_bytes = width_bytes(width);
+
+            let cycles = if kind == Access::Fetch && waitcnt & (1 << 14) != 0 {
+                let hit = match width {
+                    Width::Byte | Width::Half => self.prefetch.take(addr),
+                    Width::Word => self.prefetch.take_n(addr, 2),
+                };
+                if hit {
+                    self.last_rom = Some((addr, width_bytes));
+                    self.step_cycles = self.step_cycles.saturating_add(1);
+                    return;
+                }
+                rom_cycles(waitcnt, addr, width, sequential)
+            } else {
+                rom_cycles(waitcnt, addr, width, sequential)
+            };
+
+            self.step_cycles = self.step_cycles.saturating_add(cycles);
+            self.last_rom = Some((addr, width_bytes));
+            return;
+        }
+
+        if region == 0x0E || region == 0x0F {
+            self.step_pak = true;
+            self.step_cycles = self.step_cycles.saturating_add(sram_cycles(waitcnt));
+            return;
+        }
+
+        self.step_cycles = self
+            .step_cycles
+            .saturating_add(internal_cycles(addr, width));
     }
 
     fn access(&mut self, addr: u32, size: u32, kind: Access) -> u32 {
@@ -523,6 +645,9 @@ impl Bus {
             value &= !(0xFFu32 << shift);
         }
         slice_store(&mut self.io, off as usize, value, size);
+        if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
+            self.sync_waitcnt();
+        }
     }
 
     /// Timers, keypad, IRQ, DMA, and sound registers. `None` means fall through to flat `io[]`.
@@ -752,6 +877,8 @@ impl Bus {
         }
         let width32 = job.width32;
         self.dma.busy = true;
+        // DMA owns the Game Pak bus; the next CPU ROM access is non-sequential.
+        self.last_rom = None;
         let units = self.dma_copy(&job);
         self.dma.busy = false;
         if let Some(mask) = self.dma.finish(channel, reason, units, width32) {
@@ -1007,6 +1134,14 @@ impl Bus {
 enum Access {
     Fetch,
     Data,
+}
+
+fn width_bytes(width: Width) -> u32 {
+    match width {
+        Width::Byte => 1,
+        Width::Half => 2,
+        Width::Word => 4,
+    }
 }
 
 /// Align halfword/word data accesses, except the 8-bit SRAM/flash bus where the

@@ -15,6 +15,7 @@ pub mod input;
 pub mod irq;
 pub mod ppu;
 pub mod timer;
+pub mod timing;
 
 pub use bus::Bus;
 pub use cpu::{Cpu, StepError};

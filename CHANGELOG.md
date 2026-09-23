@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.13
+
+Real Game Pak N/S/I waitstates and the opcode prefetch buffer. The wait line reports WS0 N/S (reset 4/2), stall cycles since boot, and prefetch hits.
+
 ## 0.0.12
 
 Cartridge saves (none / sram / flash64 / flash128 / eeprom), `<rom>.sav` sidecar load/flush, BIOS prefetch latch already on this page, and one `gba-debug: warn cart gpio unsupported` when a test marks GPIO present. `--debug` stops on pass or fail and exits non-zero on fail. `--frames` caps that run and is required when `--debug` is absent.

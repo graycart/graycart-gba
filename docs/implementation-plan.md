@@ -59,7 +59,7 @@ Accuracy ROMs live under `tests/fixtures/` and may be committed. Commercial dump
 
 ## Debug, from page 0
 
-Page 0 shipped as crate `0.0.2`. Page 1 shipped as crate `0.0.3`. Page 2 shipped as crate `0.0.4`. Page 3 shipped as crate `0.0.5`. Page 4 shipped as crate `0.0.6`. Page 5 shipped as crate `0.0.7`. Page 6 shipped as crate `0.0.8`. Page 7 shipped as crate `0.0.9`. Page 8 shipped as crate `0.0.10`. Page 9 shipped as crate `0.0.11`. Page 10 shipped as crate `0.0.12`. Next is page 11.
+Page 0 shipped as crate `0.0.2`. Page 1 shipped as crate `0.0.3`. Page 2 shipped as crate `0.0.4`. Page 3 shipped as crate `0.0.5`. Page 4 shipped as crate `0.0.6`. Page 5 shipped as crate `0.0.7`. Page 6 shipped as crate `0.0.8`. Page 7 shipped as crate `0.0.9`. Page 8 shipped as crate `0.0.10`. Page 9 shipped as crate `0.0.11`. Page 10 shipped as crate `0.0.12`. Page 11 shipped as crate `0.0.13`. Next is page 12.
 
 Audio and video debugging is text on stderr, in the same line format as the previous `graycart-gba` console log. A wav or a picture is optional and secondary. The thing a person or a model reads is one greppable line per fact, `key=value`, prefix `gba-debug:`. Do not paste the deleted `debug` module back in. Reimplement this contract.
 

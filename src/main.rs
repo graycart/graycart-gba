@@ -82,7 +82,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 summary[2] = machine.bus.dma_debug_line(*frame);
                 summary[7] = machine.bus.apu.health_line(*frame, &machine.bus.timers);
                 lines.extend(summary);
-                lines.push(machine.bus.wait_line(*frame));
+                lines.push(machine.bus.wait_line(*frame, machine.cycles));
                 lines.push(format!(
                     "gba-debug: timer frame={} t0={} c0={} t1={} c1={} t2={} c2={} t3={} c3={}",
                     frame,

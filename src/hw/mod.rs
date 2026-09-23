@@ -125,23 +125,57 @@ impl Machine {
             }
             let frame_before = self.cycles / CYCLES_PER_FRAME;
 
-            if self.bus.dma.stall > 0 {
+            let advance = if self.bus.dma.stall > 0 {
                 self.bus.dma.stall -= 1;
-                self.cycles += 1;
+                1
             } else if !self.bus.halted {
+                self.bus.begin_step();
                 match self.cpu.step(&mut self.bus) {
-                    Ok(()) => self.cycles += 1,
-                    Err(err) => self.error = Some(err),
-                }
-                self.idle = self.cpu.idle;
-                if watch {
-                    if let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
-                        break end;
+                    Ok(()) => {
+                        self.bus.finish_step(self.cpu.fetch_pc);
+                        let n = self.bus.take_step_cycles();
+                        self.idle = self.cpu.idle;
+                        if watch {
+                            if let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
+                                // Still advance the charged cycles so VCOUNT moves.
+                                let _ = self.advance_cycles(n);
+                                break end;
+                            }
+                        }
+                        n
+                    }
+                    Err(err) => {
+                        self.error = Some(err);
+                        0
                     }
                 }
             } else {
-                self.cycles += 1;
+                1
+            };
+
+            if advance == 0 {
+                continue;
             }
+            if self.advance_cycles(advance) {
+                break DebugEnd::Failed;
+            }
+
+            let frame_after = self.cycles / CYCLES_PER_FRAME;
+            if frame_after != frame_before {
+                self.render_frame();
+            }
+        };
+        self.idle = self.cpu.idle;
+        // Idle can land mid-frame; always settle the picture on exit.
+        self.render_frame();
+        end
+    }
+
+    /// Tick timers, APU, scanline, and IRQ edges for `count` CPU cycles.
+    /// Returns true when halt can never wake (debug fail).
+    fn advance_cycles(&mut self, count: u32) -> bool {
+        for _ in 0..count {
+            self.cycles += 1;
 
             let mask = self.bus.timers.tick(1);
             self.bus.tick_apu(mask);
@@ -196,18 +230,10 @@ impl Machine {
 
             if self.bus.halted && !self.bus.irq.can_wake() {
                 self.bus.warn_halt_forever();
-                break DebugEnd::Failed;
+                return true;
             }
-
-            let frame_after = self.cycles / CYCLES_PER_FRAME;
-            if frame_after != frame_before {
-                self.render_frame();
-            }
-        };
-        self.idle = self.cpu.idle;
-        // Idle can land mid-frame; always settle the picture on exit.
-        self.render_frame();
-        end
+        }
+        false
     }
 
     fn render_frame(&mut self) {
