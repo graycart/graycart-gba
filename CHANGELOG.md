@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.11
+
+Four PSG channels, two DMA FIFOs, and the mixer at 32768 Hz in the core. SRAM is not a FIFO source. The audio-test ROM gate is skipped when the ROM is absent.
+
 ## 0.0.10
 
 DMA immediate, vblank, hblank, FIFO special, DMA3 Game Pak; SRAM DMA rejected; CPU stalls for the copy.

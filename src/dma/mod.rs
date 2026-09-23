@@ -248,17 +248,20 @@ impl Dma {
         }
     }
 
-    /// Build the FIFO special job (always 32-bit, four words).
+    /// Build the FIFO special job (always 32-bit, four words, fixed FIFO dest).
+    ///
+    /// Channel 1 always writes `0x040000A0`; channel 2 always writes `0x040000A4`.
+    /// Destination address control is forced to fixed so the burst does not walk.
     pub fn fifo_job(&self, channel: usize) -> Copy {
         let ch = &self.channels[channel];
         let cnt_h = ch.cnt_h;
         Copy {
             src: ch.latch_src,
-            dst: ch.latch_dst,
+            dst: fifo_dest(channel),
             units: timing::FIFO_UNITS,
             width32: true,
             src_ctrl: timing::src_ctrl(cnt_h),
-            dst_ctrl: timing::dst_ctrl(cnt_h),
+            dst_ctrl: 2, // fixed
         }
     }
 
@@ -285,14 +288,18 @@ impl Dma {
             } else {
                 timing::unit_count(channel, ch.cnt_l)
             };
-            if dst_ctrl == 3 {
+            if reason == Reason::Fifo {
+                ch.latch_dst = fifo_dest(channel);
+            } else if dst_ctrl == 3 {
                 ch.latch_dst = ch.dad;
             } else {
                 ch.latch_dst = step_end(ch.latch_dst, dst_ctrl, units, unit_size);
             }
         } else {
             ch.clear_enable();
-            if reason != Reason::Immediate {
+            if reason == Reason::Fifo {
+                ch.latch_dst = fifo_dest(channel);
+            } else if reason != Reason::Immediate {
                 // keep latch_dst advanced when enable clears; unused until next enable
                 ch.latch_dst = step_end(ch.latch_dst, dst_ctrl, units, unit_size);
             }
@@ -315,6 +322,15 @@ fn step_end(start: u32, ctrl: u8, units: u32, unit_size: u32) -> u32 {
         0 | 3 => start.wrapping_add(delta),
         1 => start.wrapping_sub(delta),
         _ => start,
+    }
+}
+
+/// Fixed FIFO_A / FIFO_B I/O addresses for DMA channels 1 and 2.
+fn fifo_dest(channel: usize) -> u32 {
+    match channel {
+        1 => 0x0400_00A0,
+        2 => 0x0400_00A4,
+        _ => 0x0400_00A0,
     }
 }
 

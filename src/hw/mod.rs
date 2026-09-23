@@ -65,6 +65,7 @@ impl Machine {
             }
 
             let mask = self.bus.timers.tick(1);
+            self.bus.tick_apu(mask);
             for index in 0..4u32 {
                 if mask & (1 << index) != 0 {
                     let control = self.bus.timers.read16(index * 4 + 2);

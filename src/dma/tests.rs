@@ -96,11 +96,13 @@ fn hblank_fires_once_on_rising_edge() {
 }
 
 #[test]
-fn fifo_request_copies_four_words_on_channel_1() {
+fn fifo_request_copies_four_words_into_fifo_a() {
     let mut bus = Bus::new(vec![0; 0xC0]);
     for i in 0..4u32 {
         bus.write32(IWRAM + i * 4, 0x10 + i);
     }
+    // Dest register points at IWRAM with incrementing control — FIFO timing must
+    // still force all four words into 0x040000A0.
     write_channel(
         &mut bus,
         DMA1,
@@ -110,11 +112,21 @@ fn fifo_request_copies_four_words_on_channel_1() {
         enable_fifo_repeat(),
     );
     assert_eq!(bus.read32(IWRAM + 0x400), 0);
+    assert_eq!(bus.apu.fifo_a.len(), 0);
 
     bus.request_fifo(1);
 
+    assert_eq!(
+        bus.read32(IWRAM + 0x400),
+        0,
+        "IWRAM dest must not receive FIFO DMA"
+    );
+    assert_eq!(bus.apu.fifo_a.len(), 16);
     for i in 0..4u32 {
-        assert_eq!(bus.read32(IWRAM + 0x400 + i * 4), 0x10 + i);
+        let word = 0x10u32 + i;
+        for b in word.to_le_bytes() {
+            assert_eq!(bus.apu.fifo_a.pop() as u8, b);
+        }
     }
     assert_ne!(bus.read16(DMA1 + 10) & (1 << 15), 0);
 }

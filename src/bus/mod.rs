@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::apu::Apu;
 use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
@@ -32,6 +33,7 @@ pub struct Bus {
     pub irq: Irq,
     pub keypad: Keypad,
     pub dma: Dma,
+    pub apu: Apu,
     /// Set by HALTCNT byte 0 or SWI 2; cleared when an enabled IRQ wakes the CPU.
     pub halted: bool,
     halt_forever_warned: bool,
@@ -65,6 +67,7 @@ impl Bus {
             irq: Irq::new(),
             keypad: Keypad::new(),
             dma: Dma::new(),
+            apu: Apu::new(),
             halted: false,
             halt_forever_warned: false,
             vblank: false,
@@ -359,8 +362,11 @@ impl Bus {
         slice_store(&mut self.io, off as usize, value, size);
     }
 
-    /// Timers, keypad, IRQ, and DMA registers. `None` means fall through to flat `io[]`.
+    /// Timers, keypad, IRQ, DMA, and sound registers. `None` means fall through to flat `io[]`.
     fn load_io_device(&self, off: u32, size: u32) -> Option<u32> {
+        if sound_covers(off, size) {
+            return Some(self.load_sound_io(off, size));
+        }
         if (0x100..0x110).contains(&off) {
             return Some(self.load_timer_io(off, size));
         }
@@ -380,6 +386,10 @@ impl Bus {
     }
 
     fn store_io_device(&mut self, off: u32, value: u32, size: u32) -> bool {
+        if sound_covers(off, size) {
+            self.store_sound_io(off, value, size);
+            return true;
+        }
         if (0x100..0x110).contains(&off) {
             self.store_timer_io(off, value, size);
             return true;
@@ -413,6 +423,97 @@ impl Bus {
             return true;
         }
         false
+    }
+
+    /// Tick the APU for one CPU cycle (same cadence as the timers).
+    ///
+    /// On a FIFO DMA request, runs channel 1 (A) or 2 (B) through [`Self::request_fifo`].
+    pub fn tick_apu(&mut self, timer_overflow: u8) {
+        let (req_a, req_b) = self.apu.tick(timer_overflow);
+        if req_a {
+            self.request_fifo(1);
+        }
+        if req_b {
+            self.request_fifo(2);
+        }
+    }
+
+    fn load_sound_io(&self, off: u32, size: u32) -> u32 {
+        let mut raw = slice_load(&self.io, off as usize, size);
+        if covers_byte(off, size, 0x84) || covers_byte(off, size, 0x85) {
+            let master = u32::from(self.apu.psg.read_master());
+            for byte in 0u32..2 {
+                let addr = 0x84 + byte;
+                if covers_byte(off, size, addr) {
+                    let shift = (addr - off) * 8;
+                    let piece = (master >> (8 * byte)) & 0xFF;
+                    raw = (raw & !(0xFFu32 << shift)) | (piece << shift);
+                }
+            }
+        }
+        raw
+    }
+
+    fn store_sound_io(&mut self, off: u32, value: u32, size: u32) {
+        match size {
+            1 => {
+                let aligned = off & !1;
+                let cur = slice_load(&self.io, aligned as usize, 2) as u16;
+                let next = if off & 1 != 0 {
+                    (cur & 0x00FF) | (((value as u16) & 0xFF) << 8)
+                } else {
+                    (cur & 0xFF00) | ((value as u16) & 0xFF)
+                };
+                slice_store(&mut self.io, aligned as usize, u32::from(next), 2);
+                if !(0xA0..=0xA7).contains(&off) {
+                    self.apply_sound16(aligned, next);
+                }
+            }
+            2 => {
+                slice_store(&mut self.io, off as usize, value, 2);
+                if !(0xA0..=0xA7).contains(&off) {
+                    self.apply_sound16(off, value as u16);
+                }
+            }
+            4 => {
+                slice_store(&mut self.io, off as usize, value, 4);
+                if off != 0xA0 && off != 0xA4 {
+                    self.apply_sound16(off, value as u16);
+                    self.apply_sound16(off.wrapping_add(2), (value >> 16) as u16);
+                }
+            }
+            _ => {}
+        }
+
+        // FIFO A: 0xA0..=0xA3, FIFO B: 0xA4..=0xA7. 8/16/32-bit stores push bytes
+        // (low byte first). A full word at A0/A4 uses the atomic 4-byte push.
+        if size == 4 && off == 0xA0 {
+            self.apu.fifo_a.push_word(value);
+        } else if size == 4 && off == 0xA4 {
+            self.apu.fifo_b.push_word(value);
+        } else {
+            for i in 0..size {
+                let addr = off.wrapping_add(i);
+                let byte = (value >> (8 * i)) as u8;
+                if (0xA0..=0xA3).contains(&addr) {
+                    self.apu.fifo_a.push_byte(byte);
+                } else if (0xA4..=0xA7).contains(&addr) {
+                    self.apu.fifo_b.push_byte(byte);
+                }
+            }
+        }
+    }
+
+    fn apply_sound16(&mut self, off: u32, value: u16) {
+        match off {
+            0x60..=0x7E => self.apu.psg.write(off - 0x60, value),
+            0x80 => self.apu.set_cnt_l(value),
+            0x82 => self.apu.set_cnt_h(value),
+            0x84 => self.apu.psg.write(0x20, value),
+            0x88 => self.apu.set_bias(value),
+            0x90..=0x9E => self.apu.psg.write(off - 0x60, value),
+            _ => {}
+        }
     }
 
     /// Live DMA summary line for `--debug`.
@@ -729,6 +830,27 @@ enum Access {
 
 fn covers_byte(off: u32, size: u32, byte: u32) -> bool {
     off <= byte && off.saturating_add(size) > byte
+}
+
+fn sound_covers(off: u32, size: u32) -> bool {
+    for i in 0..size {
+        let addr = off.wrapping_add(i);
+        if (0x60..=0x7E).contains(&addr)
+            || addr == 0x80
+            || addr == 0x81
+            || addr == 0x82
+            || addr == 0x83
+            || addr == 0x84
+            || addr == 0x85
+            || addr == 0x88
+            || addr == 0x89
+            || (0x90..=0x9F).contains(&addr)
+            || (0xA0..=0xA7).contains(&addr)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn sio_touches(off: u32, size: u32) -> bool {

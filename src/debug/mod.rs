@@ -43,7 +43,14 @@ SWI unhandled=(none)
     }
 
     /// Live AV report for a ROM that has a settled framebuffer.
-    pub fn av_report_live(&self, frame: u32, dispcnt: u16, pixels: &[u16], nonzero: u32) -> String {
+    pub fn av_report_live(
+        &self,
+        frame: u32,
+        dispcnt: u16,
+        pixels: &[u16],
+        nonzero: u32,
+        apu_line: &str,
+    ) -> String {
         let mode = dispcnt & 7;
         let blank = u8::from(dispcnt & (1 << 7) != 0);
         let hash = frame_hash(pixels);
@@ -52,7 +59,7 @@ SWI unhandled=(none)
 === graycart-gba AV report (frame={frame}) ===
 PPU mode={mode} dispcnt=0x{dispcnt:04X} blank={blank} hash={hash}
 PPU pixels nonzero={nonzero}
-APU master=0 pwm=0Hz fifoA=absent fifoB=absent underrun=0/0 overrun=0/0 empty_drain=0/0 peak=[0..0] dc≈[0,0] clip=0
+{apu_line}
 SWI unhandled=(none)
 "
         )

@@ -26,6 +26,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let frames = summary_frames(opts.frames);
     let mut lines = Vec::new();
     let mut reports = Vec::new();
+    let mut apu_rom_warned = false;
 
     for cart in &carts {
         if opts.path.is_dir() {
@@ -43,6 +44,15 @@ fn run(args: &[String]) -> Result<(), String> {
             let mut machine = Machine::from_rom(bytes);
             machine.run_frames(opts.frames);
             let debug = MachineDebug::absent();
+            if !apu_rom_warned {
+                apu_rom_warned = true;
+                if !audio_test_rom_present() {
+                    machine
+                        .bus
+                        .warn_lines
+                        .push("gba-debug: warn apu rom skipped".to_string());
+                }
+            }
             lines.extend(machine.bus.warn_lines.iter().cloned());
             for frame in &frames {
                 let mut summary = debug.summary_lines(*frame);
@@ -60,6 +70,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 let sprites = sprite_count(machine.bus.oam());
                 summary[1] = format!("gba-debug: ppu frame={frame} mode={mode} sprites={sprites}");
                 summary[2] = machine.bus.dma_debug_line(*frame);
+                summary[7] = machine.bus.apu.health_line(*frame, &machine.bus.timers);
                 lines.extend(summary);
                 lines.push(machine.bus.wait_line(*frame));
                 lines.push(format!(
@@ -94,11 +105,13 @@ fn run(args: &[String]) -> Result<(), String> {
                 &op,
                 machine.idle,
             ));
+            let apu_line = machine.bus.apu.av_line(&machine.bus.timers);
             reports.push(debug.av_report_live(
                 opts.frames,
                 machine.bus.dispcnt(),
                 &machine.ppu.pixels,
                 machine.ppu.nonzero(),
+                &apu_line,
             ));
         } else {
             let debug = MachineDebug::absent();
@@ -214,4 +227,33 @@ fn list_carts(path: &Path) -> Result<Vec<PathBuf>, String> {
         return Err(format!("no carts in {}", path.display()));
     }
     Ok(carts)
+}
+
+/// True when a vendored `gba-audio-test`-style ROM exists under `tests/fixtures`.
+fn audio_test_rom_present() -> bool {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if walk(&path) {
+                    return true;
+                }
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if name.contains("gba-audio-test") || name.contains("gba_audio_test") {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&root)
 }
