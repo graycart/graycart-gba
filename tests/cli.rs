@@ -15,7 +15,8 @@ fn no_path_exits_with_a_clear_error() {
     let out = output(&mut cmd);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("graycart-gba <rom-or-directory> --frames <n>"));
+    assert!(err.contains("graycart-gba <rom-or-directory> --frames <n> [--debug]"));
+    assert!(err.contains("graycart-gba <rom-or-directory> --debug [--frames <n>]"));
     assert!(!err.to_lowercase().contains("unimplemented"));
 }
 
@@ -51,6 +52,70 @@ fn tiny_file_debug_prints_absent_sections_and_the_log() {
     let log = fs::read_to_string(dir.join("gba-debug.log")).unwrap();
     assert!(log.contains("gba-debug: cpu frame=1 absent"));
     assert!(log.contains("=== graycart-gba AV report (frame=1) ==="));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn debug_spin_exits_nonzero_on_fail() {
+    let dir = std::env::temp_dir().join(format!("graycart-gba-spin-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let mut rom = vec![0u8; 0xC0];
+    rom[0..4].copy_from_slice(&0xE280_0001u32.to_le_bytes());
+    rom[4..8].copy_from_slice(&0xEAFF_FFFDu32.to_le_bytes());
+    let path = dir.join("spin.gba");
+    fs::write(&path, &rom).unwrap();
+
+    let mut cmd = bin();
+    let out = output(cmd.current_dir(&dir).arg(&path).arg("--debug"));
+    assert!(
+        !out.status.success(),
+        "fail must exit non-zero\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("result=FAIL"), "{err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn arm_rom_without_frames_stops_on_pass() {
+    let rom = std::path::Path::new("tests/fixtures/jsmolka/arm/arm.gba");
+    if !rom.exists() {
+        eprintln!("skip arm.gba");
+        return;
+    }
+    let mut cmd = bin();
+    let out = output(cmd.arg(rom).arg("--debug"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("gba-debug: cpu result=PASS r12=0"), "{err}");
+}
+
+#[test]
+fn debug_without_frames_still_prints_the_report() {
+    let dir = std::env::temp_dir().join(format!(
+        "graycart-gba-page0-noframes-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let rom = dir.join("tiny.gba");
+    fs::write(&rom, [0u8, 1, 2, 3]).unwrap();
+
+    let mut cmd = bin();
+    let out = output(cmd.current_dir(&dir).arg(&rom).arg("--debug"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("=== graycart-gba AV report (frame=1) ==="));
     let _ = fs::remove_dir_all(&dir);
 }
 

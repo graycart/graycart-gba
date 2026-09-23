@@ -50,6 +50,7 @@ SWI unhandled=(none)
         pixels: &[u16],
         nonzero: u32,
         apu_line: &str,
+        save_kind: &str,
     ) -> String {
         let mode = dispcnt & 7;
         let blank = u8::from(dispcnt & (1 << 7) != 0);
@@ -60,6 +61,7 @@ SWI unhandled=(none)
 PPU mode={mode} dispcnt=0x{dispcnt:04X} blank={blank} hash={hash}
 PPU pixels nonzero={nonzero}
 {apu_line}
+save kind={save_kind}
 SWI unhandled=(none)
 "
         )

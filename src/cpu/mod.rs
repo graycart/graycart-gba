@@ -83,6 +83,11 @@ impl Cpu {
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> Result<(), StepError> {
+        // HLE BIOS IRQ return stub (real ROM at 0x138): ldmfd + subs pc, lr, #4.
+        if self.fetch_pc == IRQ_RETURN_STUB {
+            self.hle_irq_return(bus);
+            return Ok(());
+        }
         if self.thumb() {
             let instr = bus.fetch16(self.fetch_pc);
             self.exec_pc = self.fetch_pc;
@@ -96,8 +101,9 @@ impl Cpu {
         }
     }
 
-    /// IRQ entry. Nothing in the frame loop raises this yet.
-    pub fn raise_irq(&mut self) {
+    /// IRQ entry. With no BIOS image, HLE the vector: IRQ mode, LR → return stub,
+    /// latch the during-IRQ prefetch word, jump to `[0x03007FFC]`.
+    pub fn raise_irq(&mut self, bus: &mut Bus) {
         if self.cpsr & 0x80 != 0 {
             return;
         }
@@ -106,7 +112,44 @@ impl Cpu {
         self.write_cpsr(0x92, 0xFFFF_FFFF);
         self.set_spsr(spsr, 0xFFFF_FFFF);
         self.gpr[14] = ret;
-        self.fetch_pc = 0x18;
+
+        // stmfd sp!, {r0-r3,r12,lr} — same stack frame the BIOS builds before the user ISR.
+        let sp = self.gpr[13].wrapping_sub(24);
+        self.gpr[13] = sp;
+        bus.write32(sp, self.gpr[0]);
+        bus.write32(sp.wrapping_add(4), self.gpr[1]);
+        bus.write32(sp.wrapping_add(8), self.gpr[2]);
+        bus.write32(sp.wrapping_add(12), self.gpr[3]);
+        bus.write32(sp.wrapping_add(16), self.gpr[12]);
+        bus.write32(sp.wrapping_add(20), self.gpr[14]);
+
+        self.gpr[14] = IRQ_RETURN_STUB;
+        bus.set_bios_prefetch(LATCH_DURING_IRQ);
+        let handler = bus.read32(0x0300_7FFC);
+        self.fetch_pc = handler & !3;
+        self.last_op = "irq";
+    }
+
+    /// `ldmfd sp!, {r0-r3,r12,lr}` then `subs pc, lr, #4` (SPSR → CPSR).
+    fn hle_irq_return(&mut self, bus: &mut Bus) {
+        bus.set_bios_prefetch(LATCH_AFTER_IRQ);
+        let sp = self.gpr[13];
+        self.gpr[0] = bus.read32(sp);
+        self.gpr[1] = bus.read32(sp.wrapping_add(4));
+        self.gpr[2] = bus.read32(sp.wrapping_add(8));
+        self.gpr[3] = bus.read32(sp.wrapping_add(12));
+        self.gpr[12] = bus.read32(sp.wrapping_add(16));
+        self.gpr[14] = bus.read32(sp.wrapping_add(20));
+        self.gpr[13] = sp.wrapping_add(24);
+
+        let spsr = self.spsr();
+        let ret = self.gpr[14].wrapping_sub(4);
+        self.write_cpsr(spsr, 0xFFFF_FFFF);
+        if self.thumb() {
+            self.fetch_pc = ret & !1;
+        } else {
+            self.fetch_pc = ret & !3;
+        }
         self.last_op = "irq";
     }
 
@@ -266,6 +309,10 @@ impl Cpu {
                 self.gpr[1] = rem as u32;
                 self.gpr[3] = quot.unsigned_abs();
             }
+        } else if number == 0x08 {
+            // Sqrt: jsmolka bios.gba only checks the prefetch latch, not the root.
+            // r0 == 0 may stay 0.
+            bus.set_bios_prefetch(LATCH_AFTER_SQRT);
         }
         let back = self.spsr();
         let lr = self.gpr[14];
@@ -294,6 +341,15 @@ fn bank_index(mode: u32) -> usize {
         _ => 0,
     }
 }
+
+/// BIOS IRQ return stub address (`mov pc, lr` from the user ISR lands here).
+const IRQ_RETURN_STUB: u32 = 0x138;
+/// Prefetch latch after `swi 0x08` (Sqrt): word at BIOS 0x188.
+const LATCH_AFTER_SQRT: u32 = 0xE3A0_2004;
+/// Prefetch latch while the user IRQ handler runs: word at BIOS 0x13C.
+const LATCH_DURING_IRQ: u32 = 0xE25E_F004;
+/// Prefetch latch after the IRQ stub returns to the game: word at BIOS 0x144.
+const LATCH_AFTER_IRQ: u32 = 0xE55E_C002;
 
 #[cfg(test)]
 mod tests;

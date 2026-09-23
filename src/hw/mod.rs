@@ -1,6 +1,9 @@
 //! One machine: CPU, bus, scanline timing, and the picture buffer.
 
+use std::path::{Path, PathBuf};
+
 use crate::bus::Bus;
+use crate::cart::{parse_header, read_sidecar, sidecar_path, write_sidecar, SaveKind};
 use crate::cpu::{Cpu, StepError};
 use crate::ppu::Ppu;
 
@@ -19,6 +22,8 @@ pub struct Machine {
     prev_vblank: bool,
     prev_hblank: bool,
     prev_vmatch: bool,
+    /// Sidecar path when opened from a file; `None` for [`Self::from_rom`].
+    sidecar: Option<PathBuf>,
 }
 
 impl Machine {
@@ -33,22 +38,91 @@ impl Machine {
             prev_vblank: false,
             prev_hblank: false,
             prev_vmatch: false,
+            sidecar: None,
         }
+    }
+
+    /// Load a ROM from disk, parse the header, and load `<rom>.sav` when present.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let rom = std::fs::read(path).map_err(|e| e.to_string())?;
+        parse_header(&rom)?;
+        let mut machine = Self::from_rom(rom);
+        let sav = sidecar_path(path);
+        let bytes = read_sidecar(&sav)?;
+        if !bytes.is_empty() {
+            machine.bus.load_save(&bytes);
+        }
+        machine.sidecar = Some(sav);
+        Ok(machine)
+    }
+
+    /// Write the save chip to the sidecar (no-op when kind is none or no path).
+    pub fn flush_save(&self) -> Result<(), String> {
+        let Some(path) = &self.sidecar else {
+            return Ok(());
+        };
+        if self.bus.save_kind() == SaveKind::None {
+            return Ok(());
+        }
+        let Some(bytes) = self.bus.save_bytes() else {
+            return Ok(());
+        };
+        write_sidecar(path, bytes)
     }
 
     pub fn run_frames(&mut self, frames: u32) {
         let budget = u64::from(frames) * CYCLES_PER_FRAME;
-        self.run_until(budget);
+        let _ = self.run_until(budget, false);
+    }
+
+    /// Debug run. Stops on a pass, a fail, a fault, a permanent halt, or a stuck loop.
+    /// `frames` is only a cap. Returns whether the jsmolka pass rule matched.
+    pub fn run_debug(&mut self, frames: Option<u32>) -> bool {
+        let budget = frames
+            .map(|n| u64::from(n) * CYCLES_PER_FRAME)
+            .unwrap_or(u64::MAX);
+        self.run_until(budget, true) == DebugEnd::Passed
+    }
+
+    /// Frames actually executed. A stop mid-frame counts that frame.
+    pub fn frames_done(&self) -> u32 {
+        let whole = (self.cycles / CYCLES_PER_FRAME) as u32;
+        if self.cycles.is_multiple_of(CYCLES_PER_FRAME) {
+            whole
+        } else {
+            whole + 1
+        }
     }
 
     /// Advance at most `max` cycles (for unit tests that need a tight bound).
     pub fn run_cycles(&mut self, max: u64) {
         let budget = self.cycles.saturating_add(max);
-        self.run_until(budget);
+        let _ = self.run_until(budget, false);
     }
 
-    fn run_until(&mut self, budget: u64) {
-        while self.cycles < budget && !self.cpu.idle && self.error.is_none() {
+    fn passed(&self) -> bool {
+        let r7 = self.cpu.reg(7);
+        let thumb_fail = (1..=999).contains(&r7);
+        self.cpu.idle && self.error.is_none() && self.cpu.reg(12) == 0 && !thumb_fail
+    }
+
+    fn run_until(&mut self, budget: u64, watch: bool) -> DebugEnd {
+        let mut watch_state = LoopWatch::default();
+        let end = loop {
+            if self.cycles >= budget {
+                break DebugEnd::Capped;
+            }
+            if self.cpu.idle {
+                break if self.passed() {
+                    DebugEnd::Passed
+                } else {
+                    DebugEnd::Failed
+                };
+            }
+            if self.error.is_some() {
+                break DebugEnd::Failed;
+            }
             let frame_before = self.cycles / CYCLES_PER_FRAME;
 
             if self.bus.dma.stall > 0 {
@@ -60,6 +134,11 @@ impl Machine {
                     Err(err) => self.error = Some(err),
                 }
                 self.idle = self.cpu.idle;
+                if watch {
+                    if let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
+                        break end;
+                    }
+                }
             } else {
                 self.cycles += 1;
             }
@@ -111,22 +190,24 @@ impl Machine {
                 // An enabled pending IRQ leaves halt even when CPSR I blocks entry.
                 self.bus.halted = false;
                 if self.cpu.cpsr() & 0x80 == 0 {
-                    self.cpu.raise_irq();
+                    self.cpu.raise_irq(&mut self.bus);
                 }
             }
 
             if self.bus.halted && !self.bus.irq.can_wake() {
                 self.bus.warn_halt_forever();
+                break DebugEnd::Failed;
             }
 
             let frame_after = self.cycles / CYCLES_PER_FRAME;
             if frame_after != frame_before {
                 self.render_frame();
             }
-        }
+        };
         self.idle = self.cpu.idle;
         // Idle can land mid-frame; always settle the picture on exit.
         self.render_frame();
+        end
     }
 
     fn render_frame(&mut self) {
@@ -138,6 +219,76 @@ impl Machine {
             self.bus.oam(),
             self.bus.io(),
         );
+    }
+}
+
+/// Why a debug run stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DebugEnd {
+    Passed,
+    Failed,
+    Capped,
+}
+
+/// Same idea as the Game Boy Mooneye runner: a pass returns immediately, and a
+/// PC that is not the pass signature is a fail. A one-instruction spin fails
+/// at 64 hits. A short poll (the PC repeats within the last 16 steps) fails
+/// after half a million steps, which is longer than a vblank wait.
+struct LoopWatch {
+    hist: [u32; 32],
+    n: u32,
+    last_pc: u32,
+    same_pc: u32,
+    streak: u32,
+}
+
+impl Default for LoopWatch {
+    fn default() -> Self {
+        Self {
+            hist: [0; 32],
+            n: 0,
+            last_pc: u32::MAX,
+            same_pc: 0,
+            streak: 0,
+        }
+    }
+}
+
+impl LoopWatch {
+    fn note_step(&mut self, pc: u32) -> Option<DebugEnd> {
+        if pc == self.last_pc {
+            self.same_pc = self.same_pc.saturating_add(1);
+            if self.same_pc >= 64 {
+                return Some(DebugEnd::Failed);
+            }
+        } else {
+            self.same_pc = 0;
+            self.last_pc = pc;
+        }
+
+        let idx = (self.n as usize) % self.hist.len();
+        self.hist[idx] = pc;
+        self.n = self.n.wrapping_add(1);
+
+        if self.n > 16 {
+            let mut looping = false;
+            for period in 1..=16 {
+                let prev = self.hist[(self.n as usize - 1 - period) % self.hist.len()];
+                if prev == pc {
+                    looping = true;
+                    break;
+                }
+            }
+            if looping {
+                self.streak = self.streak.saturating_add(1);
+                if self.streak >= 500_000 {
+                    return Some(DebugEnd::Failed);
+                }
+            } else {
+                self.streak = 0;
+            }
+        }
+        None
     }
 }
 

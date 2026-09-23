@@ -59,7 +59,7 @@ Accuracy ROMs live under `tests/fixtures/` and may be committed. Commercial dump
 
 ## Debug, from page 0
 
-Page 0 shipped as crate `0.0.2`. Page 1 shipped as crate `0.0.3`. Page 2 shipped as crate `0.0.4`. Page 3 shipped as crate `0.0.5`. Page 4 shipped as crate `0.0.6`. Page 5 shipped as crate `0.0.7`. Page 6 shipped as crate `0.0.8`. Page 7 shipped as crate `0.0.9`. Page 8 shipped as crate `0.0.10`. Page 9 shipped as crate `0.0.11`. Next is page 10.
+Page 0 shipped as crate `0.0.2`. Page 1 shipped as crate `0.0.3`. Page 2 shipped as crate `0.0.4`. Page 3 shipped as crate `0.0.5`. Page 4 shipped as crate `0.0.6`. Page 5 shipped as crate `0.0.7`. Page 6 shipped as crate `0.0.8`. Page 7 shipped as crate `0.0.9`. Page 8 shipped as crate `0.0.10`. Page 9 shipped as crate `0.0.11`. Page 10 shipped as crate `0.0.12`. Next is page 11.
 
 Audio and video debugging is text on stderr, in the same line format as the previous `graycart-gba` console log. A wav or a picture is optional and secondary. The thing a person or a model reads is one greppable line per fact, `key=value`, prefix `gba-debug:`. Do not paste the deleted `debug` module back in. Reimplement this contract.
 
@@ -67,11 +67,12 @@ The command line stays small:
 
 ```text
 graycart-gba <rom> --frames <n> [--debug]
-graycart-gba <rom> --frames <n> --debug=trace
+graycart-gba <rom> --debug [--frames <n>]
 graycart-gba <directory> --frames <n> [--debug]
+graycart-gba <directory> --debug [--frames <n>]
 ```
 
-`--frames` is headless. `--debug` is the summary. `--debug=trace` is the instruction firehose, capped to the frame run, still under the `gba-debug:` prefix. There is no `--trace`, `--disasm`, `--ppm`, or `--wav`. A picture or a sound file is not how we check a page. When a page is ready, the test command is written out in full so it can be copied as-is.
+`--debug` stops when the result is pass or fail, and exits non-zero on fail. `--frames` caps that run. Without `--debug`, `--frames` is required. `--debug=trace` is the instruction firehose, still under the `gba-debug:` prefix. There is no `--trace`, `--disasm`, `--ppm`, or `--wav`. A picture or a sound file is not how we check a page. When a page is ready, the test command is written out in full so it can be copied as-is.
 
 Every breadcrumb is one stderr line:
 

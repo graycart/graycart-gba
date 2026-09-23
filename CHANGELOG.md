@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.12
+
+Cartridge saves (none / sram / flash64 / flash128 / eeprom), `<rom>.sav` sidecar load/flush, BIOS prefetch latch already on this page, and one `gba-debug: warn cart gpio unsupported` when a test marks GPIO present. `--debug` stops on pass or fail and exits non-zero on fail. `--frames` caps that run and is required when `--debug` is absent.
+
 ## 0.0.11
 
 Four PSG channels, two DMA FIFOs, and the mixer at 32768 Hz in the core. SRAM is not a FIFO source. The audio-test ROM gate is skipped when the ROM is absent.

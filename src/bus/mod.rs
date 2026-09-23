@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 
 use crate::apu::Apu;
+use crate::cart::{detect_save, gpio_reject_line, Eeprom, Flash, FlashSize, SaveKind};
 use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
@@ -19,6 +20,15 @@ const IO: usize = 0x400;
 const SRAM: usize = 64 * 1024;
 const BIOS: usize = 16 * 1024;
 
+/// Cartridge backup chip held on the bus.
+#[derive(Debug)]
+enum SaveChip {
+    None,
+    Sram(Vec<u8>),
+    Flash(Flash),
+    Eeprom(Eeprom),
+}
+
 #[derive(Debug)]
 pub struct Bus {
     pub rom: Vec<u8>,
@@ -28,7 +38,11 @@ pub struct Bus {
     vram: Vec<u8>,
     oam: Vec<u8>,
     io: Vec<u8>,
-    sram: Vec<u8>,
+    save: SaveChip,
+    save_kind: SaveKind,
+    /// When true, 0x080000C4/C6/C8 are cart GPIO (unsupported). Default false.
+    has_gpio: bool,
+    gpio_warned: bool,
     pub timers: Timers,
     pub irq: Irq,
     pub keypad: Keypad,
@@ -54,6 +68,14 @@ pub struct Bus {
 
 impl Bus {
     pub fn new(rom: Vec<u8>) -> Self {
+        let kind = detect_save(&rom);
+        let save = match kind {
+            SaveKind::None => SaveChip::None,
+            SaveKind::Sram => SaveChip::Sram(vec![0xFF; SRAM]),
+            SaveKind::Flash64 => SaveChip::Flash(Flash::new(FlashSize::K64)),
+            SaveKind::Flash128 => SaveChip::Flash(Flash::new(FlashSize::K128)),
+            SaveKind::Eeprom => SaveChip::Eeprom(Eeprom::new()),
+        };
         Self {
             rom,
             ewram: vec![0; EWRAM],
@@ -62,7 +84,10 @@ impl Bus {
             vram: vec![0; VRAM],
             oam: vec![0; OAM],
             io: vec![0; IO],
-            sram: vec![0; SRAM],
+            save,
+            save_kind: kind,
+            has_gpio: false,
+            gpio_warned: false,
             timers: Timers::new(),
             irq: Irq::new(),
             keypad: Keypad::new(),
@@ -74,7 +99,8 @@ impl Bus {
             hblank: false,
             vcount: 0,
             last_data: 0,
-            bios_prefetch: 0,
+            // Post-boot latch: last BIOS opcode word (at 0xE4), not a fetch of 0.
+            bios_prefetch: 0xE129_F000,
             warn_lines: Vec::new(),
             openbus_logged: HashSet::new(),
             sio_warned: false,
@@ -82,6 +108,47 @@ impl Bus {
             wait_rom_s: 1,
             wait_rom_i: 1,
             wait_sram: 1,
+        }
+    }
+
+    /// Detected save kind (from ROM ID strings).
+    pub fn save_kind(&self) -> SaveKind {
+        self.save_kind
+    }
+
+    /// Enable unsupported cart GPIO at 0x080000C4/C6/C8 (tests only).
+    pub fn set_has_gpio(&mut self, yes: bool) {
+        self.has_gpio = yes;
+    }
+
+    /// Load sidecar bytes into the save chip (no-op for [`SaveKind::None`]).
+    pub fn load_save(&mut self, bytes: &[u8]) {
+        match &mut self.save {
+            SaveChip::None => {}
+            SaveChip::Sram(data) => {
+                data.fill(0xFF);
+                let n = bytes.len().min(data.len());
+                data[..n].copy_from_slice(&bytes[..n]);
+            }
+            SaveChip::Flash(flash) => flash.load_bytes(bytes),
+            SaveChip::Eeprom(eeprom) => eeprom.load_bytes(bytes),
+        }
+    }
+
+    /// Current save-chip bytes for the sidecar, if any.
+    pub fn save_bytes(&self) -> Option<&[u8]> {
+        match &self.save {
+            SaveChip::None => None,
+            SaveChip::Sram(data) => Some(data.as_slice()),
+            SaveChip::Flash(flash) => Some(flash.bytes()),
+            SaveChip::Eeprom(eeprom) => {
+                let b = eeprom.bytes();
+                if b.is_empty() {
+                    None
+                } else {
+                    Some(b)
+                }
+            }
         }
     }
 
@@ -153,12 +220,14 @@ impl Bus {
     }
 
     pub fn read16(&mut self, addr: u32) -> u16 {
-        let bits = self.access(addr & !1, 2, Access::Data);
+        let addr = align_data(addr, 2);
+        let bits = self.access(addr, 2, Access::Data);
         bits as u16
     }
 
     pub fn read32(&mut self, addr: u32) -> u32 {
-        self.access(addr & !3, 4, Access::Data)
+        let addr = align_data(addr, 4);
+        self.access(addr, 4, Access::Data)
     }
 
     pub fn write8(&mut self, addr: u32, value: u8) {
@@ -166,11 +235,13 @@ impl Bus {
     }
 
     pub fn write16(&mut self, addr: u32, value: u16) {
-        self.store(addr & !1, value as u32, 2);
+        let addr = align_data(addr, 2);
+        self.store(addr, value as u32, 2);
     }
 
     pub fn write32(&mut self, addr: u32, value: u32) {
-        self.store(addr & !3, value, 4);
+        let addr = align_data(addr, 4);
+        self.store(addr, value, 4);
     }
 
     fn access(&mut self, addr: u32, size: u32, kind: Access) -> u32 {
@@ -178,8 +249,8 @@ impl Bus {
         match region {
             0x00 if (addr as usize) < BIOS => {
                 if kind == Access::Fetch {
-                    // No BIOS image: fetched opcode is 0.
-                    self.bios_prefetch = 0;
+                    // No BIOS image: opcode is 0. Do not wipe the prefetch latch —
+                    // data reads still need the last real BIOS word (post-boot, SWI, IRQ).
                     self.last_data = 0;
                     0
                 } else {
@@ -220,19 +291,30 @@ impl Bus {
                 self.latch(value);
                 value
             }
-            0x08..=0x0D => {
+            0x08..=0x0C => {
+                if self.touch_gpio(addr) {
+                    let value = 0;
+                    self.latch(value);
+                    return value;
+                }
                 let value = self.load_rom(addr, size);
                 self.latch(value);
                 value
             }
-            0x0E | 0x0F => {
-                if size != 1 {
-                    return self.openbus(addr, size, "sram");
+            0x0D => {
+                if self.save_kind == SaveKind::Eeprom && size == 2 {
+                    let bit = match &mut self.save {
+                        SaveChip::Eeprom(eeprom) => u32::from(eeprom.read_bit()),
+                        _ => 1,
+                    };
+                    self.latch(bit);
+                    return bit;
                 }
-                let value = slice_load(&self.sram, (addr & 0xFFFF) as usize, 1);
+                let value = self.load_rom(addr, size);
                 self.latch(value);
                 value
             }
+            0x0E | 0x0F => self.access_save(addr, size),
             _ => self.openbus(addr, size, "unused"),
         }
     }
@@ -251,15 +333,96 @@ impl Bus {
             0x05 => self.store_pal(addr, value, size),
             0x06 => self.store_vram(addr, value, size),
             0x07 => self.store_oam(addr, value, size),
-            0x0E | 0x0F => {
-                if size != 1 {
-                    self.log_openbus(addr, "sram");
-                    return;
-                }
-                slice_store(&mut self.sram, (addr & 0xFFFF) as usize, value, 1);
+            0x08..=0x0C => {
+                let _ = self.touch_gpio(addr);
             }
+            0x0D => {
+                if self.save_kind == SaveKind::Eeprom && size == 2 {
+                    if let SaveChip::Eeprom(eeprom) = &mut self.save {
+                        eeprom.write_bit(value as u16);
+                    }
+                }
+            }
+            0x0E | 0x0F => self.store_save(addr, value, size),
             _ => {}
         }
+    }
+
+    /// SRAM / flash are an 8-bit bus: multi-byte reads duplicate the byte;
+    /// multi-byte writes program only the lane that hits `addr`.
+    fn access_save(&mut self, addr: u32, size: u32) -> u32 {
+        let wide_ok = matches!(
+            self.save_kind,
+            SaveKind::Sram | SaveKind::Flash64 | SaveKind::Flash128
+        );
+        match size {
+            1 => {
+                let value = self.read_save8(addr);
+                self.latch(value);
+                value
+            }
+            2 | 4 if wide_ok => {
+                let b = self.read_save8(addr) & 0xFF;
+                let value = if size == 2 {
+                    b | (b << 8)
+                } else {
+                    b | (b << 8) | (b << 16) | (b << 24)
+                };
+                self.latch(value);
+                value
+            }
+            _ => self.openbus(addr, size, "sram"),
+        }
+    }
+
+    fn store_save(&mut self, addr: u32, value: u32, size: u32) {
+        let wide_ok = matches!(
+            self.save_kind,
+            SaveKind::Sram | SaveKind::Flash64 | SaveKind::Flash128
+        );
+        match size {
+            1 => self.write_save8(addr, value as u8),
+            2 | 4 if wide_ok => {
+                let shift = (addr & (size - 1)) * 8;
+                let byte = ((value >> shift) & 0xFF) as u8;
+                self.write_save8(addr, byte);
+            }
+            _ => self.log_openbus(addr, "sram"),
+        }
+    }
+
+    fn read_save8(&mut self, addr: u32) -> u32 {
+        match &mut self.save {
+            SaveChip::None | SaveChip::Eeprom(_) => 0xFF,
+            SaveChip::Sram(data) => u32::from(data[(addr & 0xFFFF) as usize]),
+            SaveChip::Flash(flash) => u32::from(flash.read(addr)),
+        }
+    }
+
+    fn write_save8(&mut self, addr: u32, value: u8) {
+        match &mut self.save {
+            SaveChip::None | SaveChip::Eeprom(_) => {}
+            SaveChip::Sram(data) => {
+                data[(addr & 0xFFFF) as usize] = value;
+            }
+            SaveChip::Flash(flash) => flash.write(addr, value),
+        }
+    }
+
+    /// Unsupported cart GPIO at the three fixed ROM addresses. Warns once.
+    fn touch_gpio(&mut self, addr: u32) -> bool {
+        if !self.has_gpio || !matches!(addr, 0x0800_00C4 | 0x0800_00C6 | 0x0800_00C8) {
+            return false;
+        }
+        if !self.gpio_warned {
+            self.gpio_warned = true;
+            self.warn_lines.push(gpio_reject_line().to_string());
+        }
+        true
+    }
+
+    fn eeprom_region(addr: u32) -> bool {
+        (0x0D00_0000..=0x0DFF_FFFF).contains(&addr)
     }
 
     fn store_pal(&mut self, addr: u32, value: u32, size: u32) {
@@ -617,7 +780,15 @@ impl Bus {
                 (*this).write16(addr, value as u16);
             }
         };
-        dma::run_copy(job, &mut read, &mut write)
+        let units = dma::run_copy(job, &mut read, &mut write);
+        if self.save_kind == SaveKind::Eeprom
+            && (Self::eeprom_region(job.src) || Self::eeprom_region(job.dst))
+        {
+            if let SaveChip::Eeprom(eeprom) = &mut self.save {
+                eeprom.end_transfer();
+            }
+        }
+        units
     }
 
     fn load_timer_io(&self, off: u32, size: u32) -> u32 {
@@ -786,6 +957,16 @@ impl Bus {
         slice_load(&self.rom, off, size)
     }
 
+    /// Last BIOS opcode word returned for BIOS *data* reads (GBATEK prefetch latch).
+    pub fn bios_prefetch(&self) -> u32 {
+        self.bios_prefetch
+    }
+
+    /// Update the BIOS prefetch latch (HLE SWI / IRQ paths).
+    pub fn set_bios_prefetch(&mut self, word: u32) {
+        self.bios_prefetch = word;
+    }
+
     fn latch(&mut self, value: u32) {
         self.last_data = value;
     }
@@ -826,6 +1007,19 @@ impl Bus {
 enum Access {
     Fetch,
     Data,
+}
+
+/// Align halfword/word data accesses, except the 8-bit SRAM/flash bus where the
+/// unaligned address selects which lane is written (jsmolka save tests).
+fn align_data(addr: u32, size: u32) -> u32 {
+    if matches!(addr >> 24, 0x0E | 0x0F) {
+        return addr;
+    }
+    match size {
+        2 => addr & !1,
+        4 => addr & !3,
+        _ => addr,
+    }
 }
 
 fn covers_byte(off: u32, size: u32, byte: u32) -> bool {

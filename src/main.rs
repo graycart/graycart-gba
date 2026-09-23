@@ -12,7 +12,7 @@ use graycart_gba::Machine;
 
 fn main() -> ExitCode {
     match run(&env::args().skip(1).collect::<Vec<_>>()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("{err}");
             ExitCode::from(1)
@@ -20,29 +20,35 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &[String]) -> Result<(), String> {
+fn run(args: &[String]) -> Result<ExitCode, String> {
     let opts = parse(args)?;
     let carts = list_carts(&opts.path)?;
-    let frames = summary_frames(opts.frames);
     let mut lines = Vec::new();
     let mut reports = Vec::new();
     let mut apu_rom_warned = false;
+    let mut debug_failed = false;
 
     for cart in &carts {
-        if opts.path.is_dir() {
-            let name = cart
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("?");
-            lines.push(format!(
-                "gba-debug: smoke file={name} frames={} fault=none",
-                opts.frames
-            ));
-        }
         let bytes = fs::read(cart).map_err(|err| err.to_string())?;
         if bytes.len() >= 0xC0 {
-            let mut machine = Machine::from_rom(bytes);
-            machine.run_frames(opts.frames);
+            let mut machine = Machine::open(cart)?;
+            if opts.debug {
+                let _passed = machine.run_debug(opts.frames);
+            } else {
+                machine.run_frames(opts.frames.expect("frames required without --debug"));
+            }
+            machine.flush_save()?;
+            let report_frames = machine.frames_done().max(1);
+            let frames = summary_frames(report_frames);
+            if opts.path.is_dir() {
+                let name = cart
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "gba-debug: smoke file={name} frames={report_frames} fault=none"
+                ));
+            }
             let debug = MachineDebug::absent();
             if !apu_rom_warned {
                 apu_rom_warned = true;
@@ -54,6 +60,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
             }
             lines.extend(machine.bus.warn_lines.iter().cloned());
+            lines.push(format!(
+                "gba-debug: save kind={}",
+                machine.bus.save_kind().name()
+            ));
             for frame in &frames {
                 let mut summary = debug.summary_lines(*frame);
                 summary[0] = live_cpu_line(
@@ -98,27 +108,43 @@ fn run(args: &[String]) -> Result<(), String> {
                 .as_ref()
                 .map(|err| err.to_string())
                 .unwrap_or_else(|| machine.cpu.last_op.to_string());
-            lines.push(cpu_result_line(
+            let result = cpu_result_line(
                 machine.cpu.reg(12),
                 machine.cpu.reg(7),
                 machine.cpu.exec_pc,
                 &op,
                 machine.idle,
-            ));
+            );
+            if opts.debug && result.contains("result=FAIL") {
+                debug_failed = true;
+            }
+            lines.push(result);
             let apu_line = machine.bus.apu.av_line(&machine.bus.timers);
             reports.push(debug.av_report_live(
-                opts.frames,
+                report_frames,
                 machine.bus.dispcnt(),
                 &machine.ppu.pixels,
                 machine.ppu.nonzero(),
                 &apu_line,
+                machine.bus.save_kind().name(),
             ));
         } else {
+            let report_frames = opts.frames.unwrap_or(1);
+            let frames = summary_frames(report_frames);
+            if opts.path.is_dir() {
+                let name = cart
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "gba-debug: smoke file={name} frames={report_frames} fault=none"
+                ));
+            }
             let debug = MachineDebug::absent();
             for frame in &frames {
                 lines.extend(debug.summary_lines(*frame));
             }
-            reports.push(debug.av_report(opts.frames));
+            reports.push(debug.av_report(report_frames));
         }
     }
 
@@ -142,12 +168,17 @@ fn run(args: &[String]) -> Result<(), String> {
             write!(out, "{report}").map_err(|err| err.to_string())?;
         }
     }
-    Ok(())
+    if debug_failed {
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
 }
 
 struct Opts {
     path: PathBuf,
-    frames: u32,
+    /// Cap. `None` runs until the CPU passes, faults, or halts forever.
+    frames: Option<u32>,
     debug: bool,
 }
 
@@ -187,7 +218,9 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         i += 1;
     }
     let path = path.ok_or_else(|| usage("missing <rom-or-directory>"))?;
-    let frames = frames.ok_or_else(|| usage("missing --frames <n>"))?;
+    if !debug && frames.is_none() {
+        return Err(usage("missing --frames <n>"));
+    }
     Ok(Opts {
         path,
         frames,
@@ -196,7 +229,11 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 }
 
 fn usage(why: &str) -> String {
-    format!("{why}\ngraycart-gba <rom-or-directory> --frames <n> [--debug]")
+    format!(
+        "{why}\n\
+graycart-gba <rom-or-directory> --frames <n> [--debug]\n\
+graycart-gba <rom-or-directory> --debug [--frames <n>]"
+    )
 }
 
 fn list_carts(path: &Path) -> Result<Vec<PathBuf>, String> {

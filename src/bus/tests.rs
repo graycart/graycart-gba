@@ -33,7 +33,9 @@ fn unused_openbus_names_region() {
 
 #[test]
 fn sram_mirrors_across_0f() {
-    let mut bus = Bus::new(Vec::new());
+    let mut rom = vec![0u8; 0xC0];
+    rom.extend_from_slice(b"SRAM_V");
+    let mut bus = Bus::new(rom);
     bus.write8(0x0F00_0000, 0x5A);
     assert_eq!(bus.read8(0x0E00_0000), 0x5A);
     assert!(
@@ -41,6 +43,124 @@ fn sram_mirrors_across_0f() {
         "0x0F SRAM must not log openbus: {:?}",
         bus.warn_lines
     );
+}
+
+#[test]
+fn sram_unwritten_is_ff() {
+    let mut rom = vec![0u8; 0xC0];
+    rom.extend_from_slice(b"SRAM_V");
+    let mut bus = Bus::new(rom);
+    assert_eq!(bus.read8(0x0E00_0000), 0xFF);
+}
+
+#[test]
+fn save_none_reads_ff_ignores_write() {
+    let mut bus = Bus::new(vec![0u8; 0xC0]);
+    assert_eq!(bus.save_kind().name(), "none");
+    bus.write8(0x0E00_0000, 0x5A);
+    assert_eq!(bus.read8(0x0E00_0000), 0xFF);
+    assert_eq!(bus.read8(0x0F00_0000), 0xFF);
+}
+
+#[test]
+fn save_none_wide_is_openbus_not_duplicate() {
+    let mut bus = Bus::new(vec![0u8; 0xC0]);
+    // Prime open-bus latch with a known word, then a 16-bit SRAM-region read
+    // must slice that latch — not duplicate 0xFF into 0xFFFF.
+    bus.write32(0x0300_0000, 0xA1B2_C3D4);
+    let _ = bus.read32(0x0300_0000);
+    let got = bus.read16(0x0E00_0000);
+    assert_ne!(got, 0xFFFF, "none must not duplicate the erased byte");
+    assert!(
+        bus.warn_lines.iter().any(|l| l.contains("region=sram")),
+        "wide none access must log sram openbus: {:?}",
+        bus.warn_lines
+    );
+}
+
+#[test]
+fn sram_halfword_write_programs_one_lane() {
+    let mut rom = vec![0u8; 0xC0];
+    rom.extend_from_slice(b"SRAM_V");
+    let mut bus = Bus::new(rom);
+    bus.write16(0x0E00_0020, 0xAABB);
+    assert_eq!(bus.read8(0x0E00_0020), 0xBB);
+    assert_eq!(bus.read8(0x0E00_0021), 0xFF);
+    bus.write16(0x0E00_0021, 0xAABB);
+    assert_eq!(bus.read8(0x0E00_0021), 0xAA);
+}
+
+#[test]
+fn eeprom_dma_nine_halfwords_sets_512() {
+    let mut rom = vec![0u8; 0xC0];
+    rom.extend_from_slice(b"EEPROM_V");
+    let mut bus = Bus::new(rom);
+    assert_eq!(bus.save_kind().name(), "eeprom");
+
+    // Read-setup stream: cmd 0b11, 6 address bits, stop — 9 halfwords.
+    let iwram = 0x0300_0100u32;
+    for (i, bit) in [1u16, 1, 0, 0, 0, 0, 0, 0, 0].iter().enumerate() {
+        bus.write16(iwram + (i as u32) * 2, *bit);
+    }
+    // DMA3 immediate halfword copy into EEPROM region.
+    bus.write32(0x0400_00D4, iwram);
+    bus.write32(0x0400_00D8, 0x0D00_0000);
+    bus.write16(0x0400_00DC, 9);
+    bus.write16(0x0400_00DE, 1 << 15);
+
+    let bytes = bus.save_bytes().expect("size should lock after setup DMA");
+    assert_eq!(bytes.len(), 512);
+}
+
+#[test]
+fn rom_mirrors_08_0a_0c_same_offset() {
+    let mut rom = vec![0u8; 0x100];
+    rom[0x40] = 0x11;
+    rom[0x41] = 0x22;
+    let mut bus = Bus::new(rom);
+    let a = bus.read16(0x0800_0040);
+    let b = bus.read16(0x0A00_0040);
+    let c = bus.read16(0x0C00_0040);
+    assert_eq!(a, 0x2211);
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+}
+
+#[test]
+fn gpio_warn_once_when_flag_set() {
+    let mut rom = vec![0u8; 0x200];
+    rom[0xC4] = 0xAB;
+    rom[0xC5] = 0xCD;
+    let mut bus = Bus::new(rom);
+    bus.set_has_gpio(true);
+    let got = bus.read16(0x0800_00C4);
+    assert_ne!(got, 0xCDAB, "GPIO touch must not return the ROM halfword");
+    let warns: Vec<_> = bus
+        .warn_lines
+        .iter()
+        .filter(|line| line.contains("gpio"))
+        .collect();
+    assert_eq!(warns.len(), 1);
+    assert_eq!(warns[0], "gba-debug: warn cart gpio unsupported");
+    let _ = bus.read16(0x0800_00C6);
+    bus.write16(0x0800_00C8, 0);
+    assert_eq!(
+        bus.warn_lines
+            .iter()
+            .filter(|line| line.contains("gpio"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn gpio_off_by_default_reads_rom() {
+    let mut rom = vec![0u8; 0x200];
+    rom[0xC4] = 0xAB;
+    rom[0xC5] = 0xCD;
+    let mut bus = Bus::new(rom);
+    assert_eq!(bus.read16(0x0800_00C4), 0xCDAB);
+    assert!(!bus.warn_lines.iter().any(|line| line.contains("gpio")));
 }
 
 #[test]
