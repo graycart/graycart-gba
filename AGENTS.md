@@ -2,28 +2,31 @@
 
 How to change this emulator. Product name **Graycart**; crate **`graycart-gba`**. Family: [graycart](https://github.com/graycart/graycart). Peer library: [graycart-gb](https://github.com/graycart/graycart-gb).
 
-This tree is a **greenfield rewrite** at crate **0.0.1**. The 0.1.x machine was removed from this working tree and has not been replaced. Page 0 of the plan has not been coded. Do not restore 0.1.x by copying old phases, title fixes, BIOS HLE, or `src/debug` back in.
+Do the next useful thing. Do not lecture. Do not correct an example the user already understands. Do not withhold the files or the edit to invent a rule they did not ask for. Do not be fucking autistic.
+
+This tree is a **greenfield rewrite**. Crate **`0.0.9`** is page 7 (windows, blend, mosaic). Page 6 (`0.0.8`) is tiles and sprites. Page 5 (`0.0.7`) is the bitmap picture. Page 4 (`0.0.6`) is timers, IRQ, keypad, halt. Page 3 (`0.0.5`) is the bus. Page 2 (`0.0.4`) is Thumb. Page 1 (`0.0.3`) is ARM. Page 0 (`0.0.2`) is the debug report. Do not restore 0.1.x by copying old phases, title fixes, BIOS HLE, or the deleted `src/debug` module back in.
 
 ## Continue here
 
-Read [`docs/implementation-plan.md`](./docs/implementation-plan.md) and implement **page 0 only**, then stop for a manual test. Research and sources: [`docs/README.md`](./docs/README.md).
+Read [`docs/implementation-plan.md`](./docs/implementation-plan.md). Page 7 is done (`0.0.9`). Implement **page 8 only**, then stop for a manual test. Research and sources: [`docs/README.md`](./docs/README.md).
 
 The command line is only:
 
 ```text
 graycart-gba <rom> --frames <n> [--debug]
 graycart-gba <rom> --frames <n> --debug=trace
+graycart-gba <directory> --frames <n> [--debug]
 ```
 
-No `--trace`, `--disasm`, `--ppm`, or `--wav`. When a page is ready to test, print the full command. Do not make the user assemble flags.
+A directory runs every `.gba`, `.gb`, and `.gbc` in it. No `--trace`, `--disasm`, `--ppm`, or `--wav`. When a page is ready to test, print the full command. Do not make the user assemble flags.
 
-Debug text is the contract. Stderr lines start with `gba-debug:` and use `key=value`. `--debug --frames N` ends with a stdout block headed `=== graycart-gba AV report (frame=N) ===`. The audio line, including before the APU exists, is:
+Debug text is the contract. Lines start with `gba-debug:` and use `key=value`. `--debug` writes them to stderr and to `gba-debug.log` in the working directory (the file is replaced each run). A summary is every 60 frames, plus a line when boot state changes. `--debug --frames N` ends with a stdout block headed `=== graycart-gba AV report (frame=N) ===`, and that block is copied into the log. A file from `carts/` is `smoke`, never `PASS` or `FAIL`. The audio line, including before the APU exists, is:
 
 ```text
 gba-debug: apu health frame=<n> master=<0|1> pwm=<hz>Hz fifoA=<route> underrun=<a>/<b> overrun=<a>/<b> empty=<a>/<b> lag=<a>/<b> dma_req=<a>/<b> peak=[<min>..<max>] dc≈[<l>,<r>] clip=<n> extreme=<n> psg_on=0x<n> psg_nr50=0x<vv> fifoB=<route>
 ```
 
-Pass/fail for jsmolka is `gba-debug: cpu result=PASS r12=0` or `result=FAIL` with `pc` and the mnemonic. Field list and warn lines are in the implementation plan.
+Pass/fail for jsmolka is `gba-debug: cpu result=PASS r12=0 r7=<n>` or `result=FAIL` with both registers, `pc`, and the mnemonic (`thumb.gba` stores the id in `r7`). Field list and warn lines are in the implementation plan.
 
 This checkout started detached at `46607fe` (tag-side 0.1.14). The umbrella repo still records that commit until its gitlink is updated. Game Boy dumps used for smoke live in `graycart-gb/carts/` and are gitignored. A copy of those carts, plus local notes and a Gitea token, was left on the machine that did the wipe at `Projects/graycart-local-backup`. Do not commit any of that.
 
@@ -63,9 +66,10 @@ Tests: `src/<module>/tests.rs` via `#[cfg(test)] mod tests;` — not inline in p
 `Cargo.toml` `[package].version` is the only product version.
 
 - This rewrite starts at **`0.0.1`**.
-- Completed slices bump **patch** unless the change is a real 0.x **minor**.
+- One finished page, one version, then stop. Pages 0–12 bump **patch** (`0.0.2` through `0.0.14`). Page 13 (the first runnable host) is **`0.1.0`**.
+- Each bump updates `Cargo.toml` and adds a `CHANGELOG.md` entry in the same change. Page 0 creates the changelog.
 - **Do not** ship `1.0.0` until native GBA is stable, installers exist, settings migrations are trusted, save compatibility is defined, and basic cross-platform play is trusted.
-- Git tag **`vX.Y.Z` must equal** the crate version.
+- A git tag is created only when asked. If a tag exists, **`vX.Y.Z` must equal** the crate version.
 
 ## Validation
 

@@ -1,0 +1,216 @@
+//! Headless CLI. No window and no audio device.
+
+use std::env;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use graycart_gba::debug::{cpu_result_line, live_cpu_line, summary_frames, MachineDebug};
+use graycart_gba::ppu::sprite_count;
+use graycart_gba::Machine;
+
+fn main() -> ExitCode {
+    match run(&env::args().skip(1).collect::<Vec<_>>()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run(args: &[String]) -> Result<(), String> {
+    let opts = parse(args)?;
+    let carts = list_carts(&opts.path)?;
+    let frames = summary_frames(opts.frames);
+    let mut lines = Vec::new();
+    let mut reports = Vec::new();
+
+    for cart in &carts {
+        if opts.path.is_dir() {
+            let name = cart
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("?");
+            lines.push(format!(
+                "gba-debug: smoke file={name} frames={} fault=none",
+                opts.frames
+            ));
+        }
+        let bytes = fs::read(cart).map_err(|err| err.to_string())?;
+        if bytes.len() >= 0xC0 {
+            let mut machine = Machine::from_rom(bytes);
+            machine.run_frames(opts.frames);
+            let debug = MachineDebug::absent();
+            lines.extend(machine.bus.warn_lines.iter().cloned());
+            for frame in &frames {
+                let mut summary = debug.summary_lines(*frame);
+                summary[0] = live_cpu_line(
+                    *frame,
+                    machine.cpu.exec_pc,
+                    machine.cpu.cpsr(),
+                    machine.idle,
+                    machine.bus.halted,
+                    machine.bus.irq.ime(),
+                    machine.bus.irq.ie(),
+                    machine.bus.irq.iff(),
+                );
+                let mode = machine.bus.dispcnt() & 7;
+                let sprites = sprite_count(machine.bus.oam());
+                summary[1] = format!("gba-debug: ppu frame={frame} mode={mode} sprites={sprites}");
+                lines.extend(summary);
+                lines.push(machine.bus.wait_line(*frame));
+                lines.push(format!(
+                    "gba-debug: timer frame={} t0={} c0={} t1={} c1={} t2={} c2={} t3={} c3={}",
+                    frame,
+                    machine.bus.timers.counter(0),
+                    u8::from(machine.bus.timers.cascade(0)),
+                    machine.bus.timers.counter(1),
+                    u8::from(machine.bus.timers.cascade(1)),
+                    machine.bus.timers.counter(2),
+                    u8::from(machine.bus.timers.cascade(2)),
+                    machine.bus.timers.counter(3),
+                    u8::from(machine.bus.timers.cascade(3)),
+                ));
+                lines.push(format!(
+                    "gba-debug: irq frame={} ie=0x{:04X} if=0x{:04X} ime={}",
+                    frame,
+                    machine.bus.irq.ie(),
+                    machine.bus.irq.iff(),
+                    u8::from(machine.bus.irq.ime()),
+                ));
+            }
+            let op = machine
+                .error
+                .as_ref()
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| machine.cpu.last_op.to_string());
+            lines.push(cpu_result_line(
+                machine.cpu.reg(12),
+                machine.cpu.reg(7),
+                machine.cpu.exec_pc,
+                &op,
+                machine.idle,
+            ));
+            reports.push(debug.av_report_live(
+                opts.frames,
+                machine.bus.dispcnt(),
+                &machine.ppu.pixels,
+                machine.ppu.nonzero(),
+            ));
+        } else {
+            let debug = MachineDebug::absent();
+            for frame in &frames {
+                lines.extend(debug.summary_lines(*frame));
+            }
+            reports.push(debug.av_report(opts.frames));
+        }
+    }
+
+    if opts.debug {
+        let mut err = io::stderr().lock();
+        for line in &lines {
+            writeln!(err, "{line}").map_err(|err| err.to_string())?;
+        }
+        let mut log = String::new();
+        for line in &lines {
+            log.push_str(line);
+            log.push('\n');
+        }
+        for report in &reports {
+            log.push_str(report);
+        }
+        fs::write("gba-debug.log", log).map_err(|err| err.to_string())?;
+
+        let mut out = io::stdout().lock();
+        for report in &reports {
+            write!(out, "{report}").map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+struct Opts {
+    path: PathBuf,
+    frames: u32,
+    debug: bool,
+}
+
+fn parse(args: &[String]) -> Result<Opts, String> {
+    let mut path = None;
+    let mut frames = None;
+    let mut debug = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--frames" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| usage("missing --frames <n>"))?;
+            let n: u32 = value
+                .parse()
+                .map_err(|_| usage("frames must be a positive integer"))?;
+            if n == 0 {
+                return Err(usage("frames must be at least 1"));
+            }
+            frames = Some(n);
+            i += 2;
+            continue;
+        }
+        if arg == "--debug" || arg == "--debug=trace" {
+            debug = true;
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            return Err(usage(&format!("unknown flag {arg}")));
+        }
+        if path.is_some() {
+            return Err(usage("one rom or directory"));
+        }
+        path = Some(PathBuf::from(arg));
+        i += 1;
+    }
+    let path = path.ok_or_else(|| usage("missing <rom-or-directory>"))?;
+    let frames = frames.ok_or_else(|| usage("missing --frames <n>"))?;
+    Ok(Opts {
+        path,
+        frames,
+        debug,
+    })
+}
+
+fn usage(why: &str) -> String {
+    format!("{why}\ngraycart-gba <rom-or-directory> --frames <n> [--debug]")
+}
+
+fn list_carts(path: &Path) -> Result<Vec<PathBuf>, String> {
+    if !path.exists() {
+        return Err(format!("not found: {}", path.display()));
+    }
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let mut carts = Vec::new();
+    for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let file = entry.path();
+        if !file.is_file() {
+            continue;
+        }
+        let ext = file
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext == "gba" || ext == "gb" || ext == "gbc" {
+            carts.push(file);
+        }
+    }
+    carts.sort();
+    if carts.is_empty() {
+        return Err(format!("no carts in {}", path.display()));
+    }
+    Ok(carts)
+}
