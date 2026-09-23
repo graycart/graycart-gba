@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
 use crate::timer::Timers;
@@ -30,6 +31,7 @@ pub struct Bus {
     pub timers: Timers,
     pub irq: Irq,
     pub keypad: Keypad,
+    pub dma: Dma,
     /// Set by HALTCNT byte 0 or SWI 2; cleared when an enabled IRQ wakes the CPU.
     pub halted: bool,
     halt_forever_warned: bool,
@@ -62,6 +64,7 @@ impl Bus {
             timers: Timers::new(),
             irq: Irq::new(),
             keypad: Keypad::new(),
+            dma: Dma::new(),
             halted: false,
             halt_forever_warned: false,
             vblank: false,
@@ -356,10 +359,13 @@ impl Bus {
         slice_store(&mut self.io, off as usize, value, size);
     }
 
-    /// Timers, keypad, and IRQ registers. `None` means fall through to flat `io[]`.
+    /// Timers, keypad, IRQ, and DMA registers. `None` means fall through to flat `io[]`.
     fn load_io_device(&self, off: u32, size: u32) -> Option<u32> {
         if (0x100..0x110).contains(&off) {
             return Some(self.load_timer_io(off, size));
+        }
+        if Dma::covers(off, size) {
+            return Some(self.dma.load(off, size));
         }
         if covers_byte(off, size, 0x130) || covers_byte(off, size, 0x131) {
             return Some(self.load_key_io(off, size));
@@ -376,6 +382,12 @@ impl Bus {
     fn store_io_device(&mut self, off: u32, value: u32, size: u32) -> bool {
         if (0x100..0x110).contains(&off) {
             self.store_timer_io(off, value, size);
+            return true;
+        }
+        if Dma::covers(off, size) {
+            if let Some(channel) = self.dma.store(off, value, size) {
+                self.dma_on_enable(channel);
+            }
             return true;
         }
         if covers_byte(off, size, 0x130) || covers_byte(off, size, 0x131) {
@@ -401,6 +413,110 @@ impl Bus {
             return true;
         }
         false
+    }
+
+    /// Live DMA summary line for `--debug`.
+    pub fn dma_debug_line(&self, frame: u32) -> String {
+        self.dma.debug_line(frame)
+    }
+
+    /// Run channel 1 or 2 if it is armed as FIFO special.
+    pub fn request_fifo(&mut self, channel: usize) {
+        if channel != 1 && channel != 2 {
+            return;
+        }
+        if self.dma.reason(channel) != Some(StartReason::Fifo) {
+            return;
+        }
+        self.dma_fire(channel, StartReason::Fifo);
+    }
+
+    /// Fire every channel armed for VBlank (one shot per rising edge).
+    pub fn dma_on_vblank(&mut self) {
+        for channel in 0..4 {
+            if self.dma.reason(channel) == Some(StartReason::VBlank) {
+                self.dma_fire(channel, StartReason::VBlank);
+            }
+        }
+    }
+
+    /// Fire every channel armed for HBlank (one shot per rising edge).
+    pub fn dma_on_hblank(&mut self) {
+        for channel in 0..4 {
+            if self.dma.reason(channel) == Some(StartReason::HBlank) {
+                self.dma_fire(channel, StartReason::HBlank);
+            }
+        }
+    }
+
+    fn dma_on_enable(&mut self, channel: usize) {
+        if self.dma.busy {
+            return;
+        }
+        let Some(reason) = self.dma.reason(channel) else {
+            // Enable set with unsupported timing (DMA0/DMA3 special / video capture).
+            if self.dma.cnt_h(channel) & (1 << 15) != 0 {
+                self.dma.clear_enable(channel);
+            }
+            return;
+        };
+        self.dma.latch(channel);
+        if let Err(line) = dma::region_access(channel, self.dma.sad(channel), self.dma.dad(channel))
+        {
+            self.warn_lines.push(line.to_string());
+            self.dma.clear_enable(channel);
+            return;
+        }
+        match reason {
+            StartReason::Immediate => self.dma_fire(channel, StartReason::Immediate),
+            StartReason::VBlank | StartReason::HBlank | StartReason::Fifo => {}
+        }
+    }
+
+    fn dma_fire(&mut self, channel: usize, reason: StartReason) {
+        if self.dma.busy {
+            return;
+        }
+        let job = match reason {
+            StartReason::Fifo => self.dma.fifo_job(channel),
+            _ => self.dma.job(channel),
+        };
+        if let Err(line) = dma::region_access(channel, job.src, job.dst) {
+            self.warn_lines.push(line.to_string());
+            self.dma.clear_enable(channel);
+            return;
+        }
+        let width32 = job.width32;
+        self.dma.busy = true;
+        let units = self.dma_copy(&job);
+        self.dma.busy = false;
+        if let Some(mask) = self.dma.finish(channel, reason, units, width32) {
+            self.irq.raise(mask);
+        }
+    }
+
+    fn dma_copy(&mut self, job: &dma::Copy) -> u32 {
+        let this = self as *mut Bus;
+        let width32 = job.width32;
+        let mut read = |addr: u32| -> u32 {
+            // Safety: `dma.busy` blocks nested `dma_fire` / `dma_on_enable` from
+            // starting another copy, so these closures never re-enter `dma_copy`.
+            unsafe {
+                if width32 {
+                    (*this).read32(addr)
+                } else {
+                    u32::from((*this).read16(addr))
+                }
+            }
+        };
+        let mut write = |addr: u32, value: u32| unsafe {
+            if width32 {
+                (*this).write32(addr, value);
+            } else {
+                (*this).write16(addr, value as u16);
+            }
+        };
+        dma::run_copy(job, &mut read, &mut write)
     }
 
     fn load_timer_io(&self, off: u32, size: u32) -> u32 {

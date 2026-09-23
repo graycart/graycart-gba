@@ -51,7 +51,10 @@ impl Machine {
         while self.cycles < budget && !self.cpu.idle && self.error.is_none() {
             let frame_before = self.cycles / CYCLES_PER_FRAME;
 
-            if !self.bus.halted {
+            if self.bus.dma.stall > 0 {
+                self.bus.dma.stall -= 1;
+                self.cycles += 1;
+            } else if !self.bus.halted {
                 match self.cpu.step(&mut self.bus) {
                     Ok(()) => self.cycles += 1,
                     Err(err) => self.error = Some(err),
@@ -81,11 +84,20 @@ impl Machine {
             let vmatch = self.bus.vcount_match();
 
             let dispstat = self.bus.dispstat_written();
-            if self.bus.vblank && !self.prev_vblank && dispstat & (1 << 3) != 0 {
-                self.bus.irq.raise(1);
+            if self.bus.vblank && !self.prev_vblank {
+                self.bus.dma_on_vblank();
+                if dispstat & (1 << 3) != 0 {
+                    self.bus.irq.raise(1);
+                }
             }
-            if self.bus.hblank && !self.prev_hblank && dispstat & (1 << 4) != 0 {
-                self.bus.irq.raise(2);
+            if self.bus.hblank && !self.prev_hblank {
+                // HBlank DMA only on visible lines; VBlank lines still raise HBlank IRQ.
+                if self.bus.vcount < 160 {
+                    self.bus.dma_on_hblank();
+                }
+                if dispstat & (1 << 4) != 0 {
+                    self.bus.irq.raise(2);
+                }
             }
             if vmatch && !self.prev_vmatch && dispstat & (1 << 5) != 0 {
                 self.bus.irq.raise(4);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.10
+
+DMA immediate, vblank, hblank, FIFO special, DMA3 Game Pak; SRAM DMA rejected; CPU stalls for the copy.
+
 ## 0.0.9
 
 Windows, blend, and mosaic. X1>X2 follows GBATEK (empty range). Hardware wrap stays ignored.

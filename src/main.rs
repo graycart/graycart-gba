@@ -59,6 +59,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 let mode = machine.bus.dispcnt() & 7;
                 let sprites = sprite_count(machine.bus.oam());
                 summary[1] = format!("gba-debug: ppu frame={frame} mode={mode} sprites={sprites}");
+                summary[2] = machine.bus.dma_debug_line(*frame);
                 lines.extend(summary);
                 lines.push(machine.bus.wait_line(*frame));
                 lines.push(format!(
