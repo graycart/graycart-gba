@@ -73,6 +73,12 @@ pub struct Bus {
     step_pak: bool,
     /// Previous Game Pak ROM access, for N/S sequential detection.
     last_rom: Option<(u32, u32)>,
+    /// WAITCNT bit 15: cartridge-shape sense. A Game Boy shell reads as 1.
+    gb_cart_shape: bool,
+    /// Set when HALTCNT stop applies a prepared switch. ARM does not execute after this.
+    gb_mode: bool,
+    /// `0x04000800` bit 3. Disables the CGB boot ROM.
+    cgb_romdis: bool,
 }
 
 impl Bus {
@@ -122,7 +128,25 @@ impl Bus {
             step_cycles: 0,
             step_pak: false,
             last_rom: None,
+            gb_cart_shape: false,
+            gb_mode: false,
+            cgb_romdis: false,
         }
+    }
+
+    /// Cart-shape sense for WAITCNT bit 15. Software writes cannot clear it.
+    pub fn set_gb_cart_shape(&mut self, shape: bool) {
+        self.gb_cart_shape = shape;
+    }
+
+    /// True after DISPCNT bit 3 was prepared and HALTCNT stop applied it.
+    pub fn gb_mode(&self) -> bool {
+        self.gb_mode
+    }
+
+    /// True when `0x04000800` bit 3 has disabled the CGB boot ROM.
+    pub fn cgb_romdis(&self) -> bool {
+        self.cgb_romdis
     }
 
     /// Detected save kind (from ROM ID strings).
@@ -217,7 +241,12 @@ impl Bus {
 
     /// WAITCNT halfword at I/O 0x04000204.
     pub fn waitcnt(&self) -> u16 {
-        slice_load(&self.io, 0x204, 2) as u16
+        let stored = slice_load(&self.io, 0x204, 2) as u16;
+        if self.gb_cart_shape {
+            stored | 0x8000
+        } else {
+            stored & !0x8000
+        }
     }
 
     fn sync_waitcnt(&mut self) {
@@ -391,6 +420,11 @@ impl Bus {
             }
             0x04 => {
                 let off = addr & 0x00FF_FFFF;
+                if off == 0x800 {
+                    let value = u32::from(self.cgb_romdis) << 3;
+                    self.latch(value);
+                    return value;
+                }
                 if off >= IO as u32 {
                     return self.openbus(addr, size, "io");
                 }
@@ -447,6 +481,10 @@ impl Bus {
             0x03 => slice_store(&mut self.iwram, (addr & 0x7FFF) as usize, value, size),
             0x04 => {
                 let off = addr & 0x00FF_FFFF;
+                if off == 0x800 {
+                    self.cgb_romdis = value & 8 != 0;
+                    return;
+                }
                 if off >= IO as u32 {
                     return;
                 }
@@ -622,6 +660,11 @@ impl Bus {
             let shift = (7 - off) * 8;
             raw &= !(0xFFu32 << shift);
         }
+        // WAITCNT bit 15 is the cart-shape sense, not a bit software stored.
+        if self.gb_cart_shape && covers_byte(off, size, 0x205) {
+            let shift = (0x205 - off) * 8;
+            raw |= 0x80 << shift;
+        }
         raw
     }
 
@@ -643,6 +686,11 @@ impl Bus {
         if covers_byte(off, size, 7) {
             let shift = (7 - off) * 8;
             value &= !(0xFFu32 << shift);
+        }
+        // WAITCNT bit 15 is read-only (cart shape).
+        if covers_byte(off, size, 0x205) {
+            let shift = (0x205 - off) * 8;
+            value &= !(0x80 << shift);
         }
         slice_store(&mut self.io, off as usize, value, size);
         if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
@@ -703,9 +751,13 @@ impl Bus {
             self.store_irq_io(off, value, size);
             return true;
         }
-        // HALTCNT: only a byte write of 0 at 0x04000301 requests halt.
+        // HALTCNT: byte 0 halts. Byte bit 7 (stop) applies a prepared Game Boy switch.
         if off == 0x301 && size == 1 {
-            if value as u8 == 0 {
+            let byte = value as u8;
+            let prepared = self.dispcnt() & 8 != 0 && self.gb_cart_shape;
+            if byte & 0x80 != 0 && prepared {
+                self.gb_mode = true;
+            } else if byte == 0 {
                 self.halted = true;
             }
             return true;

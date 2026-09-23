@@ -6,6 +6,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use graycart_gba::compat::{
+    machine_line, run_sm83_file, CGB_AUDIO_UNIMPLEMENTED, CGB_BRIGHTNESS_UNIMPLEMENTED,
+};
 use graycart_gba::debug::{cpu_result_line, live_cpu_line, summary_frames, MachineDebug};
 use graycart_gba::ppu::sprite_count;
 use graycart_gba::Machine;
@@ -30,6 +33,28 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 
     for cart in &carts {
         let bytes = fs::read(cart).map_err(|err| err.to_string())?;
+        if is_gameboy(cart) {
+            let frames = opts.frames.unwrap_or(1);
+            let handoff = run_sm83_file(cart, frames)?;
+            if opts.path.is_dir() {
+                let name = cart
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "gba-debug: smoke file={name} frames={} fault=none",
+                    handoff.frames
+                ));
+            }
+            lines.push(machine_line("sm83", Some(&handoff)));
+            lines.push(CGB_AUDIO_UNIMPLEMENTED.to_string());
+            lines.push(CGB_BRIGHTNESS_UNIMPLEMENTED.to_string());
+            lines.push(format!(
+                "gba-debug: sm83 frames={} arm_opcodes={}",
+                handoff.frames, handoff.arm_opcodes
+            ));
+            continue;
+        }
         if bytes.len() >= 0xC0 {
             let mut machine = Machine::open(cart)?;
             if opts.debug {
@@ -59,6 +84,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                         .push("gba-debug: warn apu rom skipped".to_string());
                 }
             }
+            lines.push(machine_line("arm7", None));
+            lines.push(CGB_AUDIO_UNIMPLEMENTED.to_string());
+            lines.push(CGB_BRIGHTNESS_UNIMPLEMENTED.to_string());
             lines.extend(machine.bus.warn_lines.iter().cloned());
             lines.push(format!(
                 "gba-debug: save kind={}",
@@ -233,6 +261,17 @@ fn usage(why: &str) -> String {
         "{why}\n\
 graycart-gba <rom-or-directory> --frames <n> [--debug]\n\
 graycart-gba <rom-or-directory> --debug [--frames <n>]"
+    )
+}
+
+fn is_gameboy(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "gb" | "gbc"
     )
 }
 

@@ -24,6 +24,8 @@ pub struct Machine {
     prev_vmatch: bool,
     /// Sidecar path when opened from a file; `None` for [`Self::from_rom`].
     sidecar: Option<PathBuf>,
+    /// ARM instructions actually executed. Stays 0 after the Game Boy switch.
+    pub arm_steps: u64,
 }
 
 impl Machine {
@@ -39,6 +41,7 @@ impl Machine {
             prev_hblank: false,
             prev_vmatch: false,
             sidecar: None,
+            arm_steps: 0,
         }
     }
 
@@ -113,6 +116,10 @@ impl Machine {
             if self.cycles >= budget {
                 break DebugEnd::Capped;
             }
+            if self.bus.gb_mode() {
+                self.cycles = budget;
+                break DebugEnd::Capped;
+            }
             if self.cpu.idle {
                 break if self.passed() {
                     DebugEnd::Passed
@@ -130,6 +137,7 @@ impl Machine {
                 1
             } else if !self.bus.halted {
                 self.bus.begin_step();
+                self.arm_steps = self.arm_steps.saturating_add(1);
                 match self.cpu.step(&mut self.bus) {
                     Ok(()) => {
                         self.bus.finish_step(self.cpu.fetch_pc);

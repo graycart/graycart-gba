@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.14
+
+Game Boy carts run on the `graycart` SM83. This crate only switches: boot stays in GBA mode, WAITCNT bit 15 is the cart-shape sense, DISPCNT bit 3 prepares, a HALTCNT stop applies it, and `0x04000800` bit 3 disables the CGB boot ROM. After the switch the ARM core does not execute. A `.gb` / `.gbc` file is handed over with A=`$11` and B=`$01`. The CGB-audio disagreement and the GBA brightness ramp stay unimplemented.
+
 ## 0.0.13
 
 Real Game Pak N/S/I waitstates and the opcode prefetch buffer. The wait line reports WS0 N/S (reset 4/2), stall cycles since boot, and prefetch hits.
