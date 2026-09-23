@@ -125,6 +125,11 @@ impl Apu {
         &self.pcm
     }
 
+    /// Take queued stereo PCM for the host and clear the ring. Does not change mix math.
+    pub fn drain_pcm(&mut self) -> Vec<(i16, i16)> {
+        self.pcm.drain(..).collect()
+    }
+
     /// Advance one CPU cycle: PSG step, optional FIFO pops, optional mix.
     ///
     /// Returns whether FIFO A and/or B latched a DMA refill request this cycle.

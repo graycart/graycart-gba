@@ -4,19 +4,20 @@ How to change this emulator. Product name **Graycart**; crate **`graycart-gba`**
 
 Do the next useful thing. Do not lecture. Do not correct an example the user already understands. Do not withhold the files or the edit to invent a rule they did not ask for. Do not be fucking autistic.
 
-This tree is a **greenfield rewrite**. Crate **`0.0.14`** is page 12 (Game Boy carts through `graycart`). Page 11 (`0.0.13`) is prefetch / waitstates. Page 10 (`0.0.12`) is cartridge / saves. Page 9 (`0.0.11`) is APU. Page 8 (`0.0.10`) is DMA. Page 7 (`0.0.9`) is windows, blend, mosaic. Page 6 (`0.0.8`) is tiles and sprites. Page 5 (`0.0.7`) is the bitmap picture. Page 4 (`0.0.6`) is timers, IRQ, keypad, halt. Page 3 (`0.0.5`) is the bus. Page 2 (`0.0.4`) is Thumb. Page 1 (`0.0.3`) is ARM. Page 0 (`0.0.2`) is the debug report. Do not restore 0.1.x by copying old phases, title fixes, BIOS HLE, or the deleted `src/debug` module back in.
+This tree is a **greenfield rewrite**. Crate **`0.1.0`** is page 13 (play host: window behind `frontend`, headless `--frames` stays free of it). Page 12 (`0.0.14`) is Game Boy carts through `graycart`. Page 11 (`0.0.13`) is prefetch / waitstates. Page 10 (`0.0.12`) is cartridge / saves. Page 9 (`0.0.11`) is APU. Page 8 (`0.0.10`) is DMA. Page 7 (`0.0.9`) is windows, blend, mosaic. Page 6 (`0.0.8`) is tiles and sprites. Page 5 (`0.0.7`) is the bitmap picture. Page 4 (`0.0.6`) is timers, IRQ, keypad, halt. Page 3 (`0.0.5`) is the bus. Page 2 (`0.0.4`) is Thumb. Page 1 (`0.0.3`) is ARM. Page 0 (`0.0.2`) is the debug report. Do not restore pre-rewrite 0.1.x by copying old phases, title fixes, BIOS HLE, or the deleted `src/debug` module back in.
 
 ## Continue here
 
-Read [`docs/implementation-plan.md`](./docs/implementation-plan.md). Page 12 is done (`0.0.14`). Next work is **page 13 only**. Research and sources: [`docs/README.md`](./docs/README.md).
+Read [`docs/implementation-plan.md`](./docs/implementation-plan.md). Page 13 is done (`0.1.0`). Research and sources: [`docs/README.md`](./docs/README.md).
 
-The command line is only:
+The command line is:
 
 ```text
 graycart-gba <rom> --frames <n> [--debug]
 graycart-gba <rom> --debug [--frames <n>]
 graycart-gba <directory> --frames <n> [--debug]
 graycart-gba <directory> --debug [--frames <n>]
+graycart-gba   # with `--features frontend`: file picker, play window
 ```
 
 `--debug` stops on its own when the result is pass or fail (idle pass, idle fail, fault, halt with nothing to wake it, or a loop that repeats). The process exits non-zero on fail. `--frames` is a cap on that run, and it is required when `--debug` is absent.
@@ -50,7 +51,7 @@ If a source file references someone else's code or documentation, credit it at t
 
 ## Core vs host
 
-The **lib** is the machine. A future **binary** owns winit/wgpu/egui/cpal. Core speaks framebuffer, PCM, and button state only. Headless `--frames` must not depend on the window stack.
+The **lib** is the machine. The **binary** owns winit/wgpu/egui/cpal behind the `frontend` feature. Core speaks framebuffer, PCM, and button state only. Headless `--frames` must not depend on the window stack.
 
 - Shade to RGB and display effects live in the host only.
 - UI: no disabled "coming soon" items.

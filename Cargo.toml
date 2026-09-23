@@ -1,6 +1,6 @@
 [package]
 name = "graycart-gba"
-version = "0.0.14"
+version = "0.1.0"
 edition = "2021"
 description = "Graycart Game Boy Advance emulator"
 license = "MIT"
@@ -10,5 +10,17 @@ keywords = ["emulator", "gba", "gameboy-advance"]
 categories = ["emulators"]
 publish = false
 
+[features]
+default = []
+# Window, egui, file dialog, and audio device. Headless `--frames` stays free of these.
+frontend = ["dep:cpal", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:pixels", "dep:rfd", "dep:winit"]
+
 [dependencies]
 graycart = { path = "../graycart-gb", default-features = false }
+cpal = { version = "0.15", optional = true }
+egui = { version = "0.34", optional = true }
+egui-wgpu = { version = "0.34", optional = true }
+egui-winit = { version = "0.34", optional = true, default-features = false, features = ["links"] }
+pixels = { version = "0.17", optional = true }
+rfd = { version = "0.17", optional = true }
+winit = { version = "0.30", optional = true }

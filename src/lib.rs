@@ -10,6 +10,7 @@ pub mod compat;
 pub mod cpu;
 pub mod debug;
 pub mod dma;
+pub mod frontend;
 pub mod hw;
 pub mod input;
 pub mod irq;

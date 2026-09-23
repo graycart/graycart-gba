@@ -1,4 +1,4 @@
-//! Headless CLI. No window and no audio device.
+//! Headless CLI. Window path is feature-gated (`frontend`).
 
 use std::env;
 use std::fs;
@@ -13,6 +13,9 @@ use graycart_gba::debug::{cpu_result_line, live_cpu_line, summary_frames, Machin
 use graycart_gba::ppu::sprite_count;
 use graycart_gba::Machine;
 
+#[cfg(feature = "frontend")]
+mod play;
+
 fn main() -> ExitCode {
     match run(&env::args().skip(1).collect::<Vec<_>>()) {
         Ok(code) => code,
@@ -24,6 +27,15 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
+    #[cfg(feature = "frontend")]
+    if args.is_empty() {
+        return match play::run() {
+            Ok(()) => Ok(ExitCode::SUCCESS),
+            Err(err) if err == "no file selected" => Ok(ExitCode::SUCCESS),
+            Err(err) => Err(err),
+        };
+    }
+
     let opts = parse(args)?;
     let carts = list_carts(&opts.path)?;
     let mut lines = Vec::new();

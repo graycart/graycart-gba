@@ -13,7 +13,7 @@ The 0.1.x machine was removed from this working tree. These notes are the gate f
 
 | Doc | What it decides |
 |-----|-----------------|
-| [implementation-plan.md](./implementation-plan.md) | Pages 0–13. Page 12 is `0.0.14`. Next work is page 13. CLI and `gba-debug:` lines live here |
+| [implementation-plan.md](./implementation-plan.md) | Pages 0–13. Page 13 is `0.1.0`. CLI and `gba-debug:` lines live here |
 | [00-bring-up-order.md](./00-bring-up-order.md) | Hardware-first phases, primary docs, and the ROM or unit gate for each slice |
 | [01-sm83-reuse.md](./01-sm83-reuse.md) | GBA Game Boy mode versus the SM83 core in `graycart-gb` |
 | [02-one-host-two-machines.md](./02-one-host-two-machines.md) | One play app, two machines. Do not merge the cores |
