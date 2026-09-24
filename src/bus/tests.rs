@@ -271,8 +271,8 @@ fn rom_sequential_survives_iwram_access() {
 
 #[test]
 fn sram_access_does_not_force_rom_n_by_address_gap() {
-    // Page 11 keeps cart N/S address-based across 0x0E probes so flash ROMs
-    // stay inside the 30-frame budget (same rationale as one-cost word accesses).
+    // Cart N/S stays address-based across 0x0E probes. Flash ROMs idle inside
+    // the 60-frame harness. A 32-bit Game Pak access is N+S, not one N or S.
     let mut rom = vec![0u8; 0xC0];
     rom.extend_from_slice(b"SRAM_V");
     let mut bus = Bus::new(rom);

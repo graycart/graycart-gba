@@ -58,17 +58,24 @@ fn rom_ns(waitcnt: u16, addr: u32) -> (u32, u32) {
 
 /// ROM (WS0/WS1/WS2) access cycles for the given width.
 ///
-/// One N or one S per access (8/16/32-bit). Page 11 keeps 32-bit Game Pak on
-/// the same N/S as halfword so sequential ROM code is S (2 at reset); a split
-/// N+S / S+S word cost can return when timing suites demand it.
+/// 8/16-bit: one N or one S. 32-bit Game Pak: N+S (non-sequential) or S+S
+/// (sequential), per GBATEK. Prefetch word hits stay cost 1 in the bus charge
+/// path (`Prefetch::take_n`), not here.
 pub fn rom_cycles(waitcnt: u16, addr: u32, width: Width, sequential: bool) -> u32 {
     let (n, s) = rom_ns(waitcnt, addr);
     match width {
-        Width::Byte | Width::Half | Width::Word => {
+        Width::Byte | Width::Half => {
             if sequential {
                 s
             } else {
                 n
+            }
+        }
+        Width::Word => {
+            if sequential {
+                s.saturating_add(s)
+            } else {
+                n.saturating_add(s)
             }
         }
     }
@@ -121,8 +128,9 @@ mod tests {
 
     #[test]
     fn waitcnt0_ws0_word_n_and_s() {
-        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, false), 4);
-        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, true), 2);
+        // 32-bit Game Pak: N+S (non-seq) or S+S (seq). WAITCNT 0 → N=4 S=2.
+        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, false), 6);
+        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, true), 4);
     }
 
     #[test]

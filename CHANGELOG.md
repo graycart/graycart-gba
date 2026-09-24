@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+A 32-bit Game Pak access costs N+S (non-sequential) or S+S (sequential). Prefetch word hit still costs 1. Flash64/flash128 save ROM harness cap raised from 30 to 60 frames.
+
 ## 0.2.6
 
 DMA3 timing 3 copies on the video-capture scanline. Channels 0–2 with timing 3 still do not copy. SRAM DMA still rejected.

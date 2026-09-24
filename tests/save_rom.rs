@@ -17,7 +17,7 @@ fn run_save_rom(rel: &str, kind: &str) {
         "save kind for {}",
         path.display()
     );
-    machine.run_frames(30);
+    machine.run_frames(60);
     assert!(
         machine.idle && machine.cpu.reg(12) == 0 && machine.error.is_none(),
         "idle={} r12={} pc={:#010X} cpsr={:#010X} op={} fault={} err={:?}",

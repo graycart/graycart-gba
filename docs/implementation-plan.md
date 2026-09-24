@@ -316,7 +316,11 @@ Shipped as crate `0.2.5`. Affine objects draw; `hello.gba` hash unchanged.
 
 ## Page 20 — DMA3 video capture
 
-Shipped as crate `0.2.6`. DMA3 timing 3 copies on the video-capture scanline; channels 0–2 with timing 3 still do not copy; SRAM DMA still rejected. Continue with page 21 (`0.2.7`).
+Shipped as crate `0.2.6`. DMA3 timing 3 copies on the video-capture scanline; channels 0–2 with timing 3 still do not copy; SRAM DMA still rejected.
+
+## Page 21 — 32-bit Game Pak waitstates
+
+Shipped as crate `0.2.7`. A 32-bit Game Pak access costs N+S or S+S; prefetch word hit still costs 1. Flash64/flash128 save harness cap is 60 frames. Continue with page 22 (`0.2.8`).
 
 ## After each page
 
