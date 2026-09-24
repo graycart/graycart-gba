@@ -2,7 +2,7 @@
 
 ## 0.2.8
 
-CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read. A 32-bit DMA from unused I/O samples the CPU data latch after the enabling instruction's own load.
+CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read. A 32-bit DMA from unused I/O samples the CPU data latch after the enabling instruction's own load. An ARM instruction fetch leaves the pipeline prefetch at PC+8 in that latch, so a following unused halfword read does not replace it.
 
 ## 0.2.7
 

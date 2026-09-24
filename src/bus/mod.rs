@@ -359,7 +359,16 @@ impl Bus {
     pub fn fetch32(&mut self, addr: u32) -> u32 {
         let addr = addr & !3;
         self.charge(addr, Width::Word, Access::Fetch);
-        self.access(addr, 4, Access::Fetch)
+        let instr = self.access(addr, 4, Access::Fetch);
+        // GBATEK (Unpredictable Things): ARM open bus is the pipelined prefetch
+        // WORD = [$+8], not the opcode at PC. Instruction fetch must leave that
+        // word in the CPU MDR so unused 16-bit data reads (which do not refresh
+        // the bus) still expose [$+8] to deferred 32-bit unused-I/O DMA.
+        if addr >> 24 != 0 {
+            let pref = self.load_arm_prefetch(addr.wrapping_add(8));
+            self.latch(pref);
+        }
+        instr
     }
 
     pub fn read8(&mut self, addr: u32) -> u8 {
@@ -1354,6 +1363,20 @@ impl Bus {
             return rom_past_end(addr, size);
         }
         slice_load(&self.rom, off, size)
+    }
+
+    /// Quiet 32-bit load for ARM pipeline prefetch (no waitstates, no MDR/DMA side effects).
+    fn load_arm_prefetch(&self, addr: u32) -> u32 {
+        let addr = addr & !3;
+        match addr >> 24 {
+            0x02 => slice_load(&self.ewram, (addr & 0x3_FFFF) as usize, 4),
+            0x03 => slice_load(&self.iwram, (addr & 0x7FFF) as usize, 4),
+            0x05 => slice_load(&self.pal, (addr & 0x3FF) as usize, 4),
+            0x06 => slice_load(&self.vram, vram_off(addr), 4),
+            0x07 => slice_load(&self.oam, (addr & 0x3FC) as usize, 4),
+            0x08..=0x0D => self.load_rom(addr, 4),
+            _ => self.last_data,
+        }
     }
 
     /// Last BIOS opcode word returned for BIOS *data* reads (GBATEK prefetch latch).

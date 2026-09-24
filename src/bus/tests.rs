@@ -338,3 +338,33 @@ fn dma32_unused_io_samples_mdr_after_oam_half_read() {
         "EWRAM high byte must be OAM MDR, got {got:#010X}"
     );
 }
+
+#[test]
+fn dma32_unused_io_keeps_arm_prefetch_after_unused_half_read() {
+    // alyosha Bus/Unused_location_update_bus + GBATEK: 16-bit unused reads do not
+    // refresh the CPU bus; deferred 32-bit unused-I/O DMA must still copy ARM [$+8].
+    let mut rom = vec![0u8; 0x220];
+    // Opcode at PC (would be wrong if latched): ldrh encoding 0xE1D500B0
+    rom[0x208..0x20C].copy_from_slice(&0xE1D5_00B0u32.to_le_bytes());
+    // Prefetch at PC+8: mov r6,#16 → 0xE3A06010 (high byte 0xA0)
+    rom[0x210..0x214].copy_from_slice(&0xE3A0_6010u32.to_le_bytes());
+    let mut bus = Bus::new(rom);
+
+    bus.write32(0x0400_00BC, 0x0400_1000); // DMA1 SAD unused I/O
+    bus.write32(0x0400_00C0, 0x0200_0000); // DMA1 DAD EWRAM
+    bus.write32(0x0400_00C4, 0x8500_0001); // 32-bit unused-I/O: deferred
+
+    let _ = bus.fetch32(0x0800_0208); // MDR ← [PC+8] = 0xE3A06010
+    let _ = bus.read16(0x0001_0000); // unused half: must not refresh MDR; fires DMA
+
+    let got = bus.read32(0x0200_0000);
+    assert_eq!(
+        (got >> 16) & 0xFF,
+        0xA0,
+        "DMA must copy ARM prefetch high byte, got {got:#010X}"
+    );
+    assert_ne!(
+        got, 0xE1D5_00B0,
+        "must not copy the fetched ldrh opcode at PC"
+    );
+}
