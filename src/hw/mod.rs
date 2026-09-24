@@ -276,6 +276,10 @@ impl Machine {
                 if self.bus.vcount < 160 {
                     self.bus.dma_on_hblank();
                 }
+                // DMA3 video capture: GBATEK starts at VCOUNT=2, last line is 161.
+                if (2..=161).contains(&self.bus.vcount) {
+                    self.bus.dma_on_video_capture();
+                }
                 if dispstat & (1 << 4) != 0 {
                     self.bus.irq.raise(2);
                 }

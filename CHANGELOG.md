@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+DMA3 timing 3 copies on the video-capture scanline. Channels 0–2 with timing 3 still do not copy. SRAM DMA still rejected.
+
 ## 0.2.5
 
 Affine objects draw. `hello.gba` hash unchanged.

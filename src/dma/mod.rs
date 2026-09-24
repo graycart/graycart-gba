@@ -340,6 +340,7 @@ fn reason_name(reason: Reason) -> &'static str {
         Reason::VBlank => "vblank",
         Reason::HBlank => "hblank",
         Reason::Fifo => "fifo",
+        Reason::VideoCapture => "video",
     }
 }
 

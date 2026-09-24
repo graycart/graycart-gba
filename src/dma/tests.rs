@@ -26,6 +26,14 @@ fn enable_fifo_repeat() -> u16 {
     (1 << 15) | (3 << 12) | (1 << 9)
 }
 
+fn enable_video_capture() -> u16 {
+    (1 << 15) | (3 << 12)
+}
+
+fn enable_video_capture_repeat() -> u16 {
+    (1 << 15) | (3 << 12) | (1 << 9)
+}
+
 fn write_channel(bus: &mut Bus, base: u32, src: u32, dst: u32, count: u16, cnt_h: u16) {
     bus.write32(base, src);
     bus.write32(base + 4, dst);
@@ -266,6 +274,122 @@ fn unsupported_special_timing_clears_enable() {
     );
     assert_eq!(bus.read16(DMA0 + 10) & (1 << 15), 0);
     assert_eq!(bus.read32(IWRAM + 0x100), 0);
+}
+
+#[test]
+fn dma3_video_capture_skips_0_1_copies_at_2_repeat_keeps_enable() {
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.bus.write32(IWRAM, 0xDEAD_F00D);
+    write_channel(
+        &mut machine.bus,
+        DMA3,
+        IWRAM,
+        IWRAM + 0xB00,
+        1,
+        enable_video_capture_repeat() | (1 << 10),
+    );
+    assert_eq!(machine.bus.read32(IWRAM + 0xB00), 0);
+    assert_ne!(machine.bus.read16(DMA3 + 10) & (1 << 15), 0);
+
+    // VCOUNT 0 HBlank: no copy.
+    machine.run_cycles(HBLANK_START - machine.cycles);
+    assert_eq!(machine.bus.vcount, 0);
+    assert_eq!(machine.bus.read32(IWRAM + 0xB00), 0);
+
+    // VCOUNT 1 HBlank: still no copy.
+    machine.run_cycles(CYCLES_PER_LINE + HBLANK_START - machine.cycles);
+    assert_eq!(machine.bus.vcount, 1);
+    assert_eq!(machine.bus.read32(IWRAM + 0xB00), 0);
+    assert_ne!(machine.bus.read16(DMA3 + 10) & (1 << 15), 0);
+
+    // VCOUNT 2 HBlank: first capture.
+    machine.run_cycles(2 * CYCLES_PER_LINE + HBLANK_START - machine.cycles);
+    assert_eq!(machine.bus.vcount, 2);
+    assert_eq!(machine.bus.read32(IWRAM + 0xB00), 0xDEAD_F00D);
+    assert_ne!(
+        machine.bus.read16(DMA3 + 10) & (1 << 15),
+        0,
+        "repeat leaves enable set"
+    );
+}
+
+#[test]
+fn dma3_video_capture_oneshot_clears_enable_after_line_2() {
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.bus.write32(IWRAM, 0xCAFE_BABE);
+    write_channel(
+        &mut machine.bus,
+        DMA3,
+        IWRAM,
+        IWRAM + 0xA00,
+        1,
+        enable_video_capture() | (1 << 10),
+    );
+    assert_eq!(machine.bus.read32(IWRAM + 0xA00), 0);
+    assert_ne!(machine.bus.read16(DMA3 + 10) & (1 << 15), 0);
+
+    machine.run_cycles(2 * CYCLES_PER_LINE + HBLANK_START - machine.cycles);
+    assert_eq!(machine.bus.vcount, 2);
+    assert_eq!(machine.bus.read32(IWRAM + 0xA00), 0xCAFE_BABE);
+    assert_eq!(
+        machine.bus.read16(DMA3 + 10) & (1 << 15),
+        0,
+        "one-shot video capture clears enable after a copy that runs"
+    );
+}
+
+#[test]
+fn dma3_video_capture_does_not_copy_at_vcount_162() {
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    // Arm after entering line 162 so earlier capture lines never see the channel.
+    machine.run_cycles(162 * CYCLES_PER_LINE);
+    assert_eq!(machine.bus.vcount, 162);
+
+    machine.bus.write32(IWRAM, 0xABCD_EF01);
+    write_channel(
+        &mut machine.bus,
+        DMA3,
+        IWRAM,
+        IWRAM + 0xD00,
+        1,
+        enable_video_capture_repeat() | (1 << 10),
+    );
+    assert_eq!(machine.bus.read32(IWRAM + 0xD00), 0);
+
+    machine.run_cycles(HBLANK_START);
+    assert_eq!(machine.bus.vcount, 162);
+    assert_eq!(
+        machine.bus.read32(IWRAM + 0xD00),
+        0,
+        "video capture must not copy when VCOUNT is 162"
+    );
+    assert_ne!(
+        machine.bus.read16(DMA3 + 10) & (1 << 15),
+        0,
+        "channel stays armed when the edge is outside the window"
+    );
+}
+
+#[test]
+fn dma0_timing3_still_does_not_copy() {
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.bus.write32(IWRAM, 0x1122_3344);
+    write_channel(
+        &mut machine.bus,
+        DMA0,
+        IWRAM,
+        IWRAM + 0xC00,
+        1,
+        enable_video_capture() | (1 << 10),
+    );
+    assert_eq!(machine.bus.read16(DMA0 + 10) & (1 << 15), 0);
+
+    machine.run_cycles(2 * CYCLES_PER_LINE + HBLANK_START - machine.cycles);
+    assert_eq!(
+        machine.bus.read32(IWRAM + 0xC00),
+        0,
+        "DMA0 timing 3 must not copy"
+    );
 }
 
 #[test]

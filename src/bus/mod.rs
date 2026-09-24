@@ -990,12 +990,21 @@ impl Bus {
         }
     }
 
+    /// Fire DMA3 when armed for video capture (timing 3) on an in-window HBlank edge.
+    ///
+    /// Caller must only invoke this for VCOUNT 2..=161 (GBATEK video-capture window).
+    pub fn dma_on_video_capture(&mut self) {
+        if self.dma.reason(3) == Some(StartReason::VideoCapture) {
+            self.dma_fire(3, StartReason::VideoCapture);
+        }
+    }
+
     fn dma_on_enable(&mut self, channel: usize) {
         if self.dma.busy {
             return;
         }
         let Some(reason) = self.dma.reason(channel) else {
-            // Enable set with unsupported timing (DMA0/DMA3 special / video capture).
+            // Enable set with unsupported timing (DMA0 special).
             if self.dma.cnt_h(channel) & (1 << 15) != 0 {
                 self.dma.clear_enable(channel);
             }
@@ -1010,7 +1019,10 @@ impl Bus {
         }
         match reason {
             StartReason::Immediate => self.dma_fire(channel, StartReason::Immediate),
-            StartReason::VBlank | StartReason::HBlank | StartReason::Fifo => {}
+            StartReason::VBlank
+            | StartReason::HBlank
+            | StartReason::Fifo
+            | StartReason::VideoCapture => {}
         }
     }
 

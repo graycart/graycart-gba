@@ -13,9 +13,11 @@ pub enum Reason {
     VBlank,
     HBlank,
     Fifo,
+    /// DMA3 start timing 3: video capture (HBlank edges while VCOUNT is 2..=161).
+    VideoCapture,
 }
 
-/// None when enable is clear, or when timing is special on a channel other than 1 or 2.
+/// None when enable is clear, or when timing is special on channel 0.
 pub fn reason(channel: usize, cnt_h: u16) -> Option<Reason> {
     if cnt_h & (1 << 15) == 0 {
         return None;
@@ -25,6 +27,7 @@ pub fn reason(channel: usize, cnt_h: u16) -> Option<Reason> {
         1 => Some(Reason::VBlank),
         2 => Some(Reason::HBlank),
         3 if channel == 1 || channel == 2 => Some(Reason::Fifo),
+        3 if channel == 3 => Some(Reason::VideoCapture),
         _ => None,
     }
 }
@@ -83,12 +86,12 @@ mod tests {
     }
 
     #[test]
-    fn special_timing_fifo_only_ch1_ch2() {
+    fn special_timing_fifo_ch1_ch2_video_ch3() {
         let enable_special = (1u16 << 15) | (3 << 12);
         assert_eq!(reason(1, enable_special), Some(Reason::Fifo));
         assert_eq!(reason(2, enable_special), Some(Reason::Fifo));
         assert_eq!(reason(0, enable_special), None);
-        assert_eq!(reason(3, enable_special), None);
+        assert_eq!(reason(3, enable_special), Some(Reason::VideoCapture));
     }
 
     #[test]

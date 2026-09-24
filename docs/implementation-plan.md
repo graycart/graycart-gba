@@ -312,7 +312,11 @@ Shipped as crate `0.2.4`. BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, S
 
 ## Page 19 — Affine objects
 
-Shipped as crate `0.2.5`. Affine objects draw; `hello.gba` hash unchanged. Continue with page 20 (`0.2.6`).
+Shipped as crate `0.2.5`. Affine objects draw; `hello.gba` hash unchanged.
+
+## Page 20 — DMA3 video capture
+
+Shipped as crate `0.2.6`. DMA3 timing 3 copies on the video-capture scanline; channels 0–2 with timing 3 still do not copy; SRAM DMA still rejected. Continue with page 21 (`0.2.7`).
 
 ## After each page
 
