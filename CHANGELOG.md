@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, SoftReset, and RegisterRamReset. Music and multiboot SWIs warn and return.
+
 ## 0.2.3
 
 BIOS LZ77, Huffman, RLE, and diff filters.

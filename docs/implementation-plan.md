@@ -304,7 +304,11 @@ Shipped as crate `0.2.2`. BIOS CpuSet / CpuFastSet copy and fill.
 
 ## Page 17 — Decompress
 
-Shipped as crate `0.2.3`. BIOS LZ77, Huffman, RLE, and diff filters (WRAM and VRAM widths). Continue with page 18 (`0.2.4`).
+Shipped as crate `0.2.3`. BIOS LZ77, Huffman, RLE, and diff filters (WRAM and VRAM widths).
+
+## Page 18 — Math and affine SWIs
+
+Shipped as crate `0.2.4`. BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, SoftReset, and RegisterRamReset. Music and multiboot SWIs warn and return. Continue with page 19 (`0.2.5`).
 
 ## After each page
 

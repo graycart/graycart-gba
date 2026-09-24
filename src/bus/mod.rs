@@ -60,6 +60,9 @@ pub struct Bus {
     pub warn_lines: Vec<String>,
     openbus_logged: HashSet<u32>,
     sio_warned: bool,
+    /// Bitmask of SWI numbers that already emitted a once-per-run warn line.
+    #[serde(default)]
+    swi_warned: u64,
     /// WS0 N/S and related costs mirrored from WAITCNT for the debug wait line.
     pub wait_rom_n: u32,
     pub wait_rom_s: u32,
@@ -123,6 +126,7 @@ impl Bus {
             warn_lines: Vec::new(),
             openbus_logged: HashSet::new(),
             sio_warned: false,
+            swi_warned: 0,
             // WAITCNT reset is 0 → WS0 N=4, S=2, I=1, SRAM=4.
             wait_rom_n: 4,
             wait_rom_s: 2,
@@ -217,6 +221,17 @@ impl Bus {
         self.halt_forever_warned = true;
         self.warn_lines
             .push("gba-debug: warn halt forever".to_string());
+    }
+
+    /// Once per SWI number per machine: music / unsupported HLE stubs.
+    pub fn warn_swi_once(&mut self, number: u32, kind: &str) {
+        let bit = 1u64 << (number & 63);
+        if self.swi_warned & bit != 0 {
+            return;
+        }
+        self.swi_warned |= bit;
+        self.warn_lines
+            .push(format!("gba-debug: warn swi {kind} n={number:x}"));
     }
 
     pub fn wait_line(&self, frame: u32, stall: u64) -> String {

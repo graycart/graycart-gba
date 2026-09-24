@@ -362,6 +362,14 @@ impl Cpu {
             self.last_op = "swi";
             return;
         }
+        if number == 0x00 {
+            let target = crate::bios::soft_reset(bus);
+            self.write_cpsr(0x1F, 0xFFFF_FFFF);
+            self.fetch_pc = target;
+            self.exec_pc = target;
+            self.last_op = "swi";
+            return;
+        }
         if number == 0x06 {
             let numerator = self.gpr[0] as i32;
             let denominator = self.gpr[1] as i32;
@@ -372,14 +380,34 @@ impl Cpu {
                 self.gpr[1] = rem as u32;
                 self.gpr[3] = quot.unsigned_abs();
             }
+        } else if number == 0x07 {
+            let denominator = self.gpr[0] as i32;
+            let numerator = self.gpr[1] as i32;
+            if denominator != 0 {
+                let quot = numerator.wrapping_div(denominator);
+                let rem = numerator.wrapping_rem(denominator);
+                self.gpr[0] = quot as u32;
+                self.gpr[1] = rem as u32;
+                self.gpr[3] = quot.unsigned_abs();
+            }
         } else if number == 0x08 {
-            // Sqrt: jsmolka bios.gba only checks the prefetch latch, not the root.
-            // r0 == 0 may stay 0.
+            self.gpr[0] = crate::bios::sqrt_u32(self.gpr[0]);
             bus.set_bios_prefetch(LATCH_AFTER_SQRT);
+        } else if number == 0x09 {
+            self.gpr[0] = crate::bios::arctan(self.gpr[0] as i32) as u32;
+        } else if number == 0x0A {
+            self.gpr[0] =
+                crate::bios::arctan2(self.gpr[0] as i32, self.gpr[1] as i32) as u16 as u32;
         } else if number == 0x0B {
             crate::bios::cpu_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
         } else if number == 0x0C {
             crate::bios::cpu_fast_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
+        } else if number == 0x0E {
+            crate::bios::bg_affine_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
+        } else if number == 0x0F {
+            crate::bios::obj_affine_set(bus, self.gpr[0], self.gpr[1], self.gpr[2], self.gpr[3]);
+        } else if number == 0x10 {
+            crate::bios::bit_unpack(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
         } else if number == 0x11 {
             crate::bios::lz77_wram(bus, self.gpr[0], self.gpr[1]);
         } else if number == 0x12 {
@@ -396,6 +424,14 @@ impl Cpu {
             crate::bios::diff8_vram(bus, self.gpr[0], self.gpr[1]);
         } else if number == 0x18 {
             crate::bios::diff16(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x19 {
+            crate::bios::sound_bias(bus, self.gpr[0] as u16);
+        } else if number == 0x01 {
+            crate::bios::register_ram_reset(bus, self.gpr[0]);
+        } else if matches!(number, 0x1A..=0x1F | 0x27..=0x29) {
+            crate::bios::warn_swi(bus, "music unimplemented", number);
+        } else if number == 0x25 || number == 0x26 {
+            crate::bios::warn_swi(bus, "unsupported", number);
         }
         self.finish_swi_return();
         self.last_op = "swi";
