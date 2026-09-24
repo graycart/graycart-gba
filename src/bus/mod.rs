@@ -128,6 +128,12 @@ pub struct Bus {
     /// priority DMA waits until the write completes (GBATEK channel priority).
     #[serde(skip)]
     dma_write_cycle: bool,
+    /// 1 = source beat, 2 = destination beat.
+    #[serde(skip)]
+    dma_beat: u8,
+    /// Unit currently running is the channel's last one.
+    #[serde(skip)]
+    dma_last_unit: bool,
     /// HBlank DMA armed while `dma_write_cycle` — run after the pending write.
     #[serde(skip)]
     dma_hblank_deferred: bool,
@@ -207,6 +213,8 @@ impl Bus {
             dma_cycles_paid: 0,
             dma_active: None,
             dma_write_cycle: false,
+            dma_beat: 0,
+            dma_last_unit: false,
             dma_hblank_deferred: false,
             dma_hblank_from_write: false,
             dma_hblank_defer_abs: 0,
@@ -1205,6 +1213,18 @@ impl Bus {
     pub fn dma_on_hblank(&mut self) {
         // ares: finish the active unit before a higher-priority read.
         if self.dma_write_cycle {
+            // Destination beat of a unit that still has another after it: the
+            // higher channel reads the timer on this edge, before the beat's tick.
+            // The last unit keeps the deferred write so its startup still runs.
+            if self.dma_beat == 2 && self.dma_unit_written && !self.dma_last_unit {
+                self.dma_hblank_from_write = false;
+                for channel in 0..4 {
+                    if self.dma.reason(channel) == Some(StartReason::HBlank) {
+                        self.dma_fire(channel, StartReason::HBlank);
+                    }
+                }
+                return;
+            }
             self.dma_hblank_deferred = true;
             self.dma_hblank_from_write = true;
             self.dma_hblank_defer_abs = self.dma_abs();
@@ -1395,12 +1415,15 @@ impl Bus {
             self.dma_hblank_from_write = false;
         }
         for unit in 0..job.units {
+            self.dma_last_unit = unit + 1 == job.units;
             self.dma_drain_hblank();
             let value = self.dma_read_unit(src, width32);
             self.dma_write_cycle = true;
+            self.dma_beat = 1;
             for _ in 0..self.dma_access_ticks(src, width) {
                 self.dma_phase_tick();
             }
+            self.dma_beat = 2;
             let stored = if width32 { value } else { value & 0xffff };
             // ares setDMA: waitstates then write.
             for _ in 0..self.dma_access_ticks(dst, width) {
@@ -1413,6 +1436,18 @@ impl Bus {
             dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
             // Idle between units before a preempted channel reads.
             if unit + 1 < job.units {
+                // Next unit is not the last, and its source beat is the HBlank
+                // edge: read the higher channel before this idle increments the timer.
+                let next_src = self.dma_abs().wrapping_add(2);
+                if unit + 2 < job.units && next_src % 1232 == 960 {
+                    self.dma_hblank_from_write = false;
+                    for channel in 0..4 {
+                        if self.dma.reason(channel) == Some(StartReason::HBlank) {
+                            self.dma_fire(channel, StartReason::HBlank);
+                        }
+                    }
+                    self.hblank = true;
+                }
                 self.dma_phase_tick();
             }
             self.dma_drain_hblank();
