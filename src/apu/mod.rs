@@ -113,8 +113,8 @@ impl Apu {
         if value & (1 << 15) != 0 {
             self.fifo_b.reset();
         }
-        // Bits 11 / 15 are write-only FIFO resets.
-        self.cnt_h = value & !((1 << 11) | (1 << 15));
+        // Bits 4-7 are unused. Bits 11 and 15 are write-only FIFO resets.
+        self.cnt_h = value & 0x770F;
     }
 
     pub fn set_bias(&mut self, value: u16) {

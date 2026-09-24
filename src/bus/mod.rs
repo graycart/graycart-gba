@@ -1165,6 +1165,11 @@ impl Bus {
             _ => {}
         }
 
+        if covers_byte(off, size, 0x80) || covers_byte(off, size, 0x82) {
+            slice_store(&mut self.io, 0x80, u32::from(self.apu.cnt_l()), 2);
+            slice_store(&mut self.io, 0x82, u32::from(self.apu.cnt_h()), 2);
+        }
+
         // FIFO A: 0xA0..=0xA3, FIFO B: 0xA4..=0xA7. 8/16/32-bit stores push bytes
         // (low byte first). A full word at A0/A4 uses the atomic 4-byte push.
         if size == 4 && off == 0xA0 {
