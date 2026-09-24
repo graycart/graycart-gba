@@ -1453,7 +1453,8 @@ impl Bus {
             src = dma_step_addr(src, job.src_ctrl, unit_size);
             dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
             // Idle between units before a preempted channel reads.
-            if unit + 1 < job.units {
+            // EWRAM's access beats already include that turnaround.
+            if unit + 1 < job.units && (dst >> 24) != 0x02 {
                 // Next unit is not the last, and its source beat is the HBlank
                 // edge: read the higher channel before this idle increments the timer.
                 let next_src = self.dma_abs().wrapping_add(2);
