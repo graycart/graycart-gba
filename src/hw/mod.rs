@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::bus::Bus;
-use crate::cart::{parse_header, read_sidecar, sidecar_path, write_sidecar, SaveKind};
+use crate::cart::{SaveKind, parse_header, read_sidecar, sidecar_path, write_sidecar};
 use crate::cpu::{Cpu, StepError};
 use crate::ppu::Ppu;
 
@@ -25,6 +25,21 @@ pub struct Machine {
     /// Sidecar path when opened from a file; `None` for [`Self::from_rom`].
     sidecar: Option<PathBuf>,
     /// ARM instructions actually executed. Stays 0 after the Game Boy switch.
+    pub arm_steps: u64,
+}
+
+/// In-memory / slot snapshot of an ARM machine (ROM bytes omitted; restore keeps the live ROM).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArmMachineState {
+    pub cpu: Cpu,
+    pub bus: Bus,
+    pub ppu: Ppu,
+    pub cycles: u64,
+    pub idle: bool,
+    pub error: Option<StepError>,
+    prev_vblank: bool,
+    prev_hblank: bool,
+    prev_vmatch: bool,
     pub arm_steps: u64,
 }
 
@@ -60,18 +75,64 @@ impl Machine {
         Ok(machine)
     }
 
-    /// Write the save chip to the sidecar (no-op when kind is none or no path).
-    pub fn flush_save(&self) -> Result<(), String> {
-        let Some(path) = &self.sidecar else {
+    /// Sidecar path when opened from a file; `None` for [`Self::from_rom`].
+    pub fn sidecar_path(&self) -> Option<&Path> {
+        self.sidecar.as_deref()
+    }
+
+    /// Write the save chip to the sidecar (no-op when kind is none, no path, or clean).
+    pub fn flush_save(&mut self) -> Result<(), String> {
+        let Some(path) = self.sidecar.clone() else {
             return Ok(());
         };
         if self.bus.save_kind() == SaveKind::None {
             return Ok(());
         }
+        if !self.bus.save_dirty() {
+            return Ok(());
+        }
         let Some(bytes) = self.bus.save_bytes() else {
             return Ok(());
         };
-        write_sidecar(path, bytes)
+        write_sidecar(&path, bytes)?;
+        self.bus.clear_save_dirty();
+        Ok(())
+    }
+
+    /// Capture RAM / CPU / PPU state for rewind and save slots. ROM is cleared in the snapshot.
+    pub fn capture_state(&self) -> ArmMachineState {
+        let mut bus = self.bus.clone();
+        bus.rom.clear();
+        ArmMachineState {
+            cpu: self.cpu.clone(),
+            bus,
+            ppu: self.ppu.clone(),
+            cycles: self.cycles,
+            idle: self.idle,
+            error: self.error.clone(),
+            prev_vblank: self.prev_vblank,
+            prev_hblank: self.prev_hblank,
+            prev_vmatch: self.prev_vmatch,
+            arm_steps: self.arm_steps,
+        }
+    }
+
+    /// Restore a snapshot captured by [`Self::capture_state`], keeping the live ROM image
+    /// and the open sidecar path.
+    pub fn restore_state(&mut self, state: &ArmMachineState) {
+        let rom = std::mem::take(&mut self.bus.rom);
+        self.cpu = state.cpu.clone();
+        self.bus = state.bus.clone();
+        self.bus.rom = rom;
+        self.ppu = state.ppu.clone();
+        self.cycles = state.cycles;
+        self.idle = state.idle;
+        self.error = state.error.clone();
+        self.prev_vblank = state.prev_vblank;
+        self.prev_hblank = state.prev_hblank;
+        self.prev_vmatch = state.prev_vmatch;
+        self.arm_steps = state.arm_steps;
+        self.bus.mark_save_dirty();
     }
 
     pub fn run_frames(&mut self, frames: u32) {
@@ -143,12 +204,10 @@ impl Machine {
                         self.bus.finish_step(self.cpu.fetch_pc);
                         let n = self.bus.take_step_cycles();
                         self.idle = self.cpu.idle;
-                        if watch {
-                            if let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
-                                // Still advance the charged cycles so VCOUNT moves.
-                                let _ = self.advance_cycles(n);
-                                break end;
-                            }
+                        if watch && let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
+                            // Still advance the charged cycles so VCOUNT moves.
+                            let _ = self.advance_cycles(n);
+                            break end;
                         }
                         n
                     }

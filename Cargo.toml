@@ -1,7 +1,7 @@
 [package]
 name = "graycart-gba"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 description = "Graycart Game Boy Advance emulator"
 license = "MIT"
 repository = "https://github.com/graycart/graycart-gba"
@@ -12,15 +12,63 @@ publish = false
 
 [features]
 default = []
-# Window, egui, file dialog, and audio device. Headless `--frames` stays free of these.
-frontend = ["dep:cpal", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:pixels", "dep:rfd", "dep:winit"]
+# Window, egui, file dialog, audio device, and gamepad. Headless `--frames` stays free of these.
+frontend = [
+    "dep:arboard",
+    "dep:cpal",
+    "dep:egui",
+    "dep:egui-wgpu",
+    "dep:egui-winit",
+    "dep:gilrs",
+    "dep:open",
+    "dep:pixels",
+    "dep:png",
+    "dep:pollster",
+    "dep:rfd",
+    "dep:rtrb",
+    "dep:ureq",
+    "dep:winit",
+    "windows",
+    "core-foundation-sys",
+    "coreaudio-sys",
+]
 
 [dependencies]
 graycart = { path = "../graycart-gb", default-features = false }
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crc32fast = "1"
+sha2 = "0.10"
+postcard = { version = "1", features = ["alloc"] }
+arboard = { version = "3", optional = true }
 cpal = { version = "0.15", optional = true }
 egui = { version = "0.34", optional = true }
 egui-wgpu = { version = "0.34", optional = true }
 egui-winit = { version = "0.34", optional = true, default-features = false, features = ["links"] }
+gilrs = { version = "0.11", optional = true }
+open = { version = "5", optional = true }
 pixels = { version = "0.17", optional = true }
+png = { version = "0.17", optional = true }
+pollster = { version = "0.4", optional = true }
 rfd = { version = "0.17", optional = true }
+rtrb = { version = "0.3", optional = true }
+ureq = { version = "2.12", optional = true, features = ["json"] }
 winit = { version = "0.30", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", optional = true, features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = { version = "0.8", optional = true }
+coreaudio-sys = { version = "0.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

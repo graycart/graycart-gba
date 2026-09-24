@@ -28,22 +28,22 @@ pub fn choose_output(
     named_fallback: &str,
     enumerated: &[&str],
 ) -> AudioOutputChoice {
-    if let Some(name) = chosen {
-        if enumerated_contains(enumerated, name) {
-            return AudioOutputChoice::Device {
-                name: name.to_string(),
-                source: AudioDeviceSource::Chosen,
-            };
-        }
+    if let Some(name) = chosen
+        && enumerated_contains(enumerated, name)
+    {
+        return AudioOutputChoice::Device {
+            name: name.to_string(),
+            source: AudioDeviceSource::Chosen,
+        };
     }
 
-    if let Some(name) = os_default {
-        if enumerated_contains(enumerated, name) {
-            return AudioOutputChoice::Device {
-                name: name.to_string(),
-                source: AudioDeviceSource::OsDefault,
-            };
-        }
+    if let Some(name) = os_default
+        && enumerated_contains(enumerated, name)
+    {
+        return AudioOutputChoice::Device {
+            name: name.to_string(),
+            source: AudioDeviceSource::OsDefault,
+        };
     }
 
     if enumerated_contains(enumerated, named_fallback) {

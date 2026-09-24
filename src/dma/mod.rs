@@ -10,8 +10,8 @@ mod timing;
 #[cfg(test)]
 mod tests;
 
-use immediate::copy_units;
 pub(crate) use immediate::Copy;
+use immediate::copy_units;
 use timing::Reason;
 
 const CHANNELS: usize = 4;
@@ -19,7 +19,7 @@ const REG_BASE: u32 = 0xB0;
 const REG_END: u32 = 0xB0 + (CHANNELS as u32) * 12;
 
 /// Four DMA channels and the CPU stall counter for in-flight copies.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Dma {
     channels: [Channel; CHANNELS],
     /// Cycles the CPU must wait after a successful copy (one per unit).
@@ -29,14 +29,14 @@ pub struct Dma {
     last: Option<LastTransfer>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct LastTransfer {
     channel: u8,
     words: u32,
     reason: Reason,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Channel {
     sad: u32,
     dad: u32,

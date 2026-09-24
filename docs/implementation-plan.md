@@ -290,6 +290,10 @@ Check the open Cargo question before the dependency lands: `graycart`’s packag
 
 **Done:** both paths show a frame in the window and the headless command still works. Version `0.1.0`.
 
+## Page 14 — Same shell as graycart-gb
+
+Shipped as crate `0.2.0`. The play window is the Game Boy shell (File, Emulation, Video, Input, Audio, Help, Debug). See `docs/superpowers/plans/2026-09-23-complete-emulator.md`. Continue with page 15 (`0.2.1`).
+
 ## After each page
 
 Same three commands, from `graycart-gba/`:

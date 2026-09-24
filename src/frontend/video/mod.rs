@@ -1,6 +1,6 @@
 //! Host-side framebuffer → RGBA8888 (no window / GPU).
 
-use graycart::{Framebuffer, Shade, SCREEN_HEIGHT, SCREEN_WIDTH};
+use graycart::{Framebuffer, SCREEN_HEIGHT, SCREEN_WIDTH, Shade};
 
 const GBA_WIDTH: usize = 240;
 const GBA_HEIGHT: usize = 160;

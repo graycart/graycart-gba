@@ -7,7 +7,7 @@ mod tests;
 
 const PRESCALE: [u32; 4] = [1, 64, 256, 1024];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Timer {
     /// Value written to TMxCNT_L; loaded into `counter` on start edge or overflow.
     reload: u16,
@@ -43,7 +43,7 @@ impl Timer {
 }
 
 /// GBA timers 0–3 (I/O base 0x04000100).
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Timers {
     timers: [Timer; 4],
 }

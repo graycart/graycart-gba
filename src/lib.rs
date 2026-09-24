@@ -15,12 +15,14 @@ pub mod hw;
 pub mod input;
 pub mod irq;
 pub mod ppu;
+pub mod snapshot;
 pub mod timer;
 pub mod timing;
 
 pub use bus::Bus;
 pub use cpu::{Cpu, StepError};
 pub use debug::{
-    cpu_result_line, format_trace_line, frame_hash, frame_nonzero, live_cpu_line, MachineDebug,
+    MachineDebug, cpu_result_line, format_trace_line, frame_hash, frame_nonzero, live_cpu_line,
 };
-pub use hw::Machine;
+pub use hw::{ArmMachineState, Machine};
+pub use snapshot::{Gas1Error, Gas1Metadata, decode_gas1, encode_gas1};

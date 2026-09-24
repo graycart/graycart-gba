@@ -8,7 +8,7 @@
 /// Tracks which halfword addresses were filled during CPU idle bus time.
 /// Does not read ROM; the caller still performs the bus access. This type
 /// only answers whether a sequential opcode fetch was already prefetched.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Prefetch {
     enabled: bool,
     /// FIFO of filled halfword addresses (oldest at index 0).

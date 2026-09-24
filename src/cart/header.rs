@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 const HEADER_MIN: usize = 0xC0;
 
 /// Save type inferred from Nintendo's ASCII ID strings in the ROM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SaveKind {
     None,
     Sram,
@@ -101,9 +101,50 @@ pub fn read_sidecar(path: &Path) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Write save-sidecar bytes.
+/// Write save-sidecar bytes atomically: temp file in the same directory, then
+/// rename over the destination. A failed write or rename leaves any previous
+/// `.sav` intact.
 pub fn write_sidecar(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|e| e.to_string())
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("save.sav");
+    let tmp = parent.join(format!("{file_name}.tmp"));
+    let bak = parent.join(format!("{file_name}.bak"));
+
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+
+    // Prefer a direct rename (atomic replace on Unix). On Windows, rename fails
+    // when the destination exists — move the old file aside, then rename.
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            let _ = std::fs::remove_file(&bak);
+            if let Err(e) = std::fs::rename(path, &bak) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.to_string());
+            }
+            match std::fs::rename(&tmp, path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&bak);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = std::fs::rename(&bak, path);
+                    let _ = std::fs::remove_file(&tmp);
+                    Err(e.to_string())
+                }
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +237,18 @@ mod tests {
         let payload = b"save-bytes-xyz";
         write_sidecar(&sav, payload).unwrap();
         assert_eq!(read_sidecar(&sav).unwrap(), payload);
+
+        // Replace keeps a consistent final file; no leftover temp.
+        write_sidecar(&sav, b"new-payload").unwrap();
+        assert_eq!(read_sidecar(&sav).unwrap(), b"new-payload");
+        assert!(
+            !dir.join("game.sav.tmp").exists(),
+            "successful write must remove the temp file"
+        );
+        assert!(
+            !dir.join("game.sav.bak").exists(),
+            "successful replace must remove the backup"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

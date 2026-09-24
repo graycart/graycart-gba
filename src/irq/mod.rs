@@ -12,7 +12,7 @@ mod tests;
 /// - `0`: IE
 /// - `2`: IF
 /// - `8`: IME
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Irq {
     ie: u16,
     iff: u16,

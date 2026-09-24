@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+The play window is the Game Boy shell: same menus, settings, input configurator, audio device list, and debug monitor. Extension `.gba` drives this crate’s ARM machine; `.gb` / `.gbc` drive `graycart`. Headless `--frames` still does not link the window.
+
 ## 0.1.0
 
 One play window with a file picker: `.gba` runs the ARM machine, `.gb` / `.gbc` run through `graycart`. Headless `--frames` does not link the window (window crates sit behind the `frontend` feature).

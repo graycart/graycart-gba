@@ -1,7 +1,7 @@
 use super::hash::sha256_hex;
 use super::{
-    cpu_result_line, format_trace_line, frame_hash, frame_nonzero, live_cpu_line, summary_frames,
-    MachineDebug,
+    MachineDebug, cpu_result_line, format_trace_line, frame_hash, frame_nonzero, live_cpu_line,
+    summary_frames,
 };
 
 #[test]

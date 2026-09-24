@@ -1,4 +1,4 @@
-use super::{Ppu, HEIGHT, WIDTH};
+use super::{HEIGHT, Ppu, WIDTH};
 
 fn pix(ppu: &Ppu, x: usize, y: usize) -> u16 {
     ppu.pixels[x + y * WIDTH]
@@ -41,7 +41,7 @@ fn sprite_tile_and_pal(vram: &mut [u8], pal: &mut [u8], obj_base: usize, color: 
 /// Text BG0: map slot 0 → tile 1, first pixel opaque `color`, priority from bgcnt.
 fn text_bg0_one_pixel(vram: &mut [u8], pal: &mut [u8], io: &mut [u8], bgcnt: u16, color: u16) {
     write_u16_le(io, 0x08, bgcnt); // BG0CNT
-                                   // Map slot 0 → tile 1 (avoids overlap with tile 0 at char base 0).
+    // Map slot 0 → tile 1 (avoids overlap with tile 0 at char base 0).
     vram[0] = 0x01;
     vram[1] = 0x00;
     vram[32] = 0x01; // tile 1 first pixel index 1
@@ -106,7 +106,7 @@ fn mode5_inside_drawn_outside_backdrop() {
     let mut pal = [0u8; 0x400];
     pal[0] = 0xE0;
     pal[1] = 0x03; // backdrop 0x03E0
-                   // Pixel (0, 0) in the 160x128 bitmap: 0x001F
+    // Pixel (0, 0) in the 160x128 bitmap: 0x001F
     vram[0] = 0x1F;
     vram[1] = 0x00;
 
@@ -357,8 +357,8 @@ fn alpha_blend_two_backgrounds() {
     write_u16_le(&mut vram, 0x800, 0x0001);
     vram[0x4000 + 32] = 0x01;
     write_u16_le(&mut pal, 2, 0x001F); // already set
-                                       // BG1 uses palette index 1 as well — give it bank 0 same entry; use a
-                                       // distinct color via palette bank 1 on the map entry.
+    // BG1 uses palette index 1 as well — give it bank 0 same entry; use a
+    // distinct color via palette bank 1 on the map entry.
     write_u16_le(&mut vram, 0x800, 0x1001);
     write_u16_le(&mut pal, (16 + 1) * 2, 0x7C00);
 
@@ -380,14 +380,14 @@ fn bg_mosaic_repeats_even_into_odd() {
     let mut io = zero_io();
 
     write_u16_le(&mut pal, 0, 0x03E0); // backdrop
-                                       // BG0CNT: mosaic on (bit 6), pri 0.
+    // BG0CNT: mosaic on (bit 6), pri 0.
     text_bg0_one_pixel(&mut vram, &mut pal, &mut io, 1 << 6, 0x001F);
     // Neighbor map entry (1,0) → tile 2 with a different color so without
     // mosaic (1,0) would not match (0,0).
     write_u16_le(&mut vram, 2, 0x0002);
     vram[64] = 0x01; // tile 2 first pixel index 1
     write_u16_le(&mut pal, 2, 0x001F); // index 1 red (shared)
-                                       // Make tile 2 use palette bank 1 → green, so mosaic failure is obvious.
+    // Make tile 2 use palette bank 1 → green, so mosaic failure is obvious.
     write_u16_le(&mut vram, 2, 0x1002);
     write_u16_le(&mut pal, (16 + 1) * 2, 0x03E0);
 
@@ -485,7 +485,7 @@ fn semi_transparent_sprite_blends_with_effect_off() {
     write_u16_le(&mut oam, 0, 0x0400); // semi-transparent
     write_u16_le(&mut oam, 2, 0x0000);
     write_u16_le(&mut oam, 4, 0); // pri 0 — beats BG0 only if strictly better;
-                                  // equal pri: BG wins. Use sprite pri 0, BG pri 1.
+    // equal pri: BG wins. Use sprite pri 0, BG pri 1.
     write_u16_le(&mut io, 0x08, 0x0001); // BG0CNT pri 1
     sprite_tile_and_pal(&mut vram, &mut pal, 0x10000, 0x7C00);
 

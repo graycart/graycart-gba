@@ -1,4 +1,4 @@
-use graycart_gba::{format_trace_line, MachineDebug};
+use graycart_gba::{MachineDebug, format_trace_line};
 
 #[test]
 fn stub_summary_marks_sections_absent_and_keeps_apu_health() {

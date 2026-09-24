@@ -14,7 +14,7 @@
 //! 64 data bits via [`Eeprom::read_bit`].
 
 /// Serial EEPROM backup (512 bytes or 8 KiB).
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Eeprom {
     /// Backing store; empty until the first size-revealing transfer (or load).
     data: Vec<u8>,

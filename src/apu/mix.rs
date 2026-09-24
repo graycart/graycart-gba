@@ -98,11 +98,7 @@ fn psg_ratio(side: i32, cnt_h: u16) -> i32 {
 
 fn fifo_volume(sample: i8, full: bool) -> i32 {
     let s = i32::from(sample);
-    if full {
-        s
-    } else {
-        s / 2
-    }
+    if full { s } else { s / 2 }
 }
 
 fn finalize(sum: i32, bias_level: i32, resolution: u32) -> (i16, bool) {

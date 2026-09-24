@@ -16,11 +16,11 @@ use std::collections::VecDeque;
 
 use crate::timer::Timers;
 
-pub use fifo::source_allowed;
 pub use fifo::Fifo;
+pub use fifo::source_allowed;
 pub use psg::Psg;
 
-use mix::{mix, MixIn};
+use mix::{MixIn, mix};
 
 /// One mixed stereo sample every this many CPU cycles (32768 Hz).
 const CYCLES_PER_SAMPLE: u32 = 512;
@@ -28,6 +28,7 @@ const CYCLES_PER_SAMPLE: u32 = 512;
 const PCM_CAP: usize = 2048;
 
 /// GBA APU: PSG, DMA FIFOs, mixer, and a short PCM ring.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Apu {
     pub psg: Psg,
     pub fifo_a: Fifo,

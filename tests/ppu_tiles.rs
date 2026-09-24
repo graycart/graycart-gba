@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use graycart_gba::{frame_hash, Machine};
+use graycart_gba::{Machine, frame_hash};
 
 #[test]
 fn shades_gba_pixels_then_hash() {

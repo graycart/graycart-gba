@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use graycart::{
-    apply_fast, bus_from_cartridge, Cartridge, Cpu, ExecSession, HostHardwarePref, RunOutcome,
+    Cartridge, Cpu, ExecSession, HostHardwarePref, RunOutcome, apply_fast, bus_from_cartridge,
 };
 
 /// AGB / AGB0 boot registers (Pan Docs power-up sequence).

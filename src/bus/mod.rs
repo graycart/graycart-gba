@@ -5,12 +5,12 @@
 use std::collections::HashSet;
 
 use crate::apu::Apu;
-use crate::cart::{detect_save, gpio_reject_line, Eeprom, Flash, FlashSize, SaveKind};
+use crate::cart::{Eeprom, Flash, FlashSize, SaveKind, detect_save, gpio_reject_line};
 use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
 use crate::timer::Timers;
-use crate::timing::{internal_cycles, rom_cycles, sram_cycles, ws0_ns, Prefetch, Width};
+use crate::timing::{Prefetch, Width, internal_cycles, rom_cycles, sram_cycles, ws0_ns};
 
 const EWRAM: usize = 256 * 1024;
 const IWRAM: usize = 32 * 1024;
@@ -22,7 +22,7 @@ const SRAM: usize = 64 * 1024;
 const BIOS: usize = 16 * 1024;
 
 /// Cartridge backup chip held on the bus.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum SaveChip {
     None,
     Sram(Vec<u8>),
@@ -30,7 +30,7 @@ enum SaveChip {
     Eeprom(Eeprom),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Bus {
     pub rom: Vec<u8>,
     ewram: Vec<u8>,
@@ -79,6 +79,10 @@ pub struct Bus {
     gb_mode: bool,
     /// `0x04000800` bit 3. Disables the CGB boot ROM.
     cgb_romdis: bool,
+    /// Set when save-chip contents change; cleared after a successful sidecar flush.
+    /// Not part of the on-disk snapshot (always false after decode).
+    #[serde(skip)]
+    save_dirty: bool,
 }
 
 impl Bus {
@@ -131,6 +135,7 @@ impl Bus {
             gb_cart_shape: false,
             gb_mode: false,
             cgb_romdis: false,
+            save_dirty: false,
         }
     }
 
@@ -171,6 +176,24 @@ impl Bus {
             SaveChip::Flash(flash) => flash.load_bytes(bytes),
             SaveChip::Eeprom(eeprom) => eeprom.load_bytes(bytes),
         }
+        self.save_dirty = false;
+    }
+
+    /// True when the save chip differs from the last successful sidecar flush.
+    pub fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    /// Clear the dirty flag after a successful flush.
+    pub fn clear_save_dirty(&mut self) {
+        self.save_dirty = false;
+    }
+
+    /// Mark save contents dirty (e.g. after restoring a slot snapshot).
+    pub fn mark_save_dirty(&mut self) {
+        if self.save_kind != SaveKind::None {
+            self.save_dirty = true;
+        }
     }
 
     /// Current save-chip bytes for the sidecar, if any.
@@ -181,11 +204,7 @@ impl Bus {
             SaveChip::Flash(flash) => Some(flash.bytes()),
             SaveChip::Eeprom(eeprom) => {
                 let b = eeprom.bytes();
-                if b.is_empty() {
-                    None
-                } else {
-                    Some(b)
-                }
+                if b.is_empty() { None } else { Some(b) }
             }
         }
     }
@@ -497,10 +516,12 @@ impl Bus {
                 let _ = self.touch_gpio(addr);
             }
             0x0D => {
-                if self.save_kind == SaveKind::Eeprom && size == 2 {
-                    if let SaveChip::Eeprom(eeprom) = &mut self.save {
-                        eeprom.write_bit(value as u16);
-                    }
+                if self.save_kind == SaveKind::Eeprom
+                    && size == 2
+                    && let SaveChip::Eeprom(eeprom) = &mut self.save
+                {
+                    eeprom.write_bit(value as u16);
+                    self.save_dirty = true;
                 }
             }
             0x0E | 0x0F => self.store_save(addr, value, size),
@@ -564,8 +585,12 @@ impl Bus {
             SaveChip::None | SaveChip::Eeprom(_) => {}
             SaveChip::Sram(data) => {
                 data[(addr & 0xFFFF) as usize] = value;
+                self.save_dirty = true;
             }
-            SaveChip::Flash(flash) => flash.write(addr, value),
+            SaveChip::Flash(flash) => {
+                flash.write(addr, value);
+                self.save_dirty = true;
+            }
         }
     }
 
@@ -962,10 +987,10 @@ impl Bus {
         let units = dma::run_copy(job, &mut read, &mut write);
         if self.save_kind == SaveKind::Eeprom
             && (Self::eeprom_region(job.src) || Self::eeprom_region(job.dst))
+            && let SaveChip::Eeprom(eeprom) = &mut self.save
         {
-            if let SaveChip::Eeprom(eeprom) = &mut self.save {
-                eeprom.end_transfer();
-            }
+            eeprom.end_transfer();
+            self.save_dirty = true;
         }
         units
     }
@@ -1248,11 +1273,7 @@ fn ranges_overlap(a0: u32, a1: u32, b0: u32, b1: u32) -> bool {
 
 fn vram_off(addr: u32) -> usize {
     let off = (addr & 0x1_FFFF) as usize;
-    if off < VRAM {
-        off
-    } else {
-        off - 0x8000
-    }
+    if off < VRAM { off } else { off - 0x8000 }
 }
 
 /// Past-end Game Pak reads: each halfword is `((addr >> 1) & 0xFFFF)`.

@@ -10,7 +10,7 @@ const KEYCNT_IRQ_ENABLE: u16 = 1 << 14;
 const KEYCNT_AND: u16 = 1 << 15;
 
 /// GBA keypad registers (KEYINPUT / KEYCNT).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Keypad {
     /// KEYINPUT bits 0–9; 0 = pressed, 1 = released. Bits 10–15 always read 0.
     input: u16,

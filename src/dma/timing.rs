@@ -7,7 +7,7 @@
 pub const FIFO_UNITS: u32 = 4;
 
 /// Why a DMA transfer is allowed to start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Reason {
     Immediate,
     VBlank,
@@ -61,11 +61,7 @@ pub fn unit_count(channel: usize, cnt_l: u16) -> u32 {
     if count != 0 {
         return u32::from(count);
     }
-    if channel == 3 {
-        0x1_0000
-    } else {
-        0x4000
-    }
+    if channel == 3 { 0x1_0000 } else { 0x4000 }
 }
 
 #[cfg(test)]

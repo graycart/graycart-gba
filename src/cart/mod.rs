@@ -10,6 +10,6 @@ mod header;
 pub use eeprom::Eeprom;
 pub use flash::{Flash, FlashSize};
 pub use header::{
-    detect_save, gpio_reject_line, parse_header, read_sidecar, sidecar_path, touch_gpio,
-    write_sidecar, SaveKind,
+    SaveKind, detect_save, gpio_reject_line, parse_header, read_sidecar, sidecar_path, touch_gpio,
+    write_sidecar,
 };

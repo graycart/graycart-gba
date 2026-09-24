@@ -20,7 +20,7 @@ const ID_MAN_128: u8 = 0xC2;
 const ID_DEV_128: u8 = 0x09;
 
 /// Flash save capacity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FlashSize {
     /// 64 KiB, one bank.
     K64,
@@ -28,7 +28,7 @@ pub enum FlashSize {
     K128,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Phase {
     Ready,
     SawAa,
@@ -36,14 +36,14 @@ enum Phase {
     ExpectArgument,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ArgumentKind {
     Program,
     Bank,
 }
 
 /// GBA flash save memory.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Flash {
     size: FlashSize,
     data: Vec<u8>,

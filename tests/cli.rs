@@ -9,6 +9,7 @@ fn output(cmd: &mut Command) -> std::process::Output {
     cmd.output().expect("spawn graycart-gba")
 }
 
+#[cfg(not(feature = "frontend"))]
 #[test]
 fn no_path_exits_with_a_clear_error() {
     let mut cmd = bin();
@@ -18,6 +19,20 @@ fn no_path_exits_with_a_clear_error() {
     assert!(err.contains("graycart-gba <rom-or-directory> --frames <n> [--debug]"));
     assert!(err.contains("graycart-gba <rom-or-directory> --debug [--frames <n>]"));
     assert!(!err.to_lowercase().contains("unimplemented"));
+}
+
+#[cfg(feature = "frontend")]
+#[test]
+fn missing_path_with_frames_still_prints_usage() {
+    // Empty argv opens the shell; usage remains for incomplete headless flags.
+    let mut cmd = bin();
+    let out = output(cmd.arg("--frames").arg("1"));
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("missing <rom-or-directory>")
+            || err.contains("graycart-gba <rom-or-directory>")
+    );
 }
 
 #[test]

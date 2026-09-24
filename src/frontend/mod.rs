@@ -1,12 +1,13 @@
 //! Pure host helpers: path → machine kind, shade→RGBA, output device choice, resample.
-//! Window / device I/O lives in the binary (`src/play.rs`), not here.
+//! The play shell lives in [`shell`]; window crates stay behind feature `frontend`.
 
 pub mod audio;
 pub mod launch;
+pub mod shell;
 pub mod video;
 
-pub use audio::{choose_output, resample_linear, AudioOutputChoice};
-pub use launch::{machine_kind, MachineKind};
+pub use audio::{AudioOutputChoice, choose_output, resample_linear};
+pub use launch::{MachineKind, machine_kind};
 pub use video::{gba_framebuffer_to_rgba, sm83_framebuffer_to_rgba};
 
 #[cfg(test)]

@@ -460,11 +460,7 @@ impl Cpu {
                         // Match following `mov r1, pc` (PC+4 of that insn = STM exec_pc + 6).
                         self.exec_pc.wrapping_add(6)
                     } else if reg == rb {
-                        if reg == first {
-                            base
-                        } else {
-                            new_base
-                        }
+                        if reg == first { base } else { new_base }
                     } else {
                         self.gpr[reg]
                     };

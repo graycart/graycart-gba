@@ -19,8 +19,31 @@ pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 
 /// Picture buffer. Pixels are hardware BGR555 in the low 15 bits.
+#[derive(Clone)]
 pub struct Ppu {
     pub pixels: [u16; WIDTH * HEIGHT],
+}
+
+impl serde::Serialize for Ppu {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.pixels.as_slice(), serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Ppu {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = <Vec<u16> as serde::Deserialize>::deserialize(deserializer)?;
+        if v.len() != WIDTH * HEIGHT {
+            return Err(serde::de::Error::custom(format!(
+                "ppu pixels len {} != {}",
+                v.len(),
+                WIDTH * HEIGHT
+            )));
+        }
+        let mut pixels = [0u16; WIDTH * HEIGHT];
+        pixels.copy_from_slice(&v);
+        Ok(Self { pixels })
+    }
 }
 
 impl Ppu {
@@ -130,20 +153,20 @@ impl Ppu {
                     }
                 }
 
-                if obj_on && mask.obj {
-                    if let Some(sp) =
+                if obj_on
+                    && mask.obj
+                    && let Some(sp) =
                         obj::sprite_pixel(x, y, oam, pal, vram, one_d, false, mosaic_reg)
-                    {
-                        layers[n] = Composite {
-                            color: sp.color,
-                            priority: sp.priority,
-                            is_sprite: true,
-                            bg_index: 0xFF,
-                            layer: 4,
-                            semi: sp.semi,
-                        };
-                        n += 1;
-                    }
+                {
+                    layers[n] = Composite {
+                        color: sp.color,
+                        priority: sp.priority,
+                        is_sprite: true,
+                        bg_index: 0xFF,
+                        layer: 4,
+                        semi: sp.semi,
+                    };
+                    n += 1;
                 }
 
                 self.pixels[x + y * WIDTH] =
@@ -211,20 +234,20 @@ impl Ppu {
                     }
                 }
 
-                if obj_on && mask.obj {
-                    if let Some(sp) =
+                if obj_on
+                    && mask.obj
+                    && let Some(sp) =
                         obj::sprite_pixel(x, y, oam, pal, vram, one_d, true, mosaic_reg)
-                    {
-                        layers[n] = Composite {
-                            color: sp.color,
-                            priority: sp.priority,
-                            is_sprite: true,
-                            bg_index: 0xFF,
-                            layer: 4,
-                            semi: sp.semi,
-                        };
-                        n += 1;
-                    }
+                {
+                    layers[n] = Composite {
+                        color: sp.color,
+                        priority: sp.priority,
+                        is_sprite: true,
+                        bg_index: 0xFF,
+                        layer: 4,
+                        semi: sp.semi,
+                    };
+                    n += 1;
                 }
 
                 self.pixels[x + y * WIDTH] =

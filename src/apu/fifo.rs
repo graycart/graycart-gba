@@ -14,7 +14,7 @@ const SRAM_LO: u32 = 0x0E00_0000;
 const SRAM_HI: u32 = 0x0FFF_FFFF;
 
 /// One 32-byte DMA sound FIFO.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fifo {
     buf: [u8; CAPACITY],
     /// Next byte to pop.

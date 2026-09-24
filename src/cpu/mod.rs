@@ -8,7 +8,7 @@ mod shift;
 
 use crate::bus::Bus;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StepError {
     Unimplemented { pc: u32, mnemonic: String },
 }
@@ -25,7 +25,7 @@ impl std::fmt::Display for StepError {
 
 impl std::error::Error for StepError {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Cpu {
     gpr: [u32; 16],
     usr: [u32; 5],
@@ -38,7 +38,13 @@ pub struct Cpu {
     pub exec_pc: u32,
     pub idle: bool,
     pub faults: u32,
+    /// Not restored from disk snapshots (always `"restored"` after load).
+    #[serde(skip, default = "default_last_op")]
     pub last_op: &'static str,
+}
+
+fn default_last_op() -> &'static str {
+    "restored"
 }
 
 impl Default for Cpu {
@@ -184,11 +190,7 @@ impl Cpu {
     }
 
     fn read_gpr(&self, n: usize, pc: u32) -> u32 {
-        if n == 15 {
-            pc
-        } else {
-            self.gpr[n]
-        }
+        if n == 15 { pc } else { self.gpr[n] }
     }
 
     fn write_gpr(&mut self, n: usize, value: u32) {

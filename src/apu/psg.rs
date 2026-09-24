@@ -13,7 +13,7 @@ const DUTY_TABLE: [[u8; 8]; 4] = [
     [0, 1, 1, 1, 1, 1, 1, 1],
 ];
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Envelope {
     initial: u8,
     direction_up: bool,
@@ -62,7 +62,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Sweep {
     shift: u8,
     negate: bool,
@@ -121,7 +121,7 @@ impl Sweep {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Square {
     sweep: Sweep,
     has_sweep: bool,
@@ -226,7 +226,7 @@ impl Square {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Wave {
     dac_on: bool,
     length: u8,
@@ -344,7 +344,7 @@ impl Wave {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Noise {
     length: u8,
     envelope: Envelope,
@@ -437,7 +437,7 @@ impl Noise {
 }
 
 /// GBA PSG: two squares, wave, and noise.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Psg {
     master: bool,
     square1: Square,

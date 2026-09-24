@@ -4,11 +4,11 @@ How to change this emulator. Product name **Graycart**; crate **`graycart-gba`**
 
 Do the next useful thing. Do not lecture. Do not correct an example the user already understands. Do not withhold the files or the edit to invent a rule they did not ask for. Do not be fucking autistic.
 
-This tree is a **greenfield rewrite**. Crate **`0.1.0`** is page 13 (play host: window behind `frontend`, headless `--frames` stays free of it). Page 12 (`0.0.14`) is Game Boy carts through `graycart`. Page 11 (`0.0.13`) is prefetch / waitstates. Page 10 (`0.0.12`) is cartridge / saves. Page 9 (`0.0.11`) is APU. Page 8 (`0.0.10`) is DMA. Page 7 (`0.0.9`) is windows, blend, mosaic. Page 6 (`0.0.8`) is tiles and sprites. Page 5 (`0.0.7`) is the bitmap picture. Page 4 (`0.0.6`) is timers, IRQ, keypad, halt. Page 3 (`0.0.5`) is the bus. Page 2 (`0.0.4`) is Thumb. Page 1 (`0.0.3`) is ARM. Page 0 (`0.0.2`) is the debug report. Do not restore pre-rewrite 0.1.x by copying old phases, title fixes, BIOS HLE, or the deleted `src/debug` module back in.
+This tree is a **greenfield rewrite**. Crate **`0.2.0`** is page 14 (play host is the graycart-gb shell behind `frontend`, headless `--frames` stays free of it). Page 13 (`0.1.0`) was the first bare play window. Page 12 (`0.0.14`) is Game Boy carts through `graycart`. Page 11 (`0.0.13`) is prefetch / waitstates. Page 10 (`0.0.12`) is cartridge / saves. Page 9 (`0.0.11`) is APU. Page 8 (`0.0.10`) is DMA. Page 7 (`0.0.9`) is windows, blend, mosaic. Page 6 (`0.0.8`) is tiles and sprites. Page 5 (`0.0.7`) is the bitmap picture. Page 4 (`0.0.6`) is timers, IRQ, keypad, halt. Page 3 (`0.0.5`) is the bus. Page 2 (`0.0.4`) is Thumb. Page 1 (`0.0.3`) is ARM. Page 0 (`0.0.2`) is the debug report. Do not restore pre-rewrite 0.1.x by copying old phases, title fixes, BIOS HLE, or the deleted `src/debug` module back in.
 
 ## Continue here
 
-Read [`docs/implementation-plan.md`](./docs/implementation-plan.md). Page 13 is done (`0.1.0`). Research and sources: [`docs/README.md`](./docs/README.md).
+Read [`docs/implementation-plan.md`](./docs/implementation-plan.md). Page 14 is done (`0.2.0` — Game Boy shell). Next is page 15 (`0.2.1`, IntrWait). Research and sources: [`docs/README.md`](./docs/README.md).
 
 The command line is:
 
@@ -17,7 +17,7 @@ graycart-gba <rom> --frames <n> [--debug]
 graycart-gba <rom> --debug [--frames <n>]
 graycart-gba <directory> --frames <n> [--debug]
 graycart-gba <directory> --debug [--frames <n>]
-graycart-gba   # with `--features frontend`: file picker, play window
+graycart-gba   # with `--features frontend`: Game Boy shell (File / Emulation / Video / Input / Audio / Help / Debug)
 ```
 
 `--debug` stops on its own when the result is pass or fail (idle pass, idle fail, fault, halt with nothing to wake it, or a loop that repeats). The process exits non-zero on fail. `--frames` is a cap on that run, and it is required when `--debug` is absent.
@@ -70,7 +70,7 @@ Tests: `src/<module>/tests.rs` via `#[cfg(test)] mod tests;` — not inline in p
 `Cargo.toml` `[package].version` is the only product version.
 
 - This rewrite starts at **`0.0.1`**.
-- One finished page, one version, then stop. Pages 0–12 bump **patch** (`0.0.2` through `0.0.14`). Page 13 (the first runnable host) is **`0.1.0`**.
+- One finished page, one version, then stop. Pages 0–12 bump **patch** (`0.0.2` through `0.0.14`). Page 13 (the first runnable host) is **`0.1.0`**. Page 14 (Game Boy shell) is **`0.2.0`**; pages 15–22 continue `0.2.1`–`0.2.8`.
 - Each bump updates `Cargo.toml` and adds a `CHANGELOG.md` entry in the same change. Page 0 creates the changelog.
 - **Do not** ship `1.0.0` until native GBA is stable, installers exist, settings migrations are trusted, save compatibility is defined, and basic cross-platform play is trusted.
 - A git tag is created only when asked. If a tag exists, **`vX.Y.Z` must equal** the crate version.

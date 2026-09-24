@@ -6,15 +6,17 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use graycart_gba::compat::{
-    machine_line, run_sm83_file, CGB_AUDIO_UNIMPLEMENTED, CGB_BRIGHTNESS_UNIMPLEMENTED,
-};
-use graycart_gba::debug::{cpu_result_line, live_cpu_line, summary_frames, MachineDebug};
-use graycart_gba::ppu::sprite_count;
 use graycart_gba::Machine;
+use graycart_gba::compat::{
+    CGB_AUDIO_UNIMPLEMENTED, CGB_BRIGHTNESS_UNIMPLEMENTED, machine_line, run_sm83_file,
+};
+use graycart_gba::debug::{MachineDebug, cpu_result_line, live_cpu_line, summary_frames};
+use graycart_gba::ppu::sprite_count;
 
 #[cfg(feature = "frontend")]
-mod play;
+mod play_shell {
+    pub use graycart_gba::frontend::shell::run;
+}
 
 fn main() -> ExitCode {
     match run(&env::args().skip(1).collect::<Vec<_>>()) {
@@ -29,7 +31,7 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<ExitCode, String> {
     #[cfg(feature = "frontend")]
     if args.is_empty() {
-        return match play::run() {
+        return match play_shell::run() {
             Ok(()) => Ok(ExitCode::SUCCESS),
             Err(err) if err == "no file selected" => Ok(ExitCode::SUCCESS),
             Err(err) => Err(err),

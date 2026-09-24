@@ -27,11 +27,7 @@ fn ws0_n(waitcnt: u16) -> u32 {
 }
 
 fn ws0_s(waitcnt: u16) -> u32 {
-    if waitcnt & (1 << 4) != 0 {
-        1
-    } else {
-        2
-    }
+    if waitcnt & (1 << 4) != 0 { 1 } else { 2 }
 }
 
 fn ws1_n(waitcnt: u16) -> u32 {
@@ -39,11 +35,7 @@ fn ws1_n(waitcnt: u16) -> u32 {
 }
 
 fn ws1_s(waitcnt: u16) -> u32 {
-    if waitcnt & (1 << 7) != 0 {
-        1
-    } else {
-        4
-    }
+    if waitcnt & (1 << 7) != 0 { 1 } else { 4 }
 }
 
 fn ws2_n(waitcnt: u16) -> u32 {
@@ -51,11 +43,7 @@ fn ws2_n(waitcnt: u16) -> u32 {
 }
 
 fn ws2_s(waitcnt: u16) -> u32 {
-    if waitcnt & (1 << 10) != 0 {
-        1
-    } else {
-        8
-    }
+    if waitcnt & (1 << 10) != 0 { 1 } else { 8 }
 }
 
 fn rom_ns(waitcnt: u16, addr: u32) -> (u32, u32) {
