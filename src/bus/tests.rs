@@ -289,3 +289,23 @@ fn sram_access_does_not_force_rom_n_by_address_gap() {
     let _ = bus.fetch16(0x0800_0002);
     assert_eq!(bus.take_step_cycles(), 2);
 }
+
+#[test]
+fn dma16_from_unused_io_duplicates_latch_onto_cpu_openbus() {
+    // alyosha Bus/ReadMe: 16-bit DMA from 0x04010000 updates both CPU open-bus halves.
+    // Floating DMA latch resets to 0xFFFFFFFF; unused IO does not replace it.
+    let mut bus = Bus::new(vec![0; 0xC0]);
+    bus.write32(0x0400_00BC, 0x0401_0000); // DMA1 SAD
+    bus.write32(0x0400_00C0, 0x0200_0000); // DMA1 DAD
+    bus.write32(0x0400_00C4, 0x8100_0001); // enable, immediate, 16-bit, count 1
+
+    assert_eq!(
+        bus.read32(0x0200_0000),
+        0xFFFF,
+        "16-bit DMA stores the low halfword only"
+    );
+    // Instruction fetches must not hide the DMA latch: the next open-bus data read
+    // still sees both halves duplicated (0xFFFFFFFF).
+    let _ = bus.fetch32(0x0800_0000);
+    assert_eq!(bus.read32(0x0401_0000), 0xFFFF_FFFF);
+}

@@ -56,6 +56,14 @@ pub struct Bus {
     pub hblank: bool,
     pub vcount: u16,
     last_data: u32,
+    /// Last DMA data-bus word. Unused/invalid DMA reads keep this latch
+    /// (alyosha Bus/ReadMe; GBATEK open bus). 16-bit units duplicate the halfword.
+    #[serde(default = "dma_open_reset")]
+    dma_open: u32,
+    /// After a DMA unit, the next CPU open-bus data read returns [`Self::dma_open`]
+    /// instead of the instruction prefetch latch (mGBA `bus` / dmaPC window).
+    #[serde(default)]
+    dma_open_cpu: bool,
     bios_prefetch: u32,
     pub warn_lines: Vec<String>,
     openbus_logged: HashSet<u32>,
@@ -121,6 +129,9 @@ impl Bus {
             hblank: false,
             vcount: 0,
             last_data: 0,
+            // Floating DMA data bus until the first real DMA memory read.
+            dma_open: 0xFFFF_FFFF,
+            dma_open_cpu: false,
             // Post-boot latch: last BIOS opcode word (at 0xE4), not a fetch of 0.
             bios_prefetch: 0xE129_F000,
             warn_lines: Vec::new(),
@@ -1057,10 +1068,36 @@ impl Bus {
             // Safety: `dma.busy` blocks nested `dma_fire` / `dma_on_enable` from
             // starting another copy, so these closures never re-enter `dma_copy`.
             unsafe {
-                if width32 {
+                let open = Bus::dma_source_open(addr);
+                let raw = if width32 {
                     (*this).read32(addr)
                 } else {
                     u32::from((*this).read16(addr))
+                };
+                // Unused / out-of-reach sources do not replace the DMA latch; they
+                // still publish it onto the CPU open bus (alyosha Bus/ReadMe).
+                let value = if open {
+                    if width32 {
+                        (*this).dma_open
+                    } else {
+                        (*this).dma_open & 0xFFFF
+                    }
+                } else {
+                    raw
+                };
+                if width32 {
+                    if !open {
+                        (*this).dma_open = value;
+                    }
+                    (*this).last_data = (*this).dma_open;
+                    (*this).dma_open_cpu = true;
+                    (*this).dma_open
+                } else {
+                    let half = value & 0xFFFF;
+                    (*this).dma_open = half | (half << 16);
+                    (*this).last_data = (*this).dma_open;
+                    (*this).dma_open_cpu = true;
+                    half
                 }
             }
         };
@@ -1080,6 +1117,21 @@ impl Bus {
             self.save_dirty = true;
         }
         units
+    }
+
+    /// DMA sources that return open bus / are out of reach: keep `dma_open`.
+    fn dma_source_open(addr: u32) -> bool {
+        match addr >> 24 {
+            // BIOS and the unused hole below EWRAM: DMA cannot fetch new data.
+            0x00 | 0x01 => true,
+            // I/O past the 1 KiB window (and not the 0x800 mirror) is unused open bus.
+            0x04 => {
+                let off = addr & 0x00FF_FFFF;
+                off >= IO as u32 && off != 0x800
+            }
+            0x02..=0x0F => false,
+            _ => true,
+        }
     }
 
     fn load_timer_io(&self, off: u32, size: u32) -> u32 {
@@ -1264,7 +1316,18 @@ impl Bus {
 
     fn openbus(&mut self, addr: u32, size: u32, region: &str) -> u32 {
         self.log_openbus(addr, region);
-        self.open_slice(self.last_data, addr, size)
+        // During DMA, and for the first CPU open-bus data read after DMA, the
+        // DMA latch is what sits on the bus (alyosha Bus/ReadMe; mGBA `bus`).
+        let word = if self.dma.busy || self.dma_open_cpu {
+            self.dma_open
+        } else {
+            self.last_data
+        };
+        let value = self.open_slice(word, addr, size);
+        if self.dma_open_cpu && !self.dma.busy {
+            self.dma_open_cpu = false;
+        }
+        value
     }
 
     fn open_slice(&self, word: u32, addr: u32, size: u32) -> u32 {
@@ -1306,6 +1369,10 @@ fn width_bytes(width: Width) -> u32 {
         Width::Half => 2,
         Width::Word => 4,
     }
+}
+
+fn dma_open_reset() -> u32 {
+    0xFFFF_FFFF
 }
 
 /// Align halfword/word data accesses, except the 8-bit SRAM/flash bus where the
