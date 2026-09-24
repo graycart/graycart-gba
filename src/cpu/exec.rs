@@ -427,6 +427,15 @@ impl Cpu {
             }
             let count = list.count_ones();
             if load {
+                // Empty POP writeback is 16 words and ends the prefetch burst
+                // (alyosha Pop_no_regs: timer 0x16, SP low byte 0x3C).
+                if count == 0 {
+                    self.gpr[13] = self.gpr[13].wrapping_add(64);
+                    bus.prefetch.invalidate();
+                    bus.mark_prefetch_ns();
+                    self.last_op = "pop";
+                    return Ok(());
+                }
                 let mut addr = self.gpr[13];
                 for reg in 0..16 {
                     if list & (1 << reg) == 0 {

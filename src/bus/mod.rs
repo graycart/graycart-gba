@@ -99,6 +99,10 @@ pub struct Bus {
     /// Cycles this step spent off the Game Pak bus (I/O, internal). Prefetch fills then.
     #[serde(default)]
     cart_idle: u32,
+    /// Empty Thumb POP aborts prefetch: later opcode fetches stay non-sequential
+    /// until a later instruction actually refills the buffer.
+    #[serde(default)]
+    prefetch_ns: bool,
     /// Previous Game Pak ROM access, for N/S sequential detection.
     last_rom: Option<(u32, u32)>,
     /// WAITCNT bit 15: cartridge-shape sense. A Game Boy shell reads as 1.
@@ -209,6 +213,7 @@ impl Bus {
             step_cycles: 0,
             step_pak: false,
             cart_idle: 0,
+            prefetch_ns: false,
             last_rom: None,
             gb_cart_shape: false,
             gb_mode: false,
@@ -401,6 +406,11 @@ impl Bus {
 
     /// After an internal-only instruction, fill the prefetch buffer during those cycles.
     /// Only seeds Game Pak PCs so IWRAM/BIOS execution does not pollute the buffer.
+    /// Opcode fetches stay non-sequential until the next prefetch refill.
+    pub fn mark_prefetch_ns(&mut self) {
+        self.prefetch_ns = true;
+    }
+
     pub fn finish_step(&mut self, next_opcode: u32, thumb: bool) {
         let region = next_opcode >> 24;
         if !(0x08..=0x0D).contains(&region) {
@@ -419,6 +429,7 @@ impl Bus {
         let waitcnt = self.waitcnt();
         let s = rom_cycles(waitcnt, next_opcode, Width::Half, true);
         self.prefetch.idle(idle, next_opcode, s);
+        self.prefetch_ns = false;
     }
 
     /// Cycles charged for the instruction just stepped (at least 1 for the machine).
@@ -590,10 +601,11 @@ impl Bus {
                 self.prefetch.invalidate();
             }
 
-            let sequential = match self.last_rom {
-                Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
-                None => false,
-            };
+            let sequential = !self.prefetch_ns
+                && match self.last_rom {
+                    Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
+                    None => false,
+                };
             let width_bytes = width_bytes(width);
 
             let cycles = if kind == Access::Fetch && waitcnt & (1 << 14) != 0 {
