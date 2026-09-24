@@ -293,7 +293,13 @@ impl Cpu {
     }
 
     fn spsr(&self) -> u32 {
-        self.spsr_bank[bank_index(self.cpsr & 0x1F)]
+        let bank = bank_index(self.cpsr & 0x1F);
+        // User and System have no SPSR. MRS reads CPSR (alyosha arm t254).
+        if bank == 0 {
+            self.cpsr
+        } else {
+            self.spsr_bank[bank]
+        }
     }
 
     fn set_spsr(&mut self, value: u32, mask: u32) {
