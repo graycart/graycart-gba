@@ -1,6 +1,6 @@
-//! OBJ (sprites) — normal (non-affine) sprites.
+//! OBJ (sprites) — normal and affine sprites.
 //!
-//! Cited: GBATEK LCD Video Controller, OBJ.
+//! Cited: GBATEK LCD Video Controller, OBJ / OAM Rotation/Scaling.
 //! <https://problemkaputt.de/gbatek.htm>
 
 #[cfg(test)]
@@ -40,7 +40,8 @@ pub fn sprite_count(oam: &[u8]) -> u32 {
 
 /// Front-most drawable sprite at screen pixel `(x, y)`.
 ///
-/// Skips disabled, affine, OBJ-window, and prohibited (mode 3) entries.
+/// Skips disabled, OBJ-window, and prohibited (mode 3) entries.
+/// Affine sprites use the OAM matrix selected by ATTR1 bits 9–13.
 /// Lower priority wins. Same priority: lower OAM index wins.
 /// `one_d` is DISPCNT bit 6 (1D mapping). OBJ tiles live at VRAM offset
 /// `0x10000` when `bitmap_mode` is false, and `0x14000` when true.
@@ -65,7 +66,7 @@ pub fn sprite_pixel(
         let attr1 = read_u16_le(oam, off + 2);
         let attr2 = read_u16_le(oam, off + 4);
 
-        if obj_disabled(attr0) || obj_affine(attr0) {
+        if obj_disabled(attr0) {
             continue;
         }
         let mode = obj_mode(attr0);
@@ -77,16 +78,23 @@ pub fn sprite_pixel(
         let shape = (attr0 >> 14) & 0b11;
         let size = (attr1 >> 14) & 0b11;
         let (width, height) = sprite_size(shape, size);
+        let affine = obj_affine(attr0);
+        let double_size = affine && attr0 & (1 << 9) != 0;
+        let (clip_w, clip_h) = if double_size {
+            (width * 2, height * 2)
+        } else {
+            (width, height)
+        };
 
         let oam_y = (attr0 & 0xFF) as usize;
-        // Hit-test at the real screen pixel.
+        // Hit-test at the real screen pixel against the clip box.
         let hit_y = (y.wrapping_sub(oam_y)) & 0xFF;
-        if hit_y >= height {
+        if hit_y >= clip_h {
             continue;
         }
 
         let oam_x = attr1 & 0x1FF;
-        let Some(_hit_x) = sprite_local_x(x, oam_x, width) else {
+        let Some(_hit_x) = sprite_local_x(x, oam_x, clip_w) else {
             continue;
         };
 
@@ -97,29 +105,41 @@ pub fn sprite_pixel(
             (x, y)
         };
         let local_y = (sample_y.wrapping_sub(oam_y)) & 0xFF;
-        if local_y >= height {
+        if local_y >= clip_h {
             continue;
         }
-        let Some(local_x) = sprite_local_x(sample_x, oam_x, width) else {
+        let Some(local_x) = sprite_local_x(sample_x, oam_x, clip_w) else {
             continue;
         };
-
-        let hflip = attr1 & (1 << 12) != 0;
-        let vflip = attr1 & (1 << 13) != 0;
-        let mut tx = local_x;
-        let mut ty = local_y;
-        if hflip {
-            tx = width - 1 - tx;
-        }
-        if vflip {
-            ty = height - 1 - ty;
-        }
 
         let bpp8 = attr0 & (1 << 13) != 0;
         let tile_base = (attr2 & 0x3FF) as usize;
         let priority = ((attr2 >> 10) & 0b11) as u8;
         let pal_bank = ((attr2 >> 12) & 0xF) as usize;
         let semi = mode == 1;
+
+        let (tx, ty) = if affine {
+            let aff_idx = ((attr1 >> 9) & 0x1F) as usize;
+            let (pa, pb, pc, pd) = read_affine_matrix(oam, aff_idx);
+            let Some(tex) = affine_texel(
+                local_x, local_y, width, height, clip_w, clip_h, pa, pb, pc, pd,
+            ) else {
+                continue;
+            };
+            tex
+        } else {
+            let hflip = attr1 & (1 << 12) != 0;
+            let vflip = attr1 & (1 << 13) != 0;
+            let mut tx = local_x;
+            let mut ty = local_y;
+            if hflip {
+                tx = width - 1 - tx;
+            }
+            if vflip {
+                ty = height - 1 - ty;
+            }
+            (tx, ty)
+        };
 
         let Some(color) = sample_sprite_color(
             tx, ty, width, bpp8, tile_base, pal_bank, one_d, obj_base, pal, vram,
@@ -266,6 +286,45 @@ fn sprite_local_x(screen_x: usize, oam_x: u16, width: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// OAM affine parameter group `idx` (0–31): PA/PB/PC/PD as signed 8.8.
+fn read_affine_matrix(oam: &[u8], idx: usize) -> (i16, i16, i16, i16) {
+    let base = idx * 0x20;
+    let pa = read_u16_le(oam, base + 0x06) as i16;
+    let pb = read_u16_le(oam, base + 0x0E) as i16;
+    let pc = read_u16_le(oam, base + 0x16) as i16;
+    let pd = read_u16_le(oam, base + 0x1E) as i16;
+    (pa, pb, pc, pd)
+}
+
+/// Map clip-box local `(lx, ly)` through the affine matrix to sprite texel coords.
+///
+/// Screen offset is relative to the clip-box center; texture origin is the
+/// sprite graphic center. Out-of-range texels return `None` (transparent).
+#[allow(clippy::too_many_arguments)]
+fn affine_texel(
+    lx: usize,
+    ly: usize,
+    width: usize,
+    height: usize,
+    clip_w: usize,
+    clip_h: usize,
+    pa: i16,
+    pb: i16,
+    pc: i16,
+    pd: i16,
+) -> Option<(usize, usize)> {
+    let dx = lx as i32 - (clip_w as i32 / 2);
+    let dy = ly as i32 - (clip_h as i32 / 2);
+    let tx = i32::from(pa) * dx + i32::from(pb) * dy + ((width as i32 / 2) << 8);
+    let ty = i32::from(pc) * dx + i32::from(pd) * dy + ((height as i32 / 2) << 8);
+    let tex_x = tx >> 8;
+    let tex_y = ty >> 8;
+    if tex_x < 0 || tex_y < 0 || tex_x >= width as i32 || tex_y >= height as i32 {
+        return None;
+    }
+    Some((tex_x as usize, tex_y as usize))
 }
 
 #[allow(clippy::too_many_arguments)]

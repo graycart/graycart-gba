@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5
+
+Affine objects draw. `hello.gba` hash unchanged.
+
 ## 0.2.4
 
 BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, SoftReset, and RegisterRamReset. Music and multiboot SWIs warn and return.

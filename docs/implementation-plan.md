@@ -308,7 +308,11 @@ Shipped as crate `0.2.3`. BIOS LZ77, Huffman, RLE, and diff filters (WRAM and VR
 
 ## Page 18 — Math and affine SWIs
 
-Shipped as crate `0.2.4`. BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, SoftReset, and RegisterRamReset. Music and multiboot SWIs warn and return. Continue with page 19 (`0.2.5`).
+Shipped as crate `0.2.4`. BIOS sqrt, arctan, affine set, BitUnPack, SoundBias, SoftReset, and RegisterRamReset. Music and multiboot SWIs warn and return.
+
+## Page 19 — Affine objects
+
+Shipped as crate `0.2.5`. Affine objects draw; `hello.gba` hash unchanged. Continue with page 20 (`0.2.6`).
 
 ## After each page
 
