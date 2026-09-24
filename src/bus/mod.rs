@@ -137,6 +137,9 @@ pub struct Bus {
     /// Absolute cycle that armed the deferred HBlank.
     #[serde(skip)]
     dma_hblank_defer_abs: u64,
+    /// The active DMA has finished at least one unit write.
+    #[serde(skip)]
+    dma_unit_written: bool,
 }
 
 impl Bus {
@@ -207,6 +210,7 @@ impl Bus {
             dma_hblank_deferred: false,
             dma_hblank_from_write: false,
             dma_hblank_defer_abs: 0,
+            dma_unit_written: false,
         }
     }
 
@@ -1206,10 +1210,20 @@ impl Bus {
             self.dma_hblank_defer_abs = self.dma_abs();
             return;
         }
-        if self.dma_active.is_some() {
+        if self.dma_active.is_some() && !self.dma_unit_written {
             self.dma_hblank_deferred = true;
             self.dma_hblank_from_write = false;
             self.dma_hblank_defer_abs = self.dma_abs();
+            return;
+        }
+        if self.dma_active.is_some() {
+            // Later unit boundary: the higher channel reads before this cycle's timer tick.
+            self.dma_hblank_from_write = false;
+            for channel in 0..4 {
+                if self.dma.reason(channel) == Some(StartReason::HBlank) {
+                    self.dma_fire(channel, StartReason::HBlank);
+                }
+            }
             return;
         }
         for channel in 0..4 {
@@ -1318,11 +1332,13 @@ impl Bus {
         }
         let width32 = job.width32;
         let prev = self.dma_active;
+        let parent_written = self.dma_unit_written;
         let nested = prev.is_some();
         let phased =
             self.dma_timing && (nested || reason == StartReason::Immediate);
         self.dma_active = Some(channel as u8);
         self.dma.busy = true;
+        self.dma_unit_written = false;
         self.last_rom = None;
         let units = if phased {
             self.dma_copy_phased(&job, nested)
@@ -1331,6 +1347,7 @@ impl Bus {
         };
         self.dma_active = prev;
         self.dma.busy = prev.is_some();
+        self.dma_unit_written = parent_written;
         if let Some(mask) = self.dma.finish(channel, reason, units, width32) {
             self.irq.raise(mask);
         }
@@ -1371,7 +1388,7 @@ impl Bus {
                 self.dma_phase_tick();
                 self.dma_phase_tick();
             }
-        } else {
+        } else if !nested {
             self.dma_phase_tick();
         }
         if nested {
@@ -1390,6 +1407,7 @@ impl Bus {
                 self.dma_phase_tick();
             }
             self.dma_write_unit(dst, stored, width32);
+            self.dma_unit_written = true;
             self.dma_write_cycle = false;
             src = dma_step_addr(src, job.src_ctrl, unit_size);
             dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
