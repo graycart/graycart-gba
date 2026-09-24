@@ -1330,11 +1330,11 @@ impl Bus {
                     if !rising {
                         // Mode-change Immediate: keep Enable so CNT_H matches the
                         // written value (alyosha DMA/DMA_Mode_Change).
-                        // GBATEK 2N+2I, plus 2-cycle post-enable wait, plus 2-cycle
-                        // CPU↔DMA bus handoff. N is a non-seq 32-bit Game Pak word
-                        // under WAITCNT while the DMA owns the bus.
+                        // Pad is 2S+2I plus the post-enable and bus-handoff waits.
                         self.dma.set_enable(channel);
-                        let n32 = rom_cycles(self.waitcnt(), 0x0800_0000, Width::Word, false);
+                        // Pad uses a sequential 32-bit Game Pak word. A non-sequential
+                        // word makes DMA_Mode_Change's timer six counts high.
+                        let n32 = rom_cycles(self.waitcnt(), 0x0800_0000, Width::Word, true);
                         self.dma.stall = 2 * n32 + 2 + 2 + 2;
                     }
                 }
