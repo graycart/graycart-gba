@@ -265,6 +265,29 @@ impl Bus {
         )
     }
 
+    /// ARM B/BL/BX pipeline refill: opcode fetch already paid 1 bus cycle; pay the
+    /// remaining 1N+1S (ARM 2S+1N total) and leave `last_rom` so the next fetch at
+    /// `target` is sequential (the first refill word).
+    pub fn arm_branch_refill(&mut self, target: u32) {
+        if self.dma.busy {
+            return;
+        }
+        let t = target & !3;
+        let region = t >> 24;
+        if (0x08..=0x0D).contains(&region) {
+            self.step_pak = true;
+            let waitcnt = self.waitcnt();
+            let n = rom_cycles(waitcnt, t, Width::Word, false);
+            let s = rom_cycles(waitcnt, t.wrapping_add(4), Width::Word, true);
+            self.step_cycles = self.step_cycles.saturating_add(n.saturating_add(s));
+            self.last_rom = Some((t.wrapping_sub(4), 4));
+        } else {
+            // Internal 32-bit bus: 1N+1S ≈ 2 cycles.
+            self.step_cycles = self.step_cycles.saturating_add(2);
+            self.last_rom = None;
+        }
+    }
+
     /// Clear per-instruction wait accounting before [`Cpu::step`](crate::cpu::Cpu::step).
     pub fn begin_step(&mut self) {
         self.step_cycles = 0;
@@ -485,6 +508,20 @@ impl Bus {
         self.step_cycles = self
             .step_cycles
             .saturating_add(internal_cycles(addr, width));
+        // Game Pak sequential burst ends after any non-cart access (I/O, etc.).
+        // IWRAM/EWRAM are excluded so address-based N/S tests keep alyosha's rule;
+        // I/O and OAM still break the cart burst (GBATEK waitstate chapter).
+        if region == 0x04 || region == 0x07 {
+            self.last_rom = None;
+        }
+    }
+
+    /// Add bare internal cycles (ARM LDR trailing I, etc.).
+    pub fn add_internal_cycles(&mut self, n: u32) {
+        if self.dma.busy {
+            return;
+        }
+        self.step_cycles = self.step_cycles.saturating_add(n);
     }
 
     fn access(&mut self, addr: u32, size: u32, kind: Access) -> u32 {
@@ -891,8 +928,17 @@ impl Bus {
             return true;
         }
         if Dma::covers(off, size) {
-            if let Some(channel) = self.dma.store(off, value, size) {
-                self.dma_on_enable(channel);
+            match self.dma.store(off, value, size) {
+                Some(dma::CntHWrite::EnableRise(channel)) => {
+                    self.dma_on_enable(channel, true);
+                }
+                Some(dma::CntHWrite::CtrlKeep(channel)) => {
+                    self.dma_on_enable(channel, false);
+                }
+                Some(dma::CntHWrite::EnableFall(channel)) => {
+                    self.dma_imm_pending[channel] = false;
+                }
+                None => {}
             }
             return true;
         }
@@ -1059,7 +1105,7 @@ impl Bus {
         }
     }
 
-    fn dma_on_enable(&mut self, channel: usize) {
+    fn dma_on_enable(&mut self, channel: usize, rising: bool) {
         if self.dma.busy {
             return;
         }
@@ -1070,25 +1116,54 @@ impl Bus {
             }
             return;
         };
-        self.dma.latch(channel);
-        if let Err(line) = dma::region_access(channel, self.dma.sad(channel), self.dma.dad(channel))
-        {
-            self.warn_lines.push(line.to_string());
-            self.dma.clear_enable(channel);
-            return;
+        if rising {
+            self.dma.latch(channel);
+            if let Err(line) =
+                dma::region_access(channel, self.dma.sad(channel), self.dma.dad(channel))
+            {
+                self.warn_lines.push(line.to_string());
+                self.dma.clear_enable(channel);
+                return;
+            }
         }
         match reason {
             // Normal immediate DMA runs on the enable write (before the CPU
             // continues). 32-bit unused-I/O sources defer until the next real
             // data access so a following LDRH can update the CPU MDR first
             // (alyosha Bus/DMA_OAM_Bus).
+            // Changing timing to Immediate while already enabled also starts
+            // (alyosha DMA/DMA_Mode_Change) but does not re-latch addresses.
             StartReason::Immediate => {
-                let src = self.dma.sad(channel);
+                if !rising {
+                    if let Err(line) = dma::region_access(
+                        channel,
+                        self.dma.job(channel).src,
+                        self.dma.job(channel).dst,
+                    ) {
+                        self.warn_lines.push(line.to_string());
+                        return;
+                    }
+                }
+                let src = if rising {
+                    self.dma.sad(channel)
+                } else {
+                    self.dma.job(channel).src
+                };
                 let width32 = self.dma.cnt_h(channel) & (1 << 10) != 0;
                 if width32 && Self::dma_source_unused_io(src) {
                     self.dma_imm_pending[channel] = true;
                 } else {
                     self.dma_fire(channel, StartReason::Immediate);
+                    if !rising {
+                        // Mode-change Immediate: keep Enable so CNT_H matches the
+                        // written value (alyosha DMA/DMA_Mode_Change).
+                        // GBATEK 2N+2I, plus 2-cycle post-enable wait, plus 2-cycle
+                        // CPU↔DMA bus handoff. N is a non-seq 32-bit Game Pak word
+                        // under WAITCNT while the DMA owns the bus.
+                        self.dma.set_enable(channel);
+                        let n32 = rom_cycles(self.waitcnt(), 0x0800_0000, Width::Word, false);
+                        self.dma.stall = 2 * n32 + 2 + 2 + 2;
+                    }
                 }
             }
             StartReason::VBlank

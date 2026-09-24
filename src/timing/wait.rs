@@ -85,18 +85,23 @@ pub fn rom_cycles(waitcnt: u16, addr: u32, width: Width, sequential: bool) -> u3
 pub fn internal_cycles(addr: u32, width: Width) -> u32 {
     let region = (addr >> 24) & 0xFF;
     match region {
-        // EWRAM
+        // EWRAM (16-bit bus)
         0x02 => match width {
             Width::Byte | Width::Half => 3,
             Width::Word => 6,
         },
-        // Palette / VRAM
+        // Palette / VRAM (16-bit bus)
         0x05 | 0x06 => match width {
             Width::Byte | Width::Half => 1,
             Width::Word => 2,
         },
-        // BIOS, IWRAM, I/O, OAM
-        0x00 | 0x03 | 0x04 | 0x07 => 1,
+        // I/O and OAM (16-bit bus): 32-bit is two sequential halfwords.
+        0x04 | 0x07 => match width {
+            Width::Byte | Width::Half => 1,
+            Width::Word => 2,
+        },
+        // BIOS / IWRAM (32-bit bus)
+        0x00 | 0x03 => 1,
         _ => 1,
     }
 }

@@ -2,7 +2,7 @@
 
 ## 0.2.8
 
-CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read. A 32-bit DMA from unused I/O samples the CPU data latch after the enabling instruction's own load. An ARM instruction fetch leaves the pipeline prefetch at PC+8 in that latch, so a following unused halfword read does not replace it.
+CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read. A 32-bit DMA from unused I/O samples the CPU data latch after the enabling instruction's own load. An ARM instruction fetch leaves the pipeline prefetch at PC+8 in that latch, so a following unused halfword read does not replace it. DMA latches addresses only on CNT_H enable 0→1. Changing start timing to Immediate while already enabled starts a transfer with the latched addresses and leaves Enable set. I/O and OAM 32-bit accesses cost two cycles on the 16-bit bus. I/O and OAM accesses end the Game Pak sequential burst. ARM B/BL/BX pay the remaining 1N+1S pipeline refill after the opcode fetch. ARM LDR pays a trailing internal cycle.
 
 ## 0.2.7
 

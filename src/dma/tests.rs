@@ -412,3 +412,28 @@ fn debug_line_after_immediate_transfer() {
     assert!(line.contains("reason=immediate"), "{line}");
     assert!(line.contains("frame=7"), "{line}");
 }
+
+#[test]
+fn hblank_to_immediate_while_enabled_starts_without_relatch() {
+    // alyosha DMA/DMA_Mode_Change: rewriting CNT_H to Immediate while enable stays
+    // set starts a transfer with the already-latched addresses (no SAD/DAD reload)
+    // and leaves Enable set.
+    let mut bus = Bus::new(vec![0; 0xC0]);
+    bus.write32(IWRAM + 0x40, 0);
+    bus.write32(DMA0 + 4, IWRAM + 0x40);
+    bus.write32(DMA0 + 8, 0xA400_0001); // enable + HBlank + 32-bit, count 1
+    assert_eq!(bus.read32(IWRAM + 0x40), 0);
+    assert_eq!(bus.dma.stall, 0);
+
+    bus.write32(DMA0 + 8, 0x8400_0001); // enable + Immediate + 32-bit
+    assert_eq!(
+        bus.read32(IWRAM + 0x40),
+        0xFFFF_FFFF,
+        "mode change to Immediate must copy with latched addresses"
+    );
+    assert_eq!(
+        bus.read16(DMA0 + 10),
+        0x8400,
+        "mode-change Immediate leaves enable and timing bits"
+    );
+}

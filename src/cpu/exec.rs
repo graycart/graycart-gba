@@ -14,7 +14,7 @@ impl Cpu {
             return Ok(());
         }
         if instr & 0x0FFF_FFF0 == 0x012F_FF10 {
-            return self.bx(instr);
+            return self.bx(bus, instr);
         }
         if instr & 0x0F00_00F0 == 0x0000_0090 {
             return self.multiply(instr);
@@ -35,7 +35,7 @@ impl Cpu {
             return self.block(bus, instr);
         }
         if instr & 0x0E00_0000 == 0x0A00_0000 {
-            return self.arm_b(instr);
+            return self.arm_b(bus, instr);
         }
         if instr & 0x0F00_0000 == 0x0F00_0000 {
             self.last_op = "swi";
@@ -527,15 +527,16 @@ impl Cpu {
         self.fail(format!("thumb {instr:#06X}"))
     }
 
-    fn bx(&mut self, instr: u32) -> Result<(), StepError> {
+    fn bx(&mut self, bus: &mut Bus, instr: u32) -> Result<(), StepError> {
         let rm = (instr & 0xF) as usize;
         let value = self.read_gpr(rm, self.exec_pc.wrapping_add(8));
         self.branch(value, value & 1 != 0);
+        bus.arm_branch_refill(self.fetch_pc);
         self.last_op = "bx";
         Ok(())
     }
 
-    fn arm_b(&mut self, instr: u32) -> Result<(), StepError> {
+    fn arm_b(&mut self, bus: &mut Bus, instr: u32) -> Result<(), StepError> {
         let offset = ((instr & 0x00FF_FFFF) << 8) as i32 >> 6;
         let target = self.exec_pc.wrapping_add(8).wrapping_add(offset as u32);
         if instr & (1 << 24) != 0 {
@@ -548,6 +549,9 @@ impl Cpu {
             }
         }
         self.fetch_pc = target;
+        if !self.idle {
+            bus.arm_branch_refill(target);
+        }
         Ok(())
     }
 
@@ -811,6 +815,8 @@ impl Cpu {
             } else {
                 bus.read32(access).rotate_right((access & 3) * 8)
             };
+            // ARM LDR: 1S+1N+1I — data access paid N; trailing internal cycle.
+            bus.add_internal_cycles(1);
             if writeback {
                 self.gpr[rn] = indexed;
             }

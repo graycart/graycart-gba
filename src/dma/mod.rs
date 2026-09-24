@@ -18,6 +18,17 @@ const CHANNELS: usize = 4;
 const REG_BASE: u32 = 0xB0;
 const REG_END: u32 = 0xB0 + (CHANNELS as u32) * 12;
 
+/// CNT_H enable-bit edge from a register write (GBATEK DMA start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CntHWrite {
+    /// Enable went 0→1: latch addresses and arm/start per timing.
+    EnableRise(usize),
+    /// Enable went 1→0: cancel a deferred immediate start.
+    EnableFall(usize),
+    /// CNT_H rewritten while enable stayed set (timing/flags may have changed).
+    CtrlKeep(usize),
+}
+
 /// Four DMA channels and the CPU stall counter for in-flight copies.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Dma {
@@ -131,21 +142,21 @@ impl Dma {
         }
     }
 
-    /// Write DMA I/O. Returns `true` when CNT_H was touched (caller may start a transfer).
-    pub fn store(&mut self, off: u32, value: u32, size: u32) -> Option<usize> {
-        let mut touched = None;
+    /// Write DMA I/O.
+    ///
+    /// Returns [`CntHWrite::EnableRise`] when CNT_H enable goes 0→1 (caller latches
+    /// and may start). Returns [`CntHWrite::EnableFall`] when enable goes 1→0.
+    /// Rewriting CNT_H while enable stays set (e.g. HBlank → Immediate) is not a
+    /// start edge — GBATEK reloads SAD/DAD/CNT_L only on 0→1.
+    pub fn store(&mut self, off: u32, value: u32, size: u32) -> Option<CntHWrite> {
+        let mut result = None;
         match size {
             2 => {
-                if self.store16(off, value as u16) {
-                    touched = channel_of(off);
-                }
+                result = self.store16(off, value as u16);
             }
             4 => {
-                let lo_touch = self.store16(off, value as u16);
-                let hi_touch = self.store16(off.wrapping_add(2), (value >> 16) as u16);
-                if lo_touch || hi_touch {
-                    touched = channel_of(off).or_else(|| channel_of(off.wrapping_add(2)));
-                }
+                let _ = self.store16(off, value as u16);
+                result = self.store16(off.wrapping_add(2), (value >> 16) as u16);
             }
             1 => {
                 let aligned = off & !1;
@@ -155,47 +166,55 @@ impl Dma {
                 } else {
                     (cur & 0xFF00) | ((value as u16) & 0xFF)
                 };
-                if self.store16(aligned, next) {
-                    touched = channel_of(aligned);
-                }
+                result = self.store16(aligned, next);
             }
             _ => {}
         }
-        touched
+        result
     }
 
-    /// Returns true when this halfword write hit CNT_H.
-    fn store16(&mut self, off: u32, value: u16) -> bool {
+    /// Returns enable edge info when this halfword write hit CNT_H.
+    fn store16(&mut self, off: u32, value: u16) -> Option<CntHWrite> {
         let Some((channel, local)) = decode(off) else {
-            return false;
+            return None;
         };
         let ch = &mut self.channels[channel];
         match local {
             0 => {
                 ch.sad = (ch.sad & 0xFFFF_0000) | u32::from(value);
-                false
+                None
             }
             2 => {
                 ch.sad = (ch.sad & 0x0000_FFFF) | (u32::from(value) << 16);
-                false
+                None
             }
             4 => {
                 ch.dad = (ch.dad & 0xFFFF_0000) | u32::from(value);
-                false
+                None
             }
             6 => {
                 ch.dad = (ch.dad & 0x0000_FFFF) | (u32::from(value) << 16);
-                false
+                None
             }
             8 => {
                 ch.cnt_l = value;
-                false
+                None
             }
             10 => {
+                let was = ch.cnt_h & (1 << 15) != 0;
                 ch.cnt_h = value;
-                true
+                let now = value & (1 << 15) != 0;
+                if !was && now {
+                    Some(CntHWrite::EnableRise(channel))
+                } else if was && !now {
+                    Some(CntHWrite::EnableFall(channel))
+                } else if now {
+                    Some(CntHWrite::CtrlKeep(channel))
+                } else {
+                    None
+                }
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -208,6 +227,10 @@ impl Dma {
 
     pub fn clear_enable(&mut self, channel: usize) {
         self.channels[channel].clear_enable();
+    }
+
+    pub fn set_enable(&mut self, channel: usize) {
+        self.channels[channel].cnt_h |= 1 << 15;
     }
 
     pub fn cnt_h(&self, channel: usize) -> u16 {
@@ -352,10 +375,6 @@ fn decode(off: u32) -> Option<(usize, u32)> {
     let channel = (rel / 12) as usize;
     let local = rel % 12;
     Some((channel, local))
-}
-
-fn channel_of(off: u32) -> Option<usize> {
-    decode(off).map(|(ch, _)| ch)
 }
 
 /// Re-export copy entry for the bus transfer path.
