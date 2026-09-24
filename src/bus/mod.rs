@@ -96,6 +96,9 @@ pub struct Bus {
     step_cycles: u32,
     /// True when this step touched ROM or SRAM (not internal-only).
     step_pak: bool,
+    /// Cycles this step spent off the Game Pak bus (I/O, internal). Prefetch fills then.
+    #[serde(default)]
+    cart_idle: u32,
     /// Previous Game Pak ROM access, for N/S sequential detection.
     last_rom: Option<(u32, u32)>,
     /// WAITCNT bit 15: cartridge-shape sense. A Game Boy shell reads as 1.
@@ -205,6 +208,7 @@ impl Bus {
             prefetch: Prefetch::new(),
             step_cycles: 0,
             step_pak: false,
+            cart_idle: 0,
             last_rom: None,
             gb_cart_shape: false,
             gb_mode: false,
@@ -383,6 +387,7 @@ impl Bus {
     pub fn begin_step_at(&mut self, cycles: u64) {
         self.step_cycles = 0;
         self.step_pak = false;
+        self.cart_idle = 0;
         self.cycle_base = cycles;
         self.dma_cycles_paid = 0;
     }
@@ -396,17 +401,24 @@ impl Bus {
 
     /// After an internal-only instruction, fill the prefetch buffer during those cycles.
     /// Only seeds Game Pak PCs so IWRAM/BIOS execution does not pollute the buffer.
-    pub fn finish_step(&mut self, next_opcode: u32) {
-        if self.step_pak || self.step_cycles == 0 {
-            return;
-        }
+    pub fn finish_step(&mut self, next_opcode: u32, thumb: bool) {
         let region = next_opcode >> 24;
         if !(0x08..=0x0D).contains(&region) {
             return;
         }
+        // Thumb I/O and internal cycles still fill the prefetch buffer after a
+        // cart fetch (alyosha Push_no_regs). ARM keeps the internal-only rule.
+        let idle = if self.step_pak {
+            if thumb { self.cart_idle } else { 0 }
+        } else {
+            self.step_cycles
+        };
+        if idle == 0 {
+            return;
+        }
         let waitcnt = self.waitcnt();
         let s = rom_cycles(waitcnt, next_opcode, Width::Half, true);
-        self.prefetch.idle(self.step_cycles, next_opcode, s);
+        self.prefetch.idle(idle, next_opcode, s);
     }
 
     /// Cycles charged for the instruction just stepped (at least 1 for the machine).
@@ -547,6 +559,11 @@ impl Bus {
         }
     }
 
+    /// Store a word without waitstates. Empty Thumb PUSH writes PC in the fetch cycle.
+    pub fn poke32(&mut self, addr: u32, value: u32) {
+        self.store(addr, value, 4);
+    }
+
     pub fn write32(&mut self, addr: u32, value: u32) {
         let addr = align_data(addr, 4);
         let run_pending = self.any_imm_pending();
@@ -605,9 +622,9 @@ impl Bus {
             return;
         }
 
-        self.step_cycles = self
-            .step_cycles
-            .saturating_add(internal_cycles(addr, width));
+        let internal = internal_cycles(addr, width);
+        self.cart_idle = self.cart_idle.saturating_add(internal);
+        self.step_cycles = self.step_cycles.saturating_add(internal);
         // Game Pak sequential burst ends after any non-cart access (I/O, etc.).
         // IWRAM/EWRAM are excluded so address-based N/S tests keep alyosha's rule;
         // I/O and OAM still break the cart burst (GBATEK waitstate chapter).
@@ -621,6 +638,7 @@ impl Bus {
         if self.dma.busy {
             return;
         }
+        self.cart_idle = self.cart_idle.saturating_add(n);
         self.step_cycles = self.step_cycles.saturating_add(n);
     }
 

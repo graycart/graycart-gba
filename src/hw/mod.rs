@@ -204,7 +204,7 @@ impl Machine {
                 self.arm_steps = self.arm_steps.saturating_add(1);
                 match self.cpu.step(&mut self.bus) {
                     Ok(()) => {
-                        self.bus.finish_step(self.cpu.fetch_pc);
+                        self.bus.finish_step(self.cpu.fetch_pc, self.cpu.thumb());
                 let paid = self.bus.take_dma_cycles_paid();
                 if paid > 0 {
                     self.cycles = self.cycles.saturating_add(u64::from(paid));

@@ -444,8 +444,15 @@ impl Cpu {
                 self.gpr[13] = self.gpr[13].wrapping_add(count.wrapping_mul(4));
                 self.last_op = "pop";
             } else {
-                let mut addr = self.gpr[13].wrapping_sub(count.wrapping_mul(4));
+                // Empty PUSH still drops SP by one word. The data beat is the
+                // PC value a following POP reads (alyosha Push_no_regs: 0x5C).
+                let slots = if count == 0 { 1 } else { count };
+                let mut addr = self.gpr[13].wrapping_sub(slots.wrapping_mul(4));
                 self.gpr[13] = addr;
+                if count == 0 {
+                    let pc = self.exec_pc.wrapping_add(6);
+                    bus.poke32(addr, pc);
+                }
                 for reg in 0..16 {
                     if list & (1 << reg) == 0 {
                         continue;
