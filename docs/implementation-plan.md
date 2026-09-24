@@ -320,7 +320,11 @@ Shipped as crate `0.2.6`. DMA3 timing 3 copies on the video-capture scanline; ch
 
 ## Page 21 — 32-bit Game Pak waitstates
 
-Shipped as crate `0.2.7`. A 32-bit Game Pak access costs N+S or S+S; prefetch word hit still costs 1. Flash64/flash128 save harness cap is 60 frames. Continue with page 22 (`0.2.8`).
+Shipped as crate `0.2.7`. A 32-bit Game Pak access costs N+S or S+S; prefetch word hit still costs 1. Flash64/flash128 save harness cap is 60 frames.
+
+## Page 22 — CGB brightness
+
+Shipped as crate `0.2.8`. CGB color uses the 1.7 brightness curve on the SM83 present path only. Continue with page 23 (`1.0.0`).
 
 ## After each page
 

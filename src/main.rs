@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use graycart_gba::Machine;
-use graycart_gba::compat::{
-    CGB_AUDIO_UNIMPLEMENTED, CGB_BRIGHTNESS_UNIMPLEMENTED, machine_line, run_sm83_file,
-};
+use graycart_gba::compat::{CGB_AUDIO_UNIMPLEMENTED, machine_line, run_sm83_file};
 use graycart_gba::debug::{MachineDebug, cpu_result_line, live_cpu_line, summary_frames};
 use graycart_gba::ppu::sprite_count;
 
@@ -62,7 +60,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             lines.push(machine_line("sm83", Some(&handoff)));
             lines.push(CGB_AUDIO_UNIMPLEMENTED.to_string());
-            lines.push(CGB_BRIGHTNESS_UNIMPLEMENTED.to_string());
             lines.push(format!(
                 "gba-debug: sm83 frames={} arm_opcodes={}",
                 handoff.frames, handoff.arm_opcodes
@@ -100,7 +97,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             lines.push(machine_line("arm7", None));
             lines.push(CGB_AUDIO_UNIMPLEMENTED.to_string());
-            lines.push(CGB_BRIGHTNESS_UNIMPLEMENTED.to_string());
             lines.extend(machine.bus.warn_lines.iter().cloned());
             lines.push(format!(
                 "gba-debug: save kind={}",

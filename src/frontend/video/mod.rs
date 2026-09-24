@@ -16,7 +16,20 @@ fn expand5(c: u8) -> u8 {
     (c << 3) | (c >> 2)
 }
 
+/// GBA-hosted CGB 5-bit channel curve: `round(31 * (i/31)^1.7)` for `i` in 0..=31.
+/// Table so 0→0, 16→10, 31→31 are exact without runtime `powf`.
+const CGB_CHANNEL: [u8; 32] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 19, 20, 22, 23, 25,
+    26, 28, 29, 31,
+];
+
+/// Map a 5-bit CGB channel through the GBA brightness curve (indexes above 31 clamp to 31).
+pub fn cgb_channel(c5: u8) -> u8 {
+    CGB_CHANNEL[usize::from(c5.min(31))]
+}
+
 /// GBA BGR555 (bits 0–4 blue, 5–9 green, 10–14 red) → RGBA8888.
+/// Does not apply [`cgb_channel`]; native GBA stays linear expand.
 pub fn bgr555_to_rgba(color: u16) -> [u8; 4] {
     let b = expand5((color & 0x1F) as u8);
     let g = expand5(((color >> 5) & 0x1F) as u8);
@@ -25,9 +38,9 @@ pub fn bgr555_to_rgba(color: u16) -> [u8; 4] {
 }
 
 fn rgb555_to_rgba(color: u16) -> [u8; 4] {
-    let r = expand5((color & 0x1F) as u8);
-    let g = expand5(((color >> 5) & 0x1F) as u8);
-    let b = expand5(((color >> 10) & 0x1F) as u8);
+    let r = expand5(cgb_channel((color & 0x1F) as u8));
+    let g = expand5(cgb_channel(((color >> 5) & 0x1F) as u8));
+    let b = expand5(cgb_channel(((color >> 10) & 0x1F) as u8));
     [r, g, b, 255]
 }
 
@@ -83,6 +96,37 @@ pub fn sm83_framebuffer_to_rgba(fb: &Framebuffer, out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cgb_mid_channel_is_darker_than_linear() {
+        assert_eq!(cgb_channel(0), 0);
+        assert_eq!(cgb_channel(31), 31);
+        assert_eq!(cgb_channel(16), 10);
+        for i in 0..31 {
+            assert!(
+                cgb_channel(i) <= cgb_channel(i + 1),
+                "cgb_channel not monotonic at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn sm83_cgb_mid_channel_uses_curve_not_linear() {
+        let mut fb = Framebuffer::new();
+        fb.set_presents_cgb_color(true);
+        // RGB555 red = 16 (linear expand would be 132; curve maps 16→10 → expand 82).
+        fb.set_cgb_pixel(0, 0, Shade::Darkest, 0x0010);
+        let mut out = vec![0u8; SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+        sm83_framebuffer_to_rgba(&fb, &mut out);
+        assert_eq!(&out[0..4], &[82, 0, 0, 255]);
+        assert_ne!(&out[0..4], &[132, 0, 0, 255]);
+    }
+
+    #[test]
+    fn gba_bgr555_mid_blue_stays_linear() {
+        // BGR555 blue = 16 → linear expand 132, not the CGB curve.
+        assert_eq!(bgr555_to_rgba(0x0010), [0, 0, 132, 255]);
+    }
 
     #[test]
     fn bgr555_white_is_full_rgba() {

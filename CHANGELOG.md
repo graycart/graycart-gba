@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+CGB color uses the 1.7 brightness curve on the SM83 present path only.
+
 ## 0.2.7
 
 A 32-bit Game Pak access costs N+S (non-sequential) or S+S (sequential). Prefetch word hit still costs 1. Flash64/flash128 save ROM harness cap raised from 30 to 60 frames.

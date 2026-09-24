@@ -13,7 +13,7 @@ The 0.1.x machine was removed from this working tree. These notes are the gate f
 
 | Doc | What it decides |
 |-----|-----------------|
-| [implementation-plan.md](./implementation-plan.md) | Pages 0–13 greenfield; page 14+ in the complete-emulator plan. Page 21 (`0.2.7`) 32-bit Game Pak N+S / S+S is done. Continue-here is page 22 (`0.2.8`) |
+| [implementation-plan.md](./implementation-plan.md) | Pages 0–13 greenfield; page 14+ in the complete-emulator plan. Page 22 (`0.2.8`) CGB brightness on the SM83 present path is done. Continue-here is page 23 (`1.0.0`) |
 | [00-bring-up-order.md](./00-bring-up-order.md) | Hardware-first phases, primary docs, and the ROM or unit gate for each slice |
 | [01-sm83-reuse.md](./01-sm83-reuse.md) | GBA Game Boy mode versus the SM83 core in `graycart-gb` |
 | [02-one-host-two-machines.md](./02-one-host-two-machines.md) | One play app, two machines. Do not merge the cores |

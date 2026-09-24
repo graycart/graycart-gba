@@ -1,6 +1,7 @@
 use super::{rgb555_framebuffer_to_rgba, rgb555_le_bytes_to_u16, rgb555_to_rgba};
 use crate::frontend::shell::video::palette::{PalettePreset, framebuffer_to_rgba};
 use crate::frontend::shell::video::{DisplayMode, present_framebuffer_rgba};
+use crate::frontend::video::cgb_channel;
 use graycart::{Framebuffer, SCREEN_HEIGHT, SCREEN_WIDTH, Shade};
 
 fn expand5(c: u8) -> u8 {
@@ -19,15 +20,22 @@ fn rgb555_max_is_white() {
 
 #[test]
 fn rgb555_mid_channel_values() {
-    // R=10, G=20, B=5 → packed RGB555
+    // R=10, G=20, B=5 → packed RGB555, then GBA CGB brightness curve before expand.
     let packed = 10 | (20 << 5) | (5 << 10);
     assert_eq!(
         rgb555_to_rgba(packed),
-        [expand5(10), expand5(20), expand5(5), 255]
+        [
+            expand5(cgb_channel(10)),
+            expand5(cgb_channel(20)),
+            expand5(cgb_channel(5)),
+            255
+        ]
     );
     assert_eq!(rgb555_to_rgba(0x001F), [255, 0, 0, 255]);
     assert_eq!(rgb555_to_rgba(0x03E0), [0, 255, 0, 255]);
     assert_eq!(rgb555_to_rgba(0x7C00), [0, 0, 255, 255]);
+    // Channel 16 → curve 10 → expand 82, not linear 132.
+    assert_eq!(rgb555_to_rgba(0x0010), [82, 0, 0, 255]);
 }
 
 #[test]

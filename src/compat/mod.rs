@@ -15,9 +15,6 @@ pub const AGB_B: u8 = 0x01;
 pub const CGB_AUDIO_UNIMPLEMENTED: &str =
     "gba-debug: warn cgb-audio pandocs-vs-gbatek unimplemented keep=graycart-apu";
 
-/// GBA CGB brightness ramp is not implemented on this page.
-pub const CGB_BRIGHTNESS_UNIMPLEMENTED: &str = "gba-debug: warn cgb brightness ramp unimplemented";
-
 /// Result of handing a `.gb` / `.gbc` image to `graycart`.
 pub struct Handoff {
     pub frames: u64,

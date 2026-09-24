@@ -2,16 +2,18 @@
 
 use graycart::{SCREEN_HEIGHT, SCREEN_WIDTH};
 
+use crate::frontend::video::cgb_channel;
+
 /// Expand a 5-bit channel to 8-bit (`(c << 3) | (c >> 2)`).
 fn expand5(c: u8) -> u8 {
     (c << 3) | (c >> 2)
 }
 
-/// Convert a CGB RGB555 color (bit 15 ignored) to RGBA8888.
+/// Convert a CGB RGB555 color (bit 15 ignored) to RGBA8888 via the GBA brightness curve.
 pub fn rgb555_to_rgba(color: u16) -> [u8; 4] {
-    let r = expand5((color & 0x1F) as u8);
-    let g = expand5(((color >> 5) & 0x1F) as u8);
-    let b = expand5(((color >> 10) & 0x1F) as u8);
+    let r = expand5(cgb_channel((color & 0x1F) as u8));
+    let g = expand5(cgb_channel(((color >> 5) & 0x1F) as u8));
+    let b = expand5(cgb_channel(((color >> 10) & 0x1F) as u8));
     [r, g, b, 255]
 }
 
