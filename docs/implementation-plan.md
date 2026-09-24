@@ -300,7 +300,11 @@ Shipped as crate `0.2.1`. BIOS IntrWait / VBlankIntrWait watch `0x03007FF8`.
 
 ## Page 16 — CpuSet
 
-Shipped as crate `0.2.2`. BIOS CpuSet / CpuFastSet copy and fill. Continue with page 17 (`0.2.3`).
+Shipped as crate `0.2.2`. BIOS CpuSet / CpuFastSet copy and fill.
+
+## Page 17 — Decompress
+
+Shipped as crate `0.2.3`. BIOS LZ77, Huffman, RLE, and diff filters (WRAM and VRAM widths). Continue with page 18 (`0.2.4`).
 
 ## After each page
 

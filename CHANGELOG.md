@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+BIOS LZ77, Huffman, RLE, and diff filters.
+
 ## 0.2.2
 
 BIOS CpuSet and CpuFastSet copy and fill.

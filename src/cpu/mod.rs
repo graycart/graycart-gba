@@ -380,6 +380,22 @@ impl Cpu {
             crate::bios::cpu_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
         } else if number == 0x0C {
             crate::bios::cpu_fast_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
+        } else if number == 0x11 {
+            crate::bios::lz77_wram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x12 {
+            crate::bios::lz77_vram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x13 {
+            crate::bios::huff(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x14 {
+            crate::bios::rl_wram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x15 {
+            crate::bios::rl_vram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x16 {
+            crate::bios::diff8_wram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x17 {
+            crate::bios::diff8_vram(bus, self.gpr[0], self.gpr[1]);
+        } else if number == 0x18 {
+            crate::bios::diff16(bus, self.gpr[0], self.gpr[1]);
         }
         self.finish_swi_return();
         self.last_op = "swi";
