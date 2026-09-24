@@ -124,6 +124,13 @@ pub struct Bus {
     /// Channel currently inside `dma_fire` (for priority nesting).
     #[serde(skip)]
     dma_active: Option<u8>,
+    /// ares `writeCycle`: a unit read finished and its write is still owed. Higher
+    /// priority DMA waits until the write completes (GBATEK channel priority).
+    #[serde(skip)]
+    dma_write_cycle: bool,
+    /// HBlank DMA armed while `dma_write_cycle` — run after the pending write.
+    #[serde(skip)]
+    dma_hblank_deferred: bool,
 }
 
 impl Bus {
@@ -190,6 +197,8 @@ impl Bus {
             cycle_base: 0,
             dma_cycles_paid: 0,
             dma_active: None,
+            dma_write_cycle: false,
+            dma_hblank_deferred: false,
         }
     }
 
@@ -1158,6 +1167,11 @@ impl Bus {
 
     /// Fire every channel armed for HBlank (one shot per rising edge).
     pub fn dma_on_hblank(&mut self) {
+        // ares: finish the active channel's write before a higher-priority read.
+        if self.dma_write_cycle {
+            self.dma_hblank_deferred = true;
+            return;
+        }
         for channel in 0..4 {
             if self.dma.reason(channel) == Some(StartReason::HBlank) {
                 self.dma_fire(channel, StartReason::HBlank);
@@ -1264,13 +1278,14 @@ impl Bus {
         }
         let width32 = job.width32;
         let prev = self.dma_active;
+        let nested = prev.is_some();
         let phased =
-            self.dma_timing && (prev.is_some() || reason == StartReason::Immediate);
+            self.dma_timing && (nested || reason == StartReason::Immediate);
         self.dma_active = Some(channel as u8);
         self.dma.busy = true;
         self.last_rom = None;
         let units = if phased {
-            self.dma_copy_phased(&job)
+            self.dma_copy_phased(&job, nested)
         } else {
             self.dma_copy_atomic(&job)
         };
@@ -1300,32 +1315,65 @@ impl Bus {
         units
     }
 
-    /// Cycle-accurate unit loop: after each read, tick so HBlank DMA0 can preempt
-    /// before the matching write (alyosha DMA_pause_timing_*; GBATEK priority).
-    fn dma_copy_phased(&mut self, job: &dma::Copy) -> u32 {
+    /// ares-style unit loop: read then write; higher-priority DMA runs only when
+    /// `writeCycle` is clear (after a write / before the next read).
+    fn dma_copy_phased(&mut self, job: &dma::Copy, nested: bool) -> u32 {
         let width32 = job.width32;
         let unit_size = if width32 { 4u32 } else { 2 };
+        let width = if width32 { Width::Word } else { Width::Half };
         let mut src = job.src;
         let mut dst = job.dst;
-        // ares: one idle when a DMA burst first owns the bus (`dmaRan`).
-        self.dma_phase_tick();
+        // ares: one idle only when DMA first takes the bus from the CPU.
+        if !nested {
+            self.dma_phase_tick();
+        }
         for _ in 0..job.units {
+            self.dma_drain_hblank();
             let value = self.dma_read_unit(src, width32);
-            // IO/IWRAM beats are 1 cycle; also burn one I for bus turnaround so a
-            // higher-priority HBlank DMA can land between units (GBATEK priority
-            // between read and write is the phase split above; turnaround matches
-            // ares idle between distinct bus masters on the same channel burst).
-            self.dma_phase_tick();
-            self.dma_phase_tick();
+            self.dma_write_cycle = true;
+            for _ in 0..self.dma_access_ticks(src, width) {
+                self.dma_phase_tick();
+            }
             let stored = if width32 { value } else { value & 0xffff };
             self.dma_write_unit(dst, stored, width32);
-            self.dma_phase_tick();
+            self.dma_write_cycle = false;
+            // ares: higher-priority read runs on the step after write completes,
+            // before further bus beats on this channel.
+            self.dma_drain_hblank();
+            for _ in 0..self.dma_access_ticks(dst, width) {
+                self.dma_phase_tick();
+            }
             self.dma_phase_tick();
             src = dma_step_addr(src, job.src_ctrl, unit_size);
             dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
         }
         self.dma_finish_eeprom(job);
         job.units
+    }
+
+    /// Memory beats for one DMA access (GBATEK waitstate tables).
+    fn dma_access_ticks(&self, addr: u32, width: Width) -> u32 {
+        let region = addr >> 24;
+        if (0x08..=0x0D).contains(&region) {
+            let sequential = match self.last_rom {
+                Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
+                None => false,
+            };
+            rom_cycles(self.waitcnt(), addr, width, sequential).max(1)
+        } else {
+            internal_cycles(addr, width).max(1)
+        }
+    }
+
+    fn dma_drain_hblank(&mut self) {
+        if self.dma_hblank_deferred && !self.dma_write_cycle {
+            self.dma_hblank_deferred = false;
+            for channel in 0..4 {
+                if self.dma.reason(channel) == Some(StartReason::HBlank) {
+                    self.dma_fire(channel, StartReason::HBlank);
+                }
+            }
+        }
     }
 
     fn dma_read_unit(&mut self, addr: u32, width32: bool) -> u32 {

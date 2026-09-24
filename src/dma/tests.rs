@@ -440,9 +440,9 @@ fn hblank_to_immediate_while_enabled_starts_without_relatch() {
 
 #[test]
 fn hblank_dma_preempts_immediate_between_read_and_write() {
-    // GBATEK: lower-priority DMA pauses for higher priority. alyosha DMA_pause_timing
-    // end/mid tests sample the timer via DMA0 mid Immediate DMA1 — specifically
-    // after a unit read and before its write.
+    // GBATEK/ares: lower-priority DMA finishes its write before a higher-priority
+    // read (writeCycle). alyosha DMA_pause_timing_* samples TIM0CNT via DMA0 mid
+    // Immediate DMA1 once that write completes.
     let mut machine = Machine::from_rom(vec![0; 0xC0]);
     machine.cycles = HBLANK_START - 1;
     machine.bus.hblank = false;
@@ -501,9 +501,52 @@ fn hblank_dma_preempts_immediate_between_read_and_write() {
         0,
         "Immediate DMA1 clears enable after the copy"
     );
-    // First DMA1 unit read then phase tick crosses into HBlank; DMA0 samples then.
+    // HBlank during DMA1's writeCycle defers DMA0 until after that unit's write.
     assert!(
         captured == 0x0020 || captured == 0x0021 || captured == 0x0022,
         "expected timer near reload, got {captured:#x}"
     );
+}
+
+#[test]
+fn hblank_during_write_cycle_defers_until_after_write() {
+    // ares DMAC::step: while writeCycle, finish the active channel's write before
+    // any higher-priority read. Nested HBlank DMA also skips the bus-take idle.
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.cycles = HBLANK_START - 1;
+    machine.bus.hblank = false;
+    machine.bus.vcount = 0;
+    machine.bus.vblank = false;
+    machine.bus.timers.write16(0, 0x0010);
+    machine.bus.timers.write16(2, 0x0080);
+
+    let tim0 = 0x0400_0100u32;
+    write_channel(
+        &mut machine.bus,
+        DMA0,
+        tim0,
+        IWRAM + 0x40,
+        1,
+        enable_hblank(),
+    );
+    machine.bus.write16(IWRAM + 0x40, 0x00FF);
+    machine.bus.dma_timing = true;
+    machine.bus.begin_step_at(machine.cycles);
+    write_channel(
+        &mut machine.bus,
+        DMA1,
+        tim0,
+        IWRAM,
+        8,
+        enable_immediate() | (2 << 7),
+    );
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.cycle_base = machine.cycles;
+    machine.bus.dma_cycles_paid = 0;
+    machine.bus.fire_ready_imm();
+
+    let captured = machine.bus.read16(IWRAM + 0x40);
+    assert_ne!(captured, 0x00FF, "deferred HBlank DMA0 must still copy");
+    assert_eq!(machine.bus.read16(DMA0 + 10) & (1 << 15), 0);
 }

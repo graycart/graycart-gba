@@ -259,8 +259,8 @@ impl Cpu {
                 match (h, s) {
                     (false, false) => {
                         bus.write16(addr, self.gpr[rd] as u16);
-                        // Thumb STRH: 2S+1N.
-                        bus.add_internal_cycles(1);
+                        // Thumb STRH: 2N (GBATEK).
+                        bus.add_internal_cycles(2);
                         self.last_op = "strh";
                     }
                     (false, true) => {
@@ -301,11 +301,13 @@ impl Cpu {
                     self.last_op = if byte { "ldrb" } else { "ldr" };
                 } else if byte {
                     bus.write8(addr, self.gpr[rd] as u8);
-                    bus.add_internal_cycles(1);
+                    // Thumb STRB: 2N (GBATEK).
+                    bus.add_internal_cycles(2);
                     self.last_op = "strb";
                 } else {
                     bus.write32(addr, self.gpr[rd]);
-                    bus.add_internal_cycles(1);
+                    // Thumb STR: 2N (GBATEK).
+                    bus.add_internal_cycles(2);
                     self.last_op = "str";
                 }
             }
@@ -334,11 +336,13 @@ impl Cpu {
                 self.last_op = if byte { "ldrb" } else { "ldr" };
             } else if byte {
                 bus.write8(addr, self.gpr[rd] as u8);
-                bus.add_internal_cycles(1);
+                // Thumb STRB: 2N (GBATEK) — data beat plus trailing bus slot.
+                bus.add_internal_cycles(2);
                 self.last_op = "strb";
             } else {
                 bus.write32(addr, self.gpr[rd]);
-                bus.add_internal_cycles(1);
+                // Thumb STR: 2N (GBATEK) — data beat plus trailing bus slot.
+                bus.add_internal_cycles(2);
                 self.last_op = "str";
             }
             return Ok(());
@@ -362,7 +366,8 @@ impl Cpu {
                 self.last_op = "ldrh";
             } else {
                 bus.write16(addr, self.gpr[rd] as u16);
-                bus.add_internal_cycles(1);
+                // Thumb STRH: 2N (GBATEK).
+                bus.add_internal_cycles(2);
                 self.last_op = "strh";
             }
             return Ok(());
@@ -380,7 +385,8 @@ impl Cpu {
                 self.last_op = "ldr";
             } else {
                 bus.write32(addr, self.gpr[rd]);
-                bus.add_internal_cycles(1);
+                // Thumb STR (SP-relative): 2N (GBATEK).
+                bus.add_internal_cycles(2);
                 self.last_op = "str";
             }
             return Ok(());
