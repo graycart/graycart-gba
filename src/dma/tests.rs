@@ -437,3 +437,73 @@ fn hblank_to_immediate_while_enabled_starts_without_relatch() {
         "mode-change Immediate leaves enable and timing bits"
     );
 }
+
+#[test]
+fn hblank_dma_preempts_immediate_between_read_and_write() {
+    // GBATEK: lower-priority DMA pauses for higher priority. alyosha DMA_pause_timing
+    // end/mid tests sample the timer via DMA0 mid Immediate DMA1 — specifically
+    // after a unit read and before its write.
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.cycles = HBLANK_START - 1;
+    machine.bus.hblank = false;
+    machine.bus.vcount = 0;
+    machine.bus.vblank = false;
+
+    // Timer 0: reload 0x20, start at F/1. Live counter follows the reload on enable.
+    machine.bus.timers.write16(0, 0x0020);
+    machine.bus.timers.write16(2, 0x0080);
+
+    let tim0 = 0x0400_0100u32;
+    // DMA0: HBlank, 16-bit, one unit, TIM0CNT → IWRAM+0x40.
+    write_channel(
+        &mut machine.bus,
+        DMA0,
+        tim0,
+        IWRAM + 0x40,
+        1,
+        enable_hblank(),
+    );
+    // Marker so a missed preempt is obvious.
+    machine.bus.write16(IWRAM + 0x40, 0x00FF);
+
+    machine.bus.dma_timing = true;
+    machine.bus.begin_step_at(machine.cycles);
+    // DMA1: Immediate, several halfwords from TIM0CNT → IWRAM (fixed source).
+    write_channel(
+        &mut machine.bus,
+        DMA1,
+        tim0,
+        IWRAM,
+        4,
+        enable_immediate() | (2 << 7), // fixed source
+    );
+    // GBATEK/ares: two-cycle startup wait before Immediate runs.
+    assert!(machine.bus.any_imm_ready() == false);
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.tick_imm_dma_wait();
+    assert!(machine.bus.any_imm_ready());
+    machine.bus.cycle_base = machine.cycles;
+    machine.bus.dma_cycles_paid = 0;
+    machine.bus.fire_ready_imm();
+
+    let captured = machine.bus.read16(IWRAM + 0x40);
+    assert_ne!(
+        captured, 0x00FF,
+        "DMA0 must overwrite the marker during DMA1"
+    );
+    assert_eq!(
+        machine.bus.read16(DMA0 + 10) & (1 << 15),
+        0,
+        "one-shot HBlank DMA0 clears enable"
+    );
+    assert_eq!(
+        machine.bus.read16(DMA1 + 10) & (1 << 15),
+        0,
+        "Immediate DMA1 clears enable after the copy"
+    );
+    // First DMA1 unit read then phase tick crosses into HBlank; DMA0 samples then.
+    assert!(
+        captured == 0x0020 || captured == 0x0021 || captured == 0x0022,
+        "expected timer near reload, got {captured:#x}"
+    );
+}

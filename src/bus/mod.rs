@@ -68,6 +68,13 @@ pub struct Bus {
     /// next real data access can update the CPU MDR first; open-bus reads force fire).
     #[serde(default)]
     dma_imm_pending: [bool; 4],
+    /// GBATEK/ares: two-cycle wait after Immediate enable before the transfer starts.
+    /// Only used when [`Self::dma_timing`] is set (Machine runs).
+    #[serde(skip)]
+    dma_imm_wait: [u8; 4],
+    /// Immediate channels whose startup wait just hit zero; Machine drains these.
+    #[serde(skip)]
+    dma_imm_ready: [bool; 4],
     /// IWRAM 32-bit data bus latch (halfword accesses merge into one half).
     #[serde(default)]
     iwram_bus: u32,
@@ -101,6 +108,22 @@ pub struct Bus {
     /// Not part of the on-disk snapshot (always false after decode).
     #[serde(skip)]
     save_dirty: bool,
+    /// Machine cycle clock mirrored for mid-DMA / probe (set by Machine each tick).
+    #[serde(skip)]
+    pub(crate) emu_cycles: u64,
+    /// When true, each DMA read/write phase advances timers and scanline so a
+    /// higher-priority channel can preempt between phases (GBATEK / alyosha pause).
+    #[serde(skip)]
+    pub(crate) dma_timing: bool,
+    /// [`Machine`] cycle count at [`Self::begin_step_at`]; DMA phases add on top.
+    #[serde(skip)]
+    pub(crate) cycle_base: u64,
+    /// Scanline / timer cycles already applied inside the current DMA (not in `stall`).
+    #[serde(skip)]
+    pub(crate) dma_cycles_paid: u32,
+    /// Channel currently inside `dma_fire` (for priority nesting).
+    #[serde(skip)]
+    dma_active: Option<u8>,
 }
 
 impl Bus {
@@ -140,6 +163,8 @@ impl Bus {
             dma_open: 0xFFFF_FFFF,
             dma_open_cpu: false,
             dma_imm_pending: [false; 4],
+            dma_imm_wait: [0; 4],
+            dma_imm_ready: [false; 4],
             iwram_bus: 0,
             // Post-boot latch: last BIOS opcode word (at 0xE4), not a fetch of 0.
             bios_prefetch: 0xE129_F000,
@@ -160,6 +185,11 @@ impl Bus {
             gb_mode: false,
             cgb_romdis: false,
             save_dirty: false,
+            emu_cycles: 0,
+            dma_timing: false,
+            cycle_base: 0,
+            dma_cycles_paid: 0,
+            dma_active: None,
         }
     }
 
@@ -266,8 +296,8 @@ impl Bus {
     }
 
     /// ARM B/BL/BX pipeline refill: opcode fetch already paid 1 bus cycle; pay the
-    /// remaining 1N+1S (ARM 2S+1N total) and leave `last_rom` so the next fetch at
-    /// `target` is sequential (the first refill word).
+    /// remaining 1N (ARM 2S+1N total with the next step's sequential fetch) and leave
+    /// `last_rom` so the next fetch at `target` is sequential (GBATEK).
     pub fn arm_branch_refill(&mut self, target: u32) {
         if self.dma.busy {
             return;
@@ -277,12 +307,35 @@ impl Bus {
         if (0x08..=0x0D).contains(&region) {
             self.step_pak = true;
             let waitcnt = self.waitcnt();
+            // Remaining non-sequential word of the refill; next CPU fetch pays S.
             let n = rom_cycles(waitcnt, t, Width::Word, false);
-            let s = rom_cycles(waitcnt, t.wrapping_add(4), Width::Word, true);
-            self.step_cycles = self.step_cycles.saturating_add(n.saturating_add(s));
+            self.step_cycles = self.step_cycles.saturating_add(n);
             self.last_rom = Some((t.wrapping_sub(4), 4));
         } else {
-            // Internal 32-bit bus: 1N+1S ≈ 2 cycles.
+            // Internal 32-bit bus: remaining 1N after the opcode fetch.
+            self.step_cycles = self.step_cycles.saturating_add(1);
+            self.last_rom = None;
+        }
+    }
+
+    /// Thumb taken B/Bcond pipeline refill: opcode fetch already paid 1 bus cycle;
+    /// pay the remaining 1N+1S (Thumb 2S+1N total) and leave `last_rom` so the next
+    /// fetch at `target` is sequential. The following opcode fetch is still charged
+    /// as S; on Game Pak with S=1 that matches one filled pipeline slot (GBATEK).
+    pub fn thumb_branch_refill(&mut self, target: u32) {
+        if self.dma.busy {
+            return;
+        }
+        let t = target & !1;
+        let region = t >> 24;
+        if (0x08..=0x0D).contains(&region) {
+            self.step_pak = true;
+            let waitcnt = self.waitcnt();
+            let n = rom_cycles(waitcnt, t, Width::Half, false);
+            let s = rom_cycles(waitcnt, t.wrapping_add(2), Width::Half, true);
+            self.step_cycles = self.step_cycles.saturating_add(n.saturating_add(s));
+            self.last_rom = Some((t.wrapping_sub(2), 2));
+        } else {
             self.step_cycles = self.step_cycles.saturating_add(2);
             self.last_rom = None;
         }
@@ -290,8 +343,22 @@ impl Bus {
 
     /// Clear per-instruction wait accounting before [`Cpu::step`](crate::cpu::Cpu::step).
     pub fn begin_step(&mut self) {
+        self.begin_step_at(0);
+    }
+
+    /// Like [`Self::begin_step`], and record the machine cycle clock for mid-DMA ticks.
+    pub fn begin_step_at(&mut self, cycles: u64) {
         self.step_cycles = 0;
         self.step_pak = false;
+        self.cycle_base = cycles;
+        self.dma_cycles_paid = 0;
+    }
+
+    /// Cycles already applied inside DMA during the last step (timers/scanline updated).
+    pub fn take_dma_cycles_paid(&mut self) -> u32 {
+        let n = self.dma_cycles_paid;
+        self.dma_cycles_paid = 0;
+        n
     }
 
     /// After an internal-only instruction, fill the prefetch buffer during those cycles.
@@ -937,6 +1004,8 @@ impl Bus {
                 }
                 Some(dma::CntHWrite::EnableFall(channel)) => {
                     self.dma_imm_pending[channel] = false;
+                    self.dma_imm_wait[channel] = 0;
+                    self.dma_imm_ready[channel] = false;
                 }
                 None => {}
             }
@@ -1152,6 +1221,10 @@ impl Bus {
                 let width32 = self.dma.cnt_h(channel) & (1 << 10) != 0;
                 if width32 && Self::dma_source_unused_io(src) {
                     self.dma_imm_pending[channel] = true;
+                } else if self.dma_timing && rising {
+                    // ares: active + waiting=2 after Immediate enable. Unit tests leave
+                    // `dma_timing` off so they still see the copy on the enable write.
+                    self.dma_imm_wait[channel] = 2;
                 } else {
                     self.dma_fire(channel, StartReason::Immediate);
                     if !rising {
@@ -1174,8 +1247,11 @@ impl Bus {
     }
 
     fn dma_fire(&mut self, channel: usize, reason: StartReason) {
-        if self.dma.busy {
-            return;
+        if let Some(active) = self.dma_active {
+            // Lower-or-equal priority cannot preempt (GBATEK channel order).
+            if (channel as u8) >= active {
+                return;
+            }
         }
         let job = match reason {
             StartReason::Fifo => self.dma.fifo_job(channel),
@@ -1187,69 +1263,115 @@ impl Bus {
             return;
         }
         let width32 = job.width32;
+        let prev = self.dma_active;
+        let phased =
+            self.dma_timing && (prev.is_some() || reason == StartReason::Immediate);
+        self.dma_active = Some(channel as u8);
         self.dma.busy = true;
-        // DMA owns the Game Pak bus; the next CPU ROM access is non-sequential.
         self.last_rom = None;
-        let units = self.dma_copy(&job);
-        self.dma.busy = false;
+        let units = if phased {
+            self.dma_copy_phased(&job)
+        } else {
+            self.dma_copy_atomic(&job)
+        };
+        self.dma_active = prev;
+        self.dma.busy = prev.is_some();
         if let Some(mask) = self.dma.finish(channel, reason, units, width32) {
             self.irq.raise(mask);
         }
+        if phased {
+            self.dma.stall = 0;
+        }
     }
 
-    fn dma_copy(&mut self, job: &dma::Copy) -> u32 {
+    fn dma_copy_atomic(&mut self, job: &dma::Copy) -> u32 {
         let this = self as *mut Bus;
         let width32 = job.width32;
         let mut read = |addr: u32| -> u32 {
-            // Safety: `dma.busy` blocks nested `dma_fire` / `dma_on_enable` from
-            // starting another copy, so these closures never re-enter `dma_copy`.
-            unsafe {
-                let inaccessible = Bus::dma_source_inaccessible(addr);
-                let unused_io = Bus::dma_source_unused_io(addr);
-                // Use `access`/`store` so deferred-immediate pending is not re-entered.
-                let raw = if width32 {
-                    (*this).access(addr, 4, Access::Data)
-                } else {
-                    (*this).access(addr, 2, Access::Data)
-                };
-                // Inaccessible sources (< EWRAM): keep the DMA latch (alyosha/ares).
-                // 16-bit unused I/O keeps it and duplicates both CPU open-bus halves.
-                // 32-bit unused I/O samples the CPU MDR (ares I/O decode miss → mdr).
-                let value = if inaccessible || (!width32 && unused_io) {
-                    if width32 {
-                        (*this).dma_open
-                    } else {
-                        (*this).dma_open & 0xFFFF
-                    }
-                } else if unused_io {
-                    (*this).last_data
-                } else {
-                    raw
-                };
-                if width32 {
-                    if !inaccessible {
-                        (*this).dma_open = value;
-                    }
-                    (*this).last_data = (*this).dma_open;
-                    (*this).dma_open_cpu = true;
-                    (*this).dma_open
-                } else {
-                    let half = value & 0xFFFF;
-                    (*this).dma_open = half | (half << 16);
-                    (*this).last_data = (*this).dma_open;
-                    (*this).dma_open_cpu = true;
-                    half
-                }
-            }
+            // Safety: `dma_active` blocks equal/lower nested `dma_fire`; unit tests
+            // keep `dma_timing` off so these closures do not re-enter mid-copy.
+            unsafe { (*this).dma_read_unit(addr, width32) }
         };
         let mut write = |addr: u32, value: u32| unsafe {
-            if width32 {
-                (*this).store(addr, value, 4);
-            } else {
-                (*this).store(addr, value, 2);
-            }
+            (*this).dma_write_unit(addr, value, width32);
         };
         let units = dma::run_copy(job, &mut read, &mut write);
+        self.dma_finish_eeprom(job);
+        units
+    }
+
+    /// Cycle-accurate unit loop: after each read, tick so HBlank DMA0 can preempt
+    /// before the matching write (alyosha DMA_pause_timing_*; GBATEK priority).
+    fn dma_copy_phased(&mut self, job: &dma::Copy) -> u32 {
+        let width32 = job.width32;
+        let unit_size = if width32 { 4u32 } else { 2 };
+        let mut src = job.src;
+        let mut dst = job.dst;
+        // ares: one idle when a DMA burst first owns the bus (`dmaRan`).
+        self.dma_phase_tick();
+        for _ in 0..job.units {
+            let value = self.dma_read_unit(src, width32);
+            // IO/IWRAM beats are 1 cycle; also burn one I for bus turnaround so a
+            // higher-priority HBlank DMA can land between units (GBATEK priority
+            // between read and write is the phase split above; turnaround matches
+            // ares idle between distinct bus masters on the same channel burst).
+            self.dma_phase_tick();
+            self.dma_phase_tick();
+            let stored = if width32 { value } else { value & 0xffff };
+            self.dma_write_unit(dst, stored, width32);
+            self.dma_phase_tick();
+            self.dma_phase_tick();
+            src = dma_step_addr(src, job.src_ctrl, unit_size);
+            dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
+        }
+        self.dma_finish_eeprom(job);
+        job.units
+    }
+
+    fn dma_read_unit(&mut self, addr: u32, width32: bool) -> u32 {
+        let inaccessible = Self::dma_source_inaccessible(addr);
+        let unused_io = Self::dma_source_unused_io(addr);
+        let raw = if width32 {
+            self.access(addr, 4, Access::Data)
+        } else {
+            self.access(addr, 2, Access::Data)
+        };
+        let value = if inaccessible || (!width32 && unused_io) {
+            if width32 {
+                self.dma_open
+            } else {
+                self.dma_open & 0xFFFF
+            }
+        } else if unused_io {
+            self.last_data
+        } else {
+            raw
+        };
+        if width32 {
+            if !inaccessible {
+                self.dma_open = value;
+            }
+            self.last_data = self.dma_open;
+            self.dma_open_cpu = true;
+            self.dma_open
+        } else {
+            let half = value & 0xFFFF;
+            self.dma_open = half | (half << 16);
+            self.last_data = self.dma_open;
+            self.dma_open_cpu = true;
+            half
+        }
+    }
+
+    fn dma_write_unit(&mut self, addr: u32, value: u32, width32: bool) {
+        if width32 {
+            self.store(addr, value, 4);
+        } else {
+            self.store(addr, value, 2);
+        }
+    }
+
+    fn dma_finish_eeprom(&mut self, job: &dma::Copy) {
         if self.save_kind == SaveKind::Eeprom
             && (Self::eeprom_region(job.src) || Self::eeprom_region(job.dst))
             && let SaveChip::Eeprom(eeprom) = &mut self.save
@@ -1257,7 +1379,54 @@ impl Bus {
             eeprom.end_transfer();
             self.save_dirty = true;
         }
-        units
+    }
+
+    /// One DMA bus phase: scanline first so HBlank DMA samples the timer before
+    /// this cycle's increment (matches CPU `advance_cycles` edge-before-use for
+    /// the same absolute time), then tick timers/APU.
+    fn dma_phase_tick(&mut self) {
+        if !self.dma_timing {
+            return;
+        }
+        self.dma_cycles_paid = self.dma_cycles_paid.saturating_add(1);
+        let abs = self
+            .cycle_base
+            .wrapping_add(u64::from(self.step_cycles))
+            .wrapping_add(u64::from(self.dma_cycles_paid));
+
+        const CYCLES_PER_LINE: u64 = 1232;
+        const HBLANK_START: u64 = 960;
+        const LINES: u64 = 228;
+        let line = (abs / CYCLES_PER_LINE) % LINES;
+        self.vcount = line as u16;
+        let vblank = self.vcount >= 160;
+        let hblank = (abs % CYCLES_PER_LINE) >= HBLANK_START;
+        let vblank_edge = vblank && !self.vblank;
+        let hblank_edge = hblank && !self.hblank;
+        self.vblank = vblank;
+        self.hblank = hblank;
+        if vblank_edge {
+            self.dma_on_vblank();
+        }
+        if hblank_edge {
+            if self.vcount < 160 {
+                self.dma_on_hblank();
+            }
+            if (2..=161).contains(&self.vcount) {
+                self.dma_on_video_capture();
+            }
+        }
+
+        let mask = self.timers.tick(1);
+        self.tick_apu(mask);
+        for index in 0..4u32 {
+            if mask & (1 << index) != 0 {
+                let control = self.timers.read16(index * 4 + 2);
+                if control & (1 << 6) != 0 {
+                    self.irq.raise(1 << (3 + index));
+                }
+            }
+        }
     }
 
     /// DMA sources below EWRAM (BIOS / unused hole): keep `dma_open` (ares).
@@ -1493,10 +1662,40 @@ impl Bus {
         self.dma_imm_pending.iter().any(|&p| p)
     }
 
+    /// Count down Immediate startup waits (GBATEK 2-cycle post-enable). Call once per cycle.
+    pub fn tick_imm_dma_wait(&mut self) {
+        for channel in 0..4 {
+            if self.dma_imm_wait[channel] == 0 {
+                continue;
+            }
+            self.dma_imm_wait[channel] -= 1;
+            if self.dma_imm_wait[channel] == 0 {
+                self.dma_imm_ready[channel] = true;
+            }
+        }
+    }
+
+    /// True when an Immediate channel finished its 2-cycle startup wait.
+    pub fn any_imm_ready(&self) -> bool {
+        self.dma_imm_ready.iter().any(|&r| r)
+    }
+
+    /// Fire every Immediate channel whose startup wait has elapsed.
+    pub fn fire_ready_imm(&mut self) {
+        for channel in 0..4 {
+            if self.dma_imm_ready[channel] {
+                self.dma_imm_ready[channel] = false;
+                self.dma_fire(channel, StartReason::Immediate);
+            }
+        }
+    }
+
     fn fire_pending_imm(&mut self) {
         for channel in 0..4 {
             if self.dma_imm_pending[channel] {
                 self.dma_imm_pending[channel] = false;
+                self.dma_imm_wait[channel] = 0;
+                self.dma_imm_ready[channel] = false;
                 self.dma_fire(channel, StartReason::Immediate);
             }
         }
@@ -1587,6 +1786,14 @@ impl Bus {
 enum Access {
     Fetch,
     Data,
+}
+
+fn dma_step_addr(addr: u32, ctrl: u8, unit_size: u32) -> u32 {
+    match ctrl {
+        0 | 3 => addr.wrapping_add(unit_size),
+        1 => addr.wrapping_sub(unit_size),
+        _ => addr,
+    }
 }
 
 fn width_bytes(width: Width) -> u32 {

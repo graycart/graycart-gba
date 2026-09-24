@@ -17,6 +17,8 @@ struct Timer {
     control: u16,
     /// Cycles toward the next increment when not in count-up mode.
     divider: u32,
+    /// ares: reload/enable is latched; first increment waits one cycle after start.
+    start_latency: u8,
 }
 
 impl Timer {
@@ -26,6 +28,7 @@ impl Timer {
             counter: 0,
             control: 0,
             divider: 0,
+            start_latency: 0,
         }
     }
 
@@ -82,6 +85,8 @@ impl Timers {
         if !was_started && t.started() {
             t.counter = t.reload;
             t.divider = 0;
+            // ares `reloadLatch`: the start edge does not increment on the same cycle.
+            t.start_latency = 1;
         }
     }
 
@@ -95,6 +100,11 @@ impl Timers {
             for i in 0..4 {
                 let mut this_overflow = false;
                 if self.timers[i].started() {
+                    if self.timers[i].start_latency > 0 {
+                        self.timers[i].start_latency -= 1;
+                        prev_overflow = false;
+                        continue;
+                    }
                     let cascade = i > 0 && self.timers[i].count_up();
                     let step = if cascade {
                         prev_overflow

@@ -58,9 +58,10 @@ fn rom_ns(waitcnt: u16, addr: u32) -> (u32, u32) {
 
 /// ROM (WS0/WS1/WS2) access cycles for the given width.
 ///
-/// 8/16-bit: one N or one S. 32-bit Game Pak: N+S (non-sequential) or S+S
-/// (sequential), per GBATEK. Prefetch word hits stay cost 1 in the bus charge
-/// path (`Prefetch::take_n`), not here.
+/// 8/16-bit: one N or one S. 32-bit Game Pak is two 16-bit beats; a non-sequential
+/// word inserts one internal cycle between halves (N+1+S). A sequential word is
+/// S+S (both halves sequential — no extra turnaround). Prefetch word hits stay
+/// cost 1 in `Prefetch::take_n`.
 pub fn rom_cycles(waitcnt: u16, addr: u32, width: Width, sequential: bool) -> u32 {
     let (n, s) = rom_ns(waitcnt, addr);
     match width {
@@ -75,7 +76,7 @@ pub fn rom_cycles(waitcnt: u16, addr: u32, width: Width, sequential: bool) -> u3
             if sequential {
                 s.saturating_add(s)
             } else {
-                n.saturating_add(s)
+                n.saturating_add(s).saturating_add(1)
             }
         }
     }
@@ -133,8 +134,8 @@ mod tests {
 
     #[test]
     fn waitcnt0_ws0_word_n_and_s() {
-        // 32-bit Game Pak: N+S (non-seq) or S+S (seq). WAITCNT 0 → N=4 S=2.
-        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, false), 6);
+        // 32-bit Game Pak: N+1+S (non-seq) or S+S (seq). WAITCNT 0 → N=4 S=2.
+        assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, false), 7);
         assert_eq!(rom_cycles(0, 0x0800_0000, Width::Word, true), 4);
     }
 

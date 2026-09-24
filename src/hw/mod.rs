@@ -8,6 +8,8 @@ use crate::cpu::{Cpu, StepError};
 use crate::ppu::Ppu;
 
 const CYCLES_PER_LINE: u64 = 1232;
+/// End of visible dots (240×4). HBlank DMA/IRQ use this edge (mGBA/NBA/alyosha).
+/// DISPSTAT's documented mid-line quirk at 1006 is not applied to DMA start.
 const HBLANK_START: u64 = 960;
 const LINES: u16 = 228;
 const CYCLES_PER_FRAME: u64 = CYCLES_PER_LINE * LINES as u64;
@@ -172,6 +174,7 @@ impl Machine {
     }
 
     fn run_until(&mut self, budget: u64, watch: bool) -> DebugEnd {
+        self.bus.dma_timing = true;
         let mut watch_state = LoopWatch::default();
         let end = loop {
             if self.cycles >= budget {
@@ -197,12 +200,20 @@ impl Machine {
                 self.bus.dma.stall -= 1;
                 1
             } else if !self.bus.halted {
-                self.bus.begin_step();
+                self.bus.begin_step_at(self.cycles);
                 self.arm_steps = self.arm_steps.saturating_add(1);
                 match self.cpu.step(&mut self.bus) {
                     Ok(()) => {
                         self.bus.finish_step(self.cpu.fetch_pc);
-                        let n = self.bus.take_step_cycles();
+                let paid = self.bus.take_dma_cycles_paid();
+                if paid > 0 {
+                    self.cycles = self.cycles.saturating_add(u64::from(paid));
+                    self.bus.emu_cycles = self.cycles;
+                    self.prev_hblank = self.bus.hblank;
+                    self.prev_vblank = self.bus.vblank;
+                    self.prev_vmatch = self.bus.vcount_match();
+                }
+                let n = self.bus.take_step_cycles();
                         self.idle = self.cpu.idle;
                         if watch && let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
                             // Still advance the charged cycles so VCOUNT moves.
@@ -232,6 +243,7 @@ impl Machine {
                 self.render_frame();
             }
         };
+        self.bus.dma_timing = false;
         self.idle = self.cpu.idle;
         // Idle can land mid-frame; always settle the picture on exit.
         self.render_frame();
@@ -243,6 +255,9 @@ impl Machine {
     fn advance_cycles(&mut self, count: u32) -> bool {
         for _ in 0..count {
             self.cycles += 1;
+            self.bus.emu_cycles = self.cycles;
+
+            self.bus.tick_imm_dma_wait();
 
             let mask = self.bus.timers.tick(1);
             self.bus.tick_apu(mask);
@@ -290,6 +305,22 @@ impl Machine {
             self.prev_vblank = self.bus.vblank;
             self.prev_hblank = self.bus.hblank;
             self.prev_vmatch = vmatch;
+
+            // Immediate DMA startup wait elapsed: run a phased transfer on this clock.
+            if self.bus.any_imm_ready() {
+                self.bus.cycle_base = self.cycles;
+                self.bus.dma_cycles_paid = 0;
+                // step_cycles stays 0 so phase abs times are cycle_base + paid.
+                self.bus.fire_ready_imm();
+                let paid = self.bus.take_dma_cycles_paid();
+                if paid > 0 {
+                    self.cycles = self.cycles.saturating_add(u64::from(paid));
+                    self.bus.emu_cycles = self.cycles;
+                    self.prev_hblank = self.bus.hblank;
+                    self.prev_vblank = self.bus.vblank;
+                    self.prev_vmatch = self.bus.vcount_match();
+                }
+            }
 
             if self.bus.halted {
                 self.cpu.poll_intr_wait(&mut self.bus);

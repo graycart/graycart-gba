@@ -202,6 +202,7 @@ impl Cpu {
                     let (sum, _, _) = add_carry(d_val, s_val, false);
                     if dst == 15 {
                         self.branch(sum, true);
+                        bus.thumb_branch_refill(self.fetch_pc);
                     } else {
                         self.gpr[dst] = sum;
                     }
@@ -215,12 +216,18 @@ impl Cpu {
                     if dst == 15 {
                         // MOV to PC stays in Thumb; bit 0 is discarded (DDI 0210C).
                         self.branch(s_val, true);
+                        bus.thumb_branch_refill(self.fetch_pc);
                     } else {
                         self.gpr[dst] = s_val;
                     }
                 }
                 _ => {
                     self.branch(s_val, s_val & 1 != 0);
+                    if self.cpsr & 0x20 != 0 {
+                        bus.thumb_branch_refill(self.fetch_pc);
+                    } else {
+                        bus.arm_branch_refill(self.fetch_pc);
+                    }
                     self.last_op = "bx";
                 }
             }
@@ -233,6 +240,8 @@ impl Cpu {
             let imm = (instr & 0xFF) as u32;
             let addr = (pc & !2).wrapping_add(imm << 2);
             let value = bus.read32(addr).rotate_right((addr & 3) * 8);
+            // Thumb LDR: 1S+1N+1I (GBATEK).
+            bus.add_internal_cycles(1);
             self.gpr[rd] = value;
             self.last_op = "ldr";
             return Ok(());
@@ -250,10 +259,13 @@ impl Cpu {
                 match (h, s) {
                     (false, false) => {
                         bus.write16(addr, self.gpr[rd] as u16);
+                        // Thumb STRH: 2S+1N.
+                        bus.add_internal_cycles(1);
                         self.last_op = "strh";
                     }
                     (false, true) => {
                         self.gpr[rd] = bus.read8(addr) as i8 as i32 as u32;
+                        bus.add_internal_cycles(1);
                         self.last_op = "ldrsb";
                     }
                     (true, false) => {
@@ -263,6 +275,7 @@ impl Cpu {
                         } else {
                             raw
                         };
+                        bus.add_internal_cycles(1);
                         self.last_op = "ldrh";
                     }
                     (true, true) => {
@@ -271,6 +284,7 @@ impl Cpu {
                         } else {
                             bus.read16(addr) as i16 as i32 as u32
                         };
+                        bus.add_internal_cycles(1);
                         self.last_op = "ldrsh";
                     }
                 }
@@ -283,12 +297,15 @@ impl Cpu {
                     } else {
                         bus.read32(addr).rotate_right((addr & 3) * 8)
                     };
+                    bus.add_internal_cycles(1);
                     self.last_op = if byte { "ldrb" } else { "ldr" };
                 } else if byte {
                     bus.write8(addr, self.gpr[rd] as u8);
+                    bus.add_internal_cycles(1);
                     self.last_op = "strb";
                 } else {
                     bus.write32(addr, self.gpr[rd]);
+                    bus.add_internal_cycles(1);
                     self.last_op = "str";
                 }
             }
@@ -313,12 +330,15 @@ impl Cpu {
                 } else {
                     bus.read32(addr).rotate_right((addr & 3) * 8)
                 };
+                bus.add_internal_cycles(1);
                 self.last_op = if byte { "ldrb" } else { "ldr" };
             } else if byte {
                 bus.write8(addr, self.gpr[rd] as u8);
+                bus.add_internal_cycles(1);
                 self.last_op = "strb";
             } else {
                 bus.write32(addr, self.gpr[rd]);
+                bus.add_internal_cycles(1);
                 self.last_op = "str";
             }
             return Ok(());
@@ -338,9 +358,11 @@ impl Cpu {
                 } else {
                     raw
                 };
+                bus.add_internal_cycles(1);
                 self.last_op = "ldrh";
             } else {
                 bus.write16(addr, self.gpr[rd] as u16);
+                bus.add_internal_cycles(1);
                 self.last_op = "strh";
             }
             return Ok(());
@@ -354,9 +376,11 @@ impl Cpu {
             let addr = self.gpr[13].wrapping_add(imm << 2);
             if load {
                 self.gpr[rd] = bus.read32(addr).rotate_right((addr & 3) * 8);
+                bus.add_internal_cycles(1);
                 self.last_op = "ldr";
             } else {
                 bus.write32(addr, self.gpr[rd]);
+                bus.add_internal_cycles(1);
                 self.last_op = "str";
             }
             return Ok(());
@@ -488,6 +512,7 @@ impl Cpu {
             if condition(self.cpsr, u32::from(cond)) {
                 let offset = ((instr & 0xFF) as i8 as i32) << 1;
                 self.fetch_pc = pc.wrapping_add(offset as u32);
+                bus.thumb_branch_refill(self.fetch_pc);
             }
             return Ok(());
         }
@@ -500,6 +525,7 @@ impl Cpu {
                 self.idle = true;
             }
             self.fetch_pc = target;
+            bus.thumb_branch_refill(self.fetch_pc);
             self.last_op = "b";
             return Ok(());
         }
@@ -517,6 +543,7 @@ impl Cpu {
             self.gpr[14] = self.exec_pc.wrapping_add(2) | 1;
             // ARM7 BL stays in Thumb; bit 0 of temp is always clear.
             self.branch(temp, true);
+            bus.thumb_branch_refill(self.fetch_pc);
             self.last_op = "bl";
             return Ok(());
         }
@@ -530,8 +557,13 @@ impl Cpu {
     fn bx(&mut self, bus: &mut Bus, instr: u32) -> Result<(), StepError> {
         let rm = (instr & 0xF) as usize;
         let value = self.read_gpr(rm, self.exec_pc.wrapping_add(8));
-        self.branch(value, value & 1 != 0);
-        bus.arm_branch_refill(self.fetch_pc);
+        let thumb = value & 1 != 0;
+        self.branch(value, thumb);
+        if thumb {
+            bus.thumb_branch_refill(self.fetch_pc);
+        } else {
+            bus.arm_branch_refill(self.fetch_pc);
+        }
         self.last_op = "bx";
         Ok(())
     }
@@ -831,6 +863,8 @@ impl Cpu {
             } else {
                 bus.write32(access, stored);
             }
+            // ARM STR: 2N (GBATEK) — data access paid; one more bus slot.
+            bus.add_internal_cycles(1);
             if writeback {
                 self.gpr[rn] = indexed;
             }
@@ -972,6 +1006,11 @@ impl Cpu {
                 bus.write32(addr, value);
             }
             addr = addr.wrapping_add(4);
+        }
+        // GBATEK: LDM is nS+1N+1I (trailing I). STM is (n-1)S+2N (no extra I here;
+        // first/last N are from bus sequential breaks on the write bursts).
+        if load {
+            bus.add_internal_cycles(1);
         }
         self.last_op = if load { "ldm" } else { "stm" };
         Ok(())
