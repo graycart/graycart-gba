@@ -2,7 +2,7 @@
 
 ## 0.2.8
 
-CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read.
+CGB color uses the 1.7 brightness curve on the SM83 present path only. A 16-bit DMA from unused I/O keeps both halves of the DMA open-bus latch for the next CPU read. A 32-bit DMA from unused I/O samples the CPU data latch after the enabling instruction's own load.
 
 ## 0.2.7
 

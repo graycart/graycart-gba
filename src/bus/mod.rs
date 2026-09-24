@@ -64,6 +64,13 @@ pub struct Bus {
     /// instead of the instruction prefetch latch (mGBA `bus` / dmaPC window).
     #[serde(default)]
     dma_open_cpu: bool,
+    /// Immediate DMA armed but not yet fired (GBATEK/ares: startup delay so the
+    /// next real data access can update the CPU MDR first; open-bus reads force fire).
+    #[serde(default)]
+    dma_imm_pending: [bool; 4],
+    /// IWRAM 32-bit data bus latch (halfword accesses merge into one half).
+    #[serde(default)]
+    iwram_bus: u32,
     bios_prefetch: u32,
     pub warn_lines: Vec<String>,
     openbus_logged: HashSet<u32>,
@@ -132,6 +139,8 @@ impl Bus {
             // Floating DMA data bus until the first real DMA memory read.
             dma_open: 0xFFFF_FFFF,
             dma_open_cpu: false,
+            dma_imm_pending: [false; 4],
+            iwram_bus: 0,
             // Post-boot latch: last BIOS opcode word (at 0xE4), not a fetch of 0.
             bios_prefetch: 0xE129_F000,
             warn_lines: Vec::new(),
@@ -354,38 +363,67 @@ impl Bus {
     }
 
     pub fn read8(&mut self, addr: u32) -> u8 {
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Byte, Access::Data);
-        self.access(addr, 1, Access::Data).to_le_bytes()[0]
+        let value = self.access(addr, 1, Access::Data).to_le_bytes()[0];
+        if run_pending {
+            self.fire_pending_imm();
+        }
+        value
     }
 
     pub fn read16(&mut self, addr: u32) -> u16 {
         let addr = align_data(addr, 2);
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Half, Access::Data);
         let bits = self.access(addr, 2, Access::Data);
+        if run_pending {
+            self.fire_pending_imm();
+        }
         bits as u16
     }
 
     pub fn read32(&mut self, addr: u32) -> u32 {
         let addr = align_data(addr, 4);
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Word, Access::Data);
-        self.access(addr, 4, Access::Data)
+        let value = self.access(addr, 4, Access::Data);
+        if run_pending {
+            self.fire_pending_imm();
+        }
+        value
     }
 
     pub fn write8(&mut self, addr: u32, value: u8) {
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Byte, Access::Data);
         self.store(addr, value as u32, 1);
+        self.latch(value as u32);
+        if run_pending {
+            self.fire_pending_imm();
+        }
     }
 
     pub fn write16(&mut self, addr: u32, value: u16) {
         let addr = align_data(addr, 2);
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Half, Access::Data);
         self.store(addr, value as u32, 2);
+        self.latch(value as u32);
+        if run_pending {
+            self.fire_pending_imm();
+        }
     }
 
     pub fn write32(&mut self, addr: u32, value: u32) {
         let addr = align_data(addr, 4);
+        let run_pending = self.any_imm_pending();
         self.charge(addr, Width::Word, Access::Data);
         self.store(addr, value, 4);
+        self.latch(value);
+        if run_pending {
+            self.fire_pending_imm();
+        }
     }
 
     /// Charge waitstates for one CPU access. Skipped while DMA owns the bus.
@@ -460,13 +498,14 @@ impl Bus {
             }
             0x03 => {
                 let off = (addr & 0x7FFF) as usize;
-                let value = if let Some(v) = self.load_intr_check(off, size) {
+                if let Some(v) = self.load_intr_check(off, size) {
+                    self.latch(v);
                     v
                 } else {
-                    slice_load(&self.iwram, off, size)
-                };
-                self.latch(value);
-                value
+                    let word = self.load_iwram_bus(addr, size);
+                    self.latch(word);
+                    self.open_slice(word, addr, size)
+                }
             }
             0x04 => {
                 let off = addr & 0x00FF_FFFF;
@@ -493,9 +532,10 @@ impl Bus {
                 value
             }
             0x07 => {
-                let value = slice_load(&self.oam, (addr & 0x3FF) as usize, size);
-                self.latch(value);
-                value
+                // OAM is a 32-bit bus: any access latches the aligned word (ares/GBATEK).
+                let word = slice_load(&self.oam, (addr & 0x3FC) as usize, 4);
+                self.latch(word);
+                self.open_slice(word, addr, size)
             }
             0x08..=0x0C => {
                 if self.touch_gpio(addr) {
@@ -533,7 +573,7 @@ impl Bus {
                 if self.store_intr_check(off, value, size) {
                     return;
                 }
-                slice_store(&mut self.iwram, off, value, size);
+                self.store_iwram_bus(addr, value, size);
             }
             0x04 => {
                 let off = addr & 0x00FF_FFFF;
@@ -1029,7 +1069,19 @@ impl Bus {
             return;
         }
         match reason {
-            StartReason::Immediate => self.dma_fire(channel, StartReason::Immediate),
+            // Normal immediate DMA runs on the enable write (before the CPU
+            // continues). 32-bit unused-I/O sources defer until the next real
+            // data access so a following LDRH can update the CPU MDR first
+            // (alyosha Bus/DMA_OAM_Bus).
+            StartReason::Immediate => {
+                let src = self.dma.sad(channel);
+                let width32 = self.dma.cnt_h(channel) & (1 << 10) != 0;
+                if width32 && Self::dma_source_unused_io(src) {
+                    self.dma_imm_pending[channel] = true;
+                } else {
+                    self.dma_fire(channel, StartReason::Immediate);
+                }
+            }
             StartReason::VBlank
             | StartReason::HBlank
             | StartReason::Fifo
@@ -1068,25 +1120,30 @@ impl Bus {
             // Safety: `dma.busy` blocks nested `dma_fire` / `dma_on_enable` from
             // starting another copy, so these closures never re-enter `dma_copy`.
             unsafe {
-                let open = Bus::dma_source_open(addr);
+                let inaccessible = Bus::dma_source_inaccessible(addr);
+                let unused_io = Bus::dma_source_unused_io(addr);
+                // Use `access`/`store` so deferred-immediate pending is not re-entered.
                 let raw = if width32 {
-                    (*this).read32(addr)
+                    (*this).access(addr, 4, Access::Data)
                 } else {
-                    u32::from((*this).read16(addr))
+                    (*this).access(addr, 2, Access::Data)
                 };
-                // Unused / out-of-reach sources do not replace the DMA latch; they
-                // still publish it onto the CPU open bus (alyosha Bus/ReadMe).
-                let value = if open {
+                // Inaccessible sources (< EWRAM): keep the DMA latch (alyosha/ares).
+                // 16-bit unused I/O keeps it and duplicates both CPU open-bus halves.
+                // 32-bit unused I/O samples the CPU MDR (ares I/O decode miss → mdr).
+                let value = if inaccessible || (!width32 && unused_io) {
                     if width32 {
                         (*this).dma_open
                     } else {
                         (*this).dma_open & 0xFFFF
                     }
+                } else if unused_io {
+                    (*this).last_data
                 } else {
                     raw
                 };
                 if width32 {
-                    if !open {
+                    if !inaccessible {
                         (*this).dma_open = value;
                     }
                     (*this).last_data = (*this).dma_open;
@@ -1103,9 +1160,9 @@ impl Bus {
         };
         let mut write = |addr: u32, value: u32| unsafe {
             if width32 {
-                (*this).write32(addr, value);
+                (*this).store(addr, value, 4);
             } else {
-                (*this).write16(addr, value as u16);
+                (*this).store(addr, value, 2);
             }
         };
         let units = dma::run_copy(job, &mut read, &mut write);
@@ -1119,19 +1176,18 @@ impl Bus {
         units
     }
 
-    /// DMA sources that return open bus / are out of reach: keep `dma_open`.
-    fn dma_source_open(addr: u32) -> bool {
-        match addr >> 24 {
-            // BIOS and the unused hole below EWRAM: DMA cannot fetch new data.
-            0x00 | 0x01 => true,
-            // I/O past the 1 KiB window (and not the 0x800 mirror) is unused open bus.
-            0x04 => {
-                let off = addr & 0x00FF_FFFF;
-                off >= IO as u32 && off != 0x800
-            }
-            0x02..=0x0F => false,
-            _ => true,
+    /// DMA sources below EWRAM (BIOS / unused hole): keep `dma_open` (ares).
+    fn dma_source_inaccessible(addr: u32) -> bool {
+        addr < 0x0200_0000
+    }
+
+    /// I/O past the 1 KiB window (except the 0x800 mirror) is unused open bus.
+    fn dma_source_unused_io(addr: u32) -> bool {
+        if addr >> 24 != 0x04 {
+            return false;
         }
+        let off = addr & 0x00FF_FFFF;
+        off >= IO as u32 && off != 0x800
     }
 
     fn load_timer_io(&self, off: u32, size: u32) -> u32 {
@@ -1315,6 +1371,11 @@ impl Bus {
     }
 
     fn openbus(&mut self, addr: u32, size: u32, region: &str) -> u32 {
+        // Open-bus data reads force any delayed immediate DMA first so the CPU
+        // sees the DMA latch (alyosha DMA_CPU_Bus_Interaction).
+        if !self.dma.busy {
+            self.fire_pending_imm();
+        }
         self.log_openbus(addr, region);
         // During DMA, and for the first CPU open-bus data read after DMA, the
         // DMA latch is what sits on the bus (alyosha Bus/ReadMe; mGBA `bus`).
@@ -1328,6 +1389,73 @@ impl Bus {
             self.dma_open_cpu = false;
         }
         value
+    }
+
+    fn any_imm_pending(&self) -> bool {
+        self.dma_imm_pending.iter().any(|&p| p)
+    }
+
+    fn fire_pending_imm(&mut self) {
+        for channel in 0..4 {
+            if self.dma_imm_pending[channel] {
+                self.dma_imm_pending[channel] = false;
+                self.dma_fire(channel, StartReason::Immediate);
+            }
+        }
+    }
+
+    /// IWRAM bus: word accesses replace the latch; halfword merges one half (ares).
+    fn load_iwram_bus(&mut self, addr: u32, size: u32) -> u32 {
+        let off = (addr & 0x7FFF) as usize;
+        match size {
+            4 => {
+                let value = slice_load(&self.iwram, off & !3, 4);
+                self.iwram_bus = value;
+                value
+            }
+            2 => {
+                let half = slice_load(&self.iwram, off & !1, 2) as u16;
+                if addr & 2 != 0 {
+                    self.iwram_bus = (self.iwram_bus & 0x0000_FFFF) | (u32::from(half) << 16);
+                } else {
+                    self.iwram_bus = (self.iwram_bus & 0xFFFF_0000) | u32::from(half);
+                }
+                self.iwram_bus
+            }
+            1 => {
+                let byte = slice_load(&self.iwram, off, 1) as u8;
+                let shift = (addr & 3) * 8;
+                self.iwram_bus = (self.iwram_bus & !(0xFF << shift)) | (u32::from(byte) << shift);
+                self.iwram_bus
+            }
+            _ => 0,
+        }
+    }
+
+    fn store_iwram_bus(&mut self, addr: u32, value: u32, size: u32) {
+        let off = (addr & 0x7FFF) as usize;
+        match size {
+            4 => {
+                self.iwram_bus = value;
+                slice_store(&mut self.iwram, off & !3, value, 4);
+            }
+            2 => {
+                let half = value as u16;
+                if addr & 2 != 0 {
+                    self.iwram_bus = (self.iwram_bus & 0x0000_FFFF) | (u32::from(half) << 16);
+                } else {
+                    self.iwram_bus = (self.iwram_bus & 0xFFFF_0000) | u32::from(half);
+                }
+                slice_store(&mut self.iwram, off & !1, u32::from(half), 2);
+            }
+            1 => {
+                let byte = value as u8;
+                let shift = (addr & 3) * 8;
+                self.iwram_bus = (self.iwram_bus & !(0xFF << shift)) | (u32::from(byte) << shift);
+                slice_store(&mut self.iwram, off, u32::from(byte), 1);
+            }
+            _ => {}
+        }
     }
 
     fn open_slice(&self, word: u32, addr: u32, size: u32) -> u32 {

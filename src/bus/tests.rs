@@ -167,7 +167,10 @@ fn gpio_off_by_default_reads_rom() {
 fn io_past_1k_is_openbus_not_dispcnt_alias() {
     let mut bus = Bus::new(Vec::new());
     bus.write16(0x0400_0000, 0x0404);
+    // Overwrite the CPU MDR so unused I/O cannot be confused with a DISPCNT mirror.
+    bus.write16(0x0200_0000, 0xABCD);
     let value = bus.read16(0x0400_0400);
+    assert_eq!(value, 0xABCD, "unused I/O must return MDR, not DISPCNT");
     assert_ne!(value, 0x0404, "0x04000400 must not alias DISPCNT");
     let line = bus
         .warn_lines
@@ -308,4 +311,30 @@ fn dma16_from_unused_io_duplicates_latch_onto_cpu_openbus() {
     // still sees both halves duplicated (0xFFFFFFFF).
     let _ = bus.fetch32(0x0800_0000);
     assert_eq!(bus.read32(0x0401_0000), 0xFFFF_FFFF);
+}
+
+#[test]
+fn dma32_unused_io_samples_mdr_after_oam_half_read() {
+    // alyosha Bus/DMA_OAM_Bus: 32-bit unused-I/O immediate DMA is deferred so
+    // LDRH from OAM can update the CPU MDR before the transfer samples it.
+    let mut bus = Bus::new(vec![0; 0x200]);
+    bus.write32(0x0700_0000, 0x0403_0201);
+    bus.write32(0x0700_0004, 0x0807_0605);
+    // Prime dma_open with a ROM-like word (first DMA in the ROM test).
+    bus.write32(0x0400_00BC, 0x0200_0010);
+    bus.write32(0x0400_00C0, 0x0700_0000);
+    bus.write32(0x0200_0010, 0x51AE_FF24);
+    bus.write32(0x0400_00C4, 0x8500_0001); // normal immediate: runs on enable
+
+    bus.write32(0x0400_00BC, 0x0400_1000);
+    bus.write32(0x0400_00C0, 0x0200_0000);
+    bus.write32(0x0400_00C4, 0x8500_0001); // unused-I/O 32-bit: deferred
+    let _ = bus.read16(0x0700_0004); // OAM half read → MDR = 0x08070605, then DMA
+
+    let got = bus.read32(0x0200_0000);
+    assert_eq!(
+        (got >> 16) & 0xFF,
+        0x07,
+        "EWRAM high byte must be OAM MDR, got {got:#010X}"
+    );
 }
