@@ -433,7 +433,12 @@ impl Bus {
                 value
             }
             0x03 => {
-                let value = slice_load(&self.iwram, (addr & 0x7FFF) as usize, size);
+                let off = (addr & 0x7FFF) as usize;
+                let value = if let Some(v) = self.load_intr_check(off, size) {
+                    v
+                } else {
+                    slice_load(&self.iwram, off, size)
+                };
                 self.latch(value);
                 value
             }
@@ -497,7 +502,13 @@ impl Bus {
     fn store(&mut self, addr: u32, value: u32, size: u32) {
         match addr >> 24 {
             0x02 => slice_store(&mut self.ewram, (addr & 0x3_FFFF) as usize, value, size),
-            0x03 => slice_store(&mut self.iwram, (addr & 0x7FFF) as usize, value, size),
+            0x03 => {
+                let off = (addr & 0x7FFF) as usize;
+                if self.store_intr_check(off, value, size) {
+                    return;
+                }
+                slice_store(&mut self.iwram, off, value, size);
+            }
             0x04 => {
                 let off = addr & 0x00FF_FFFF;
                 if off == 0x800 {
@@ -526,6 +537,55 @@ impl Bus {
             }
             0x0E | 0x0F => self.store_save(addr, value, size),
             _ => {}
+        }
+    }
+
+    /// BIOS IntrWait check flags live at `0x03007FF8` and in [`Irq::check_flags`].
+    fn load_intr_check(&self, off: usize, size: u32) -> Option<u32> {
+        let flags = u32::from(self.irq.check_flags());
+        match (off, size) {
+            (0x7FF8, 1) => Some(flags & 0xFF),
+            (0x7FF9, 1) => Some((flags >> 8) & 0xFF),
+            (0x7FF8, 2) => Some(flags),
+            (0x7FF8, 4) => {
+                let hi = slice_load(&self.iwram, 0x7FFA, 2);
+                Some(flags | (hi << 16))
+            }
+            (0x7FF6, 4) => {
+                let lo = slice_load(&self.iwram, 0x7FF6, 2);
+                Some(lo | (flags << 16))
+            }
+            _ => None,
+        }
+    }
+
+    fn store_intr_check(&mut self, off: usize, value: u32, size: u32) -> bool {
+        match (off, size) {
+            (0x7FF8, 1) => {
+                let next = (self.irq.check_flags() & 0xFF00) | (value as u16 & 0xFF);
+                self.irq.set_check_flags(next);
+                true
+            }
+            (0x7FF9, 1) => {
+                let next = (self.irq.check_flags() & 0x00FF) | ((value as u16 & 0xFF) << 8);
+                self.irq.set_check_flags(next);
+                true
+            }
+            (0x7FF8, 2) => {
+                self.irq.set_check_flags(value as u16);
+                true
+            }
+            (0x7FF8, 4) => {
+                self.irq.set_check_flags(value as u16);
+                slice_store(&mut self.iwram, 0x7FFA, value >> 16, 2);
+                true
+            }
+            (0x7FF6, 4) => {
+                slice_store(&mut self.iwram, 0x7FF6, value & 0xFFFF, 2);
+                self.irq.set_check_flags((value >> 16) as u16);
+                true
+            }
+            _ => false,
         }
     }
 

@@ -287,9 +287,16 @@ impl Machine {
             self.prev_hblank = self.bus.hblank;
             self.prev_vmatch = vmatch;
 
+            if self.bus.halted {
+                self.cpu.poll_intr_wait(&mut self.bus);
+            }
+
             if self.bus.irq.pending() {
-                // An enabled pending IRQ leaves halt even when CPSR I blocks entry.
-                self.bus.halted = false;
+                // An enabled pending IRQ leaves Halt (SWI 2) even when CPSR I blocks entry.
+                // IntrWait owns halt until the check-flag match completes the SWI return.
+                if !self.cpu.intr_waiting() {
+                    self.bus.halted = false;
+                }
                 if self.cpu.cpsr() & 0x80 == 0 {
                     self.cpu.raise_irq(&mut self.bus);
                 }

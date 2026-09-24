@@ -17,6 +17,9 @@ pub struct Irq {
     ie: u16,
     iff: u16,
     ime: bool,
+    /// BIOS IntrWait check flags, mirrored at IWRAM `0x03007FF8`.
+    #[serde(default)]
+    check_flags: u16,
 }
 
 impl Irq {
@@ -26,6 +29,7 @@ impl Irq {
             ie: 0,
             iff: 0,
             ime: false,
+            check_flags: 0,
         }
     }
 
@@ -51,9 +55,20 @@ impl Irq {
         }
     }
 
-    /// OR `bit` (a mask, not an index) into IF.
+    /// OR `bit` (a mask, not an index) into IF and the IntrWait check flags.
     pub fn raise(&mut self, bit: u16) {
         self.iff |= bit;
+        self.check_flags |= bit;
+    }
+
+    /// Halfword at `0x03007FF8` (BIOS interrupt check flags).
+    pub fn check_flags(&self) -> u16 {
+        self.check_flags
+    }
+
+    /// Replace the IntrWait check flags (also written through IWRAM `0x03007FF8`).
+    pub fn set_check_flags(&mut self, value: u16) {
+        self.check_flags = value;
     }
 
     /// True when IME bit 0 is set and `(IE & IF) != 0`.

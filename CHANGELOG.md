@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+BIOS IntrWait and VBlankIntrWait watch `0x03007FF8`.
+
 ## 0.2.0
 
 The play window is the Game Boy shell: same menus, settings, input configurator, audio device list, and debug monitor. Extension `.gba` drives this crate’s ARM machine; `.gb` / `.gbc` drive `graycart`. Headless `--frames` still does not link the window.

@@ -292,7 +292,11 @@ Check the open Cargo question before the dependency lands: `graycart`’s packag
 
 ## Page 14 — Same shell as graycart-gb
 
-Shipped as crate `0.2.0`. The play window is the Game Boy shell (File, Emulation, Video, Input, Audio, Help, Debug). See `docs/superpowers/plans/2026-09-23-complete-emulator.md`. Continue with page 15 (`0.2.1`).
+Shipped as crate `0.2.0`. The play window is the Game Boy shell (File, Emulation, Video, Input, Audio, Help, Debug). See `docs/superpowers/plans/2026-09-23-complete-emulator.md`.
+
+## Page 15 — IntrWait
+
+Shipped as crate `0.2.1`. BIOS IntrWait / VBlankIntrWait watch `0x03007FF8`. Continue with page 16 (`0.2.2`).
 
 ## After each page
 

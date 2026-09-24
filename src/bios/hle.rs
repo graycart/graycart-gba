@@ -16,6 +16,7 @@
 mod tests {
     use crate::bus::Bus;
     use crate::cpu::Cpu;
+    use crate::hw::Machine;
 
     const LATCH_POST_BOOT: u32 = 0xE129_F000;
     const LATCH_AFTER_SQRT: u32 = 0xE3A0_2004;
@@ -93,5 +94,42 @@ mod tests {
         cpu.raise_irq(&mut bus);
         assert_eq!(cpu.fetch_pc, pc_before);
         assert_eq!(bus.bios_prefetch(), LATCH_POST_BOOT);
+    }
+
+    #[test]
+    fn vblank_intr_wait_halts_until_if_bit_0() {
+        let mut machine = Machine::from_rom(vec![0; 0x200]);
+        machine.cpu.swi_number_for_test(&mut machine.bus, 0x05);
+        assert!(machine.bus.halted);
+        machine.bus.irq.raise(1);
+        machine.cpu.poll_intr_wait(&mut machine.bus);
+        assert!(!machine.bus.halted);
+        assert_eq!(machine.bus.read16(0x0300_7FF8), 0);
+    }
+
+    #[test]
+    fn intr_wait_r0_zero_returns_if_check_already_set() {
+        let mut machine = Machine::from_rom(vec![0; 0x200]);
+        machine.bus.irq.raise(1);
+        machine.cpu.set_reg_for_test(0, 0);
+        machine.cpu.set_reg_for_test(1, 1);
+        machine.cpu.swi_number_for_test(&mut machine.bus, 0x04);
+        assert!(!machine.bus.halted);
+        assert_eq!(machine.bus.read16(0x0300_7FF8), 0);
+    }
+
+    #[test]
+    fn intr_wait_r0_one_ignores_already_set_until_new_raise() {
+        let mut machine = Machine::from_rom(vec![0; 0x200]);
+        machine.bus.irq.raise(1);
+        machine.cpu.set_reg_for_test(0, 1);
+        machine.cpu.set_reg_for_test(1, 1);
+        machine.cpu.swi_number_for_test(&mut machine.bus, 0x04);
+        assert!(machine.bus.halted);
+        assert_eq!(machine.bus.read16(0x0300_7FF8), 0);
+        machine.bus.irq.raise(1);
+        machine.cpu.poll_intr_wait(&mut machine.bus);
+        assert!(!machine.bus.halted);
+        assert_eq!(machine.bus.read16(0x0300_7FF8), 0);
     }
 }

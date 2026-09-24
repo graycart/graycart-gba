@@ -41,6 +41,9 @@ pub struct Cpu {
     /// Not restored from disk snapshots (always `"restored"` after load).
     #[serde(skip, default = "default_last_op")]
     pub last_op: &'static str,
+    /// When `Some`, Halted for IntrWait / VBlankIntrWait until `0x03007FF8` matches.
+    #[serde(default)]
+    intr_wait_mask: Option<u16>,
 }
 
 fn default_last_op() -> &'static str {
@@ -68,6 +71,7 @@ impl Cpu {
             idle: false,
             faults: 0,
             last_op: "reset",
+            intr_wait_mask: None,
         };
         cpu.gpr[13] = 0x0300_7F00;
         cpu.r13b[0] = 0x0300_7F00;
@@ -80,12 +84,45 @@ impl Cpu {
         self.gpr[index as usize]
     }
 
+    /// Test helper: set a GPR before a SWI under test.
+    pub fn set_reg_for_test(&mut self, index: u32, value: u32) {
+        self.gpr[index as usize] = value;
+    }
+
     pub fn cpsr(&self) -> u32 {
         self.cpsr
     }
 
     pub fn thumb(&self) -> bool {
         self.cpsr & 0x20 != 0
+    }
+
+    /// Test helper: run HLE SWI `number` (comment field bits 16..23).
+    pub fn swi_number_for_test(&mut self, bus: &mut Bus, number: u32) {
+        self.swi(bus, number << 16);
+    }
+
+    /// While halted for IntrWait, check `0x03007FF8` against the wait mask.
+    pub fn poll_intr_wait(&mut self, bus: &mut Bus) {
+        let Some(mask) = self.intr_wait_mask else {
+            return;
+        };
+        if !bus.halted {
+            return;
+        }
+        let flags = bus.irq.check_flags();
+        if flags & mask == 0 {
+            return;
+        }
+        bus.irq.set_check_flags(flags & !mask);
+        bus.halted = false;
+        self.intr_wait_mask = None;
+        self.finish_swi_return();
+    }
+
+    /// True while IntrWait / VBlankIntrWait still owns halt.
+    pub fn intr_waiting(&self) -> bool {
+        self.intr_wait_mask.is_some()
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> Result<(), StepError> {
@@ -301,6 +338,30 @@ impl Cpu {
         self.write_cpsr(0x93, 0xFFFF_FFFF);
         self.set_spsr(spsr, 0xFFFF_FFFF);
         self.gpr[14] = ret;
+        if number == 0x04 || number == 0x05 {
+            let (discard, mask) = if number == 0x05 {
+                self.gpr[0] = 1;
+                self.gpr[1] = 1;
+                (true, 1u16)
+            } else {
+                (self.gpr[0] != 0, self.gpr[1] as u16)
+            };
+            if discard {
+                let flags = bus.irq.check_flags() & !mask;
+                bus.irq.set_check_flags(flags);
+            }
+            let flags = bus.irq.check_flags();
+            if flags & mask != 0 {
+                bus.irq.set_check_flags(flags & !mask);
+                self.finish_swi_return();
+                self.last_op = "swi";
+                return;
+            }
+            self.intr_wait_mask = Some(mask);
+            bus.halted = true;
+            self.last_op = "swi";
+            return;
+        }
         if number == 0x06 {
             let numerator = self.gpr[0] as i32;
             let denominator = self.gpr[1] as i32;
@@ -316,11 +377,15 @@ impl Cpu {
             // r0 == 0 may stay 0.
             bus.set_bios_prefetch(LATCH_AFTER_SQRT);
         }
+        self.finish_swi_return();
+        self.last_op = "swi";
+    }
+
+    fn finish_swi_return(&mut self) {
         let back = self.spsr();
         let lr = self.gpr[14];
         self.write_cpsr(back, 0xFFFF_FFFF);
         self.fetch_pc = if self.thumb() { lr & !1 } else { lr & !3 };
-        self.last_op = "swi";
     }
 
     fn fail(&mut self, mnemonic: String) -> Result<(), StepError> {
