@@ -713,6 +713,14 @@ impl Bus {
                     self.latch(value);
                     return value;
                 }
+                if size == 1 {
+                    // Game Pak data bus is 16-bit. A byte read still latches the
+                    // aligned halfword in both halves (alyosha LDRSH_misaligned).
+                    let half = self.load_rom(addr & !1, 2) & 0xFFFF;
+                    let word = half | (half << 16);
+                    self.latch(word);
+                    return (word >> ((addr & 1) * 8)) & 0xFF;
+                }
                 let value = self.load_rom(addr, size);
                 self.latch(value);
                 value
