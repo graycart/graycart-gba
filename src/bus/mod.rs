@@ -134,6 +134,9 @@ pub struct Bus {
     /// Unit currently running is the channel's last one.
     #[serde(skip)]
     dma_last_unit: bool,
+    /// Next ROM source beat stays sequential after an internal preempt.
+    #[serde(skip)]
+    dma_rom_seq_resume: bool,
     /// HBlank DMA armed while `dma_write_cycle` — run after the pending write.
     #[serde(skip)]
     dma_hblank_deferred: bool,
@@ -215,6 +218,7 @@ impl Bus {
             dma_write_cycle: false,
             dma_beat: 0,
             dma_last_unit: false,
+            dma_rom_seq_resume: false,
             dma_hblank_deferred: false,
             dma_hblank_from_write: false,
             dma_hblank_defer_abs: 0,
@@ -1371,6 +1375,10 @@ impl Bus {
         if let Some(mask) = self.dma.finish(channel, reason, units, width32) {
             self.irq.raise(mask);
         }
+        // Internal preempt leaves the parent's Game Pak burst sequential.
+        if nested && !(0x08..=0x0D).contains(&(job.src >> 24)) {
+            self.dma_rom_seq_resume = true;
+        }
         if phased {
             self.dma.stall = 0;
         }
@@ -1420,13 +1428,15 @@ impl Bus {
             let value = self.dma_read_unit(src, width32);
             self.dma_write_cycle = true;
             self.dma_beat = 1;
-            for _ in 0..self.dma_access_ticks(src, width) {
+            let resume_seq = self.dma_rom_seq_resume;
+            self.dma_rom_seq_resume = false;
+            for _ in 0..self.dma_access_ticks(src, width, resume_seq) {
                 self.dma_phase_tick();
             }
             self.dma_beat = 2;
             let stored = if width32 { value } else { value & 0xffff };
             // ares setDMA: waitstates then write.
-            for _ in 0..self.dma_access_ticks(dst, width) {
+            for _ in 0..self.dma_access_ticks(dst, width, false) {
                 self.dma_phase_tick();
             }
             self.dma_write_unit(dst, stored, width32);
@@ -1459,13 +1469,14 @@ impl Bus {
     /// Memory beats for one DMA access (GBATEK waitstate tables).
     ///
     /// I/O matches ares `prefetchStep(1)` for 16- and 32-bit DMA.
-    fn dma_access_ticks(&self, addr: u32, width: Width) -> u32 {
+    fn dma_access_ticks(&self, addr: u32, width: Width, force_seq: bool) -> u32 {
         let region = addr >> 24;
         if (0x08..=0x0D).contains(&region) {
-            let sequential = match self.last_rom {
-                Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
-                None => false,
-            };
+            let sequential = force_seq
+                || match self.last_rom {
+                    Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
+                    None => false,
+                };
             rom_cycles(self.waitcnt(), addr, width, sequential).max(1)
         } else if region == 0x04 {
             1
