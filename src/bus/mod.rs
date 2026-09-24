@@ -131,6 +131,9 @@ pub struct Bus {
     /// HBlank DMA armed while `dma_write_cycle` — run after the pending write.
     #[serde(skip)]
     dma_hblank_deferred: bool,
+    /// Deferred HBlank was armed during writeCycle (vs mid-read).
+    #[serde(skip)]
+    dma_hblank_from_write: bool,
 }
 
 impl Bus {
@@ -199,6 +202,7 @@ impl Bus {
             dma_active: None,
             dma_write_cycle: false,
             dma_hblank_deferred: false,
+            dma_hblank_from_write: false,
         }
     }
 
@@ -1167,9 +1171,15 @@ impl Bus {
 
     /// Fire every channel armed for HBlank (one shot per rising edge).
     pub fn dma_on_hblank(&mut self) {
-        // ares: finish the active channel's write before a higher-priority read.
+        // ares: finish the active unit before a higher-priority read.
         if self.dma_write_cycle {
             self.dma_hblank_deferred = true;
+            self.dma_hblank_from_write = true;
+            return;
+        }
+        if self.dma_active.is_some() {
+            self.dma_hblank_deferred = true;
+            self.dma_hblank_from_write = false;
             return;
         }
         for channel in 0..4 {
@@ -1323,9 +1333,13 @@ impl Bus {
         let width = if width32 { Width::Word } else { Width::Half };
         let mut src = job.src;
         let mut dst = job.dst;
-        // ares: one idle only when DMA first takes the bus from the CPU.
-        if !nested {
+        // ares: CPU->DMA bus take. Nested pays turnaround unless we preempted
+        // immediately after a write (writeCycle path already serialized).
+        if !nested || !self.dma_hblank_from_write {
             self.dma_phase_tick();
+        }
+        if nested {
+            self.dma_hblank_from_write = false;
         }
         for _ in 0..job.units {
             self.dma_drain_hblank();
@@ -1337,8 +1351,6 @@ impl Bus {
             let stored = if width32 { value } else { value & 0xffff };
             self.dma_write_unit(dst, stored, width32);
             self.dma_write_cycle = false;
-            // ares: higher-priority read runs on the step after write completes,
-            // before further bus beats on this channel.
             self.dma_drain_hblank();
             for _ in 0..self.dma_access_ticks(dst, width) {
                 self.dma_phase_tick();

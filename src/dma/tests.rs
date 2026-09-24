@@ -550,3 +550,29 @@ fn hblank_during_write_cycle_defers_until_after_write() {
     assert_ne!(captured, 0x00FF, "deferred HBlank DMA0 must still copy");
     assert_eq!(machine.bus.read16(DMA0 + 10) & (1 << 15), 0);
 }
+
+
+
+#[test]
+fn hblank_mid_read_defers_until_unit_write_finishes() {
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.cycles = HBLANK_START - 2;
+    machine.bus.hblank = false;
+    machine.bus.vcount = 0;
+    machine.bus.vblank = false;
+    machine.bus.timers.write16(0, 0x0040);
+    machine.bus.timers.write16(2, 0x0080);
+    let tim0 = 0x0400_0100u32;
+    write_channel(&mut machine.bus, DMA0, tim0, IWRAM + 0x40, 1, enable_hblank());
+    machine.bus.write16(IWRAM + 0x40, 0x00FF);
+    machine.bus.dma_timing = true;
+    machine.bus.begin_step_at(machine.cycles);
+    write_channel(&mut machine.bus, DMA1, tim0, IWRAM, 4, enable_immediate() | (2 << 7));
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.cycle_base = machine.cycles;
+    machine.bus.dma_cycles_paid = 0;
+    machine.bus.fire_ready_imm();
+    assert_ne!(machine.bus.read16(IWRAM + 0x40), 0x00FF);
+}
