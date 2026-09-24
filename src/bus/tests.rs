@@ -235,8 +235,9 @@ fn timer_byte_write_updates_reload_not_counter() {
     bus.write8(0x0400_0100, 0xAB);
     assert_eq!(bus.read16(0x0400_0100), 0, "live counter stays 0");
     assert_eq!(bus.timers.reload(0), 0x00AB);
-    // Start edge loads the reload latch into the counter.
+    // Start edge loads reload after the CNT_H latch applies.
     bus.write16(0x0400_0102, 0x80);
+    let _ = bus.timers.tick(1);
     assert_eq!(bus.timers.counter(0), 0x00AB);
 }
 

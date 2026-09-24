@@ -253,19 +253,33 @@ impl Machine {
     /// Tick timers, APU, scanline, and IRQ edges for `count` CPU cycles.
     /// Returns true when halt can never wake (debug fail).
     fn advance_cycles(&mut self, count: u32) -> bool {
+        self.advance_clock(count, true)
+    }
+
+    /// Scanline-only I/O Word remainder (timers already paid one beat).
+    fn advance_ppu_only(&mut self, count: u32) -> bool {
+        if count == 0 {
+            return false;
+        }
+        self.advance_clock(count, false)
+    }
+
+    fn advance_clock(&mut self, count: u32, tick_timers: bool) -> bool {
         for _ in 0..count {
             self.cycles += 1;
             self.bus.emu_cycles = self.cycles;
 
             self.bus.tick_imm_dma_wait();
 
-            let mask = self.bus.timers.tick(1);
-            self.bus.tick_apu(mask);
-            for index in 0..4u32 {
-                if mask & (1 << index) != 0 {
-                    let control = self.bus.timers.read16(index * 4 + 2);
-                    if control & (1 << 6) != 0 {
-                        self.bus.irq.raise(1 << (3 + index));
+            if tick_timers {
+                let mask = self.bus.timers.tick(1);
+                self.bus.tick_apu(mask);
+                for index in 0..4u32 {
+                    if mask & (1 << index) != 0 {
+                        let control = self.bus.timers.read16(index * 4 + 2);
+                        if control & (1 << 6) != 0 {
+                            self.bus.irq.raise(1 << (3 + index));
+                        }
                     }
                 }
             }

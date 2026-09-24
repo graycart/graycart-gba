@@ -134,6 +134,9 @@ pub struct Bus {
     /// Deferred HBlank was armed during writeCycle (vs mid-read).
     #[serde(skip)]
     dma_hblank_from_write: bool,
+    /// Absolute cycle that armed the deferred HBlank.
+    #[serde(skip)]
+    dma_hblank_defer_abs: u64,
 }
 
 impl Bus {
@@ -203,6 +206,7 @@ impl Bus {
             dma_write_cycle: false,
             dma_hblank_deferred: false,
             dma_hblank_from_write: false,
+            dma_hblank_defer_abs: 0,
         }
     }
 
@@ -602,6 +606,30 @@ impl Bus {
             return;
         }
         self.step_cycles = self.step_cycles.saturating_add(n);
+    }
+
+    /// Advance timers / Immediate DMA wait mid-instruction (SWI CpuSet, STRH trailing N).
+    ///
+    /// Unlike [`Self::add_internal_cycles`], this updates timer state immediately so a
+    /// later op that enables DMA sees the correct TIM* counters before the instruction
+    /// ends. Not added to `step_cycles` (Machine must not double-tick timers).
+    pub fn elapse(&mut self, n: u32) {
+        if self.dma.busy || n == 0 {
+            return;
+        }
+        for _ in 0..n {
+            self.emu_cycles = self.emu_cycles.wrapping_add(1);
+            self.tick_imm_dma_wait();
+            let mask = self.timers.tick(1);
+            self.tick_apu(mask);
+            if self.any_imm_ready() {
+                self.cycle_base = self.emu_cycles;
+                self.dma_cycles_paid = 0;
+                self.fire_ready_imm();
+                let paid = self.take_dma_cycles_paid();
+                self.emu_cycles = self.emu_cycles.wrapping_add(u64::from(paid));
+            }
+        }
     }
 
     fn access(&mut self, addr: u32, size: u32, kind: Access) -> u32 {
@@ -1175,11 +1203,13 @@ impl Bus {
         if self.dma_write_cycle {
             self.dma_hblank_deferred = true;
             self.dma_hblank_from_write = true;
+            self.dma_hblank_defer_abs = self.dma_abs();
             return;
         }
         if self.dma_active.is_some() {
             self.dma_hblank_deferred = true;
             self.dma_hblank_from_write = false;
+            self.dma_hblank_defer_abs = self.dma_abs();
             return;
         }
         for channel in 0..4 {
@@ -1333,15 +1363,21 @@ impl Bus {
         let width = if width32 { Width::Word } else { Width::Half };
         let mut src = job.src;
         let mut dst = job.dst;
-        // ares: CPU->DMA bus take. Nested pays turnaround unless we preempted
-        // immediately after a write (writeCycle path already serialized).
-        if !nested || !self.dma_hblank_from_write {
+        // ares: CPU->DMA bus take. A writeCycle preempt that lands on the
+        // arming cycle still owes GBATEK's 2-cycle startup; that cycle was
+        // the in-progress write, not the turnaround.
+        if nested && self.dma_hblank_from_write {
+            if self.dma_abs() == self.dma_hblank_defer_abs {
+                self.dma_phase_tick();
+                self.dma_phase_tick();
+            }
+        } else {
             self.dma_phase_tick();
         }
         if nested {
             self.dma_hblank_from_write = false;
         }
-        for _ in 0..job.units {
+        for unit in 0..job.units {
             self.dma_drain_hblank();
             let value = self.dma_read_unit(src, width32);
             self.dma_write_cycle = true;
@@ -1349,21 +1385,27 @@ impl Bus {
                 self.dma_phase_tick();
             }
             let stored = if width32 { value } else { value & 0xffff };
-            self.dma_write_unit(dst, stored, width32);
-            self.dma_write_cycle = false;
-            self.dma_drain_hblank();
+            // ares setDMA: waitstates then write.
             for _ in 0..self.dma_access_ticks(dst, width) {
                 self.dma_phase_tick();
             }
-            self.dma_phase_tick();
+            self.dma_write_unit(dst, stored, width32);
+            self.dma_write_cycle = false;
             src = dma_step_addr(src, job.src_ctrl, unit_size);
             dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
+            // Idle between units before a preempted channel reads.
+            if unit + 1 < job.units {
+                self.dma_phase_tick();
+            }
+            self.dma_drain_hblank();
         }
         self.dma_finish_eeprom(job);
         job.units
     }
 
     /// Memory beats for one DMA access (GBATEK waitstate tables).
+    ///
+    /// I/O matches ares `prefetchStep(1)` for 16- and 32-bit DMA.
     fn dma_access_ticks(&self, addr: u32, width: Width) -> u32 {
         let region = addr >> 24;
         if (0x08..=0x0D).contains(&region) {
@@ -1372,6 +1414,8 @@ impl Bus {
                 None => false,
             };
             rom_cycles(self.waitcnt(), addr, width, sequential).max(1)
+        } else if region == 0x04 {
+            1
         } else {
             internal_cycles(addr, width).max(1)
         }
@@ -1439,6 +1483,12 @@ impl Bus {
             eeprom.end_transfer();
             self.save_dirty = true;
         }
+    }
+
+    fn dma_abs(&self) -> u64 {
+        self.cycle_base
+            .wrapping_add(u64::from(self.step_cycles))
+            .wrapping_add(u64::from(self.dma_cycles_paid))
     }
 
     /// One DMA bus phase: scanline first so HBlank DMA samples the timer before
@@ -1530,7 +1580,6 @@ impl Bus {
             1 => {
                 let aligned = base & !1;
                 let cur = if aligned & 2 == 0 {
-                    // CNT_L: merge into the reload latch, not the live counter.
                     self.timers.reload((aligned / 4) as usize)
                 } else {
                     self.timers.read16(aligned)

@@ -922,6 +922,8 @@ impl Cpu {
                 }
                 _ => 0,
             };
+            // ARM LDRH/LDRSB/LDRSH: 1S+1N+1I (GBATEK).
+            bus.add_internal_cycles(1);
             if writeback {
                 self.gpr[rn] = indexed;
             }
@@ -930,6 +932,7 @@ impl Cpu {
             } else {
                 self.gpr[rd] = value;
             }
+            self.last_op = "ldrh";
         } else {
             let stored = if rd == 15 {
                 self.exec_pc.wrapping_add(12)
@@ -937,11 +940,14 @@ impl Cpu {
                 self.gpr[rd]
             };
             bus.write16(access, stored as u16);
+            // ARM STRH is 2N, matching ARM STR's word slot plus the trailing
+            // N so a DMACNT enable and the following nop see the same DMA start.
+            bus.elapse(2);
             if writeback {
                 self.gpr[rn] = indexed;
             }
+            self.last_op = "strh";
         }
-        self.last_op = "ldrh";
         Ok(())
     }
 

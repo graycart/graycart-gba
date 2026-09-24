@@ -96,7 +96,8 @@ pub fn internal_cycles(addr: u32, width: Width) -> u32 {
             Width::Byte | Width::Half => 1,
             Width::Word => 2,
         },
-        // I/O and OAM (16-bit bus): 32-bit is two sequential halfwords.
+        // I/O and OAM (16-bit bus): 32-bit is two sequential halfwords (GBATEK).
+        // DMA I/O stays one beat in `dma_access_ticks` (ares prefetchStep).
         0x04 | 0x07 => match width {
             Width::Byte | Width::Half => 1,
             Width::Word => 2,
