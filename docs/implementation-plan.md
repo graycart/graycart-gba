@@ -296,7 +296,11 @@ Shipped as crate `0.2.0`. The play window is the Game Boy shell (File, Emulation
 
 ## Page 15 — IntrWait
 
-Shipped as crate `0.2.1`. BIOS IntrWait / VBlankIntrWait watch `0x03007FF8`. Continue with page 16 (`0.2.2`).
+Shipped as crate `0.2.1`. BIOS IntrWait / VBlankIntrWait watch `0x03007FF8`.
+
+## Page 16 — CpuSet
+
+Shipped as crate `0.2.2`. BIOS CpuSet / CpuFastSet copy and fill. Continue with page 17 (`0.2.3`).
 
 ## After each page
 

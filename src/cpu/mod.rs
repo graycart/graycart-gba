@@ -376,6 +376,10 @@ impl Cpu {
             // Sqrt: jsmolka bios.gba only checks the prefetch latch, not the root.
             // r0 == 0 may stay 0.
             bus.set_bios_prefetch(LATCH_AFTER_SQRT);
+        } else if number == 0x0B {
+            crate::bios::cpu_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
+        } else if number == 0x0C {
+            crate::bios::cpu_fast_set(bus, self.gpr[0], self.gpr[1], self.gpr[2]);
         }
         self.finish_swi_return();
         self.last_op = "swi";

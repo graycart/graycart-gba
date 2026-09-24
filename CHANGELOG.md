@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+BIOS CpuSet and CpuFastSet copy and fill.
+
 ## 0.2.1
 
 BIOS IntrWait and VBlankIntrWait watch `0x03007FF8`.
