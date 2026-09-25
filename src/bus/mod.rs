@@ -1370,12 +1370,13 @@ impl Bus {
                     if !rising {
                         // Mode-change Immediate: keep Enable so CNT_H matches the
                         // written value (alyosha DMA/DMA_Mode_Change).
-                        // Pad is 2S+2I plus the post-enable and bus-handoff waits.
+                        // Pad is 2S+2I plus the post-enable and bus-handoff waits,
+                        // and one more internal cycle so the timer reads 0x2A.
                         self.dma.set_enable(channel);
                         // Pad uses a sequential 32-bit Game Pak word. A non-sequential
                         // word makes DMA_Mode_Change's timer six counts high.
                         let n32 = rom_cycles(self.waitcnt(), 0x0800_0000, Width::Word, true);
-                        self.dma.stall = 2 * n32 + 2 + 2 + 2;
+                        self.dma.stall = 2 * n32 + 2 + 2 + 2 + 1;
                     }
                 }
             }
