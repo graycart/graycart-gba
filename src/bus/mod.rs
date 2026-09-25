@@ -607,6 +607,7 @@ impl Bus {
             }
 
             let sequential = !self.prefetch_ns
+                && addr & 0x1_FFFF != 0
                 && match self.last_rom {
                     Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
                     None => false,

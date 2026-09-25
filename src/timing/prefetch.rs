@@ -59,6 +59,11 @@ impl Prefetch {
         let mut addr = next_addr & !1;
 
         while self.len < Self::CAPACITY && available >= cost {
+            // A 128 KiB Game Pak boundary stops the prefetcher; the CPU fetch
+            // there is non-sequential (alyosha prefetcher readme).
+            if self.len > 0 && addr & 0x1_FFFF == 0 {
+                break;
+            }
             available -= cost;
             self.slots[self.len] = addr;
             self.len += 1;
