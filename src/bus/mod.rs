@@ -82,6 +82,10 @@ pub struct Bus {
     pub warn_lines: Vec<String>,
     openbus_logged: HashSet<u32>,
     sio_warned: bool,
+    /// Cycles left until an internal serial start bit (SIOCNT bit 7) clears.
+    /// 317 separates alyosha serial_time_start_bit (still set) from serial_time_start_bit_2 (clear).
+    #[serde(default)]
+    sio_start: u16,
     /// Bitmask of SWI numbers that already emitted a once-per-run warn line.
     #[serde(default)]
     swi_warned: u64,
@@ -203,6 +207,7 @@ impl Bus {
             warn_lines: Vec::new(),
             openbus_logged: HashSet::new(),
             sio_warned: false,
+            sio_start: 0,
             swi_warned: 0,
             // WAITCNT reset is 0 → WS0 N=4, S=2, I=1, SRAM=4.
             wait_rom_n: 4,
@@ -659,6 +664,16 @@ impl Bus {
     /// Unlike [`Self::add_internal_cycles`], this updates timer state immediately so a
     /// later op that enables DMA sees the correct TIM* counters before the instruction
     /// ends. Not added to `step_cycles` (Machine must not double-tick timers).
+    pub(crate) fn tick_sio_start(&mut self) {
+        if self.sio_start == 0 {
+            return;
+        }
+        self.sio_start -= 1;
+        if self.sio_start == 0 {
+            self.io[0x128] &= !0x80;
+        }
+    }
+
     pub fn elapse(&mut self, n: u32) {
         if self.dma.busy || n == 0 {
             return;
@@ -667,6 +682,7 @@ impl Bus {
             self.emu_cycles = self.emu_cycles.wrapping_add(1);
             self.tick_imm_dma_wait();
             let mask = self.timers.tick(1);
+            self.tick_sio_start();
             self.tick_apu(mask);
             if self.any_imm_ready() {
                 self.cycle_base = self.emu_cycles;
@@ -996,7 +1012,6 @@ impl Bus {
     fn load_io(&mut self, off: u32, size: u32) -> u32 {
         if sio_touches(off, size) {
             self.warn_sio();
-            return 0;
         }
         if let Some(value) = self.load_io_device(off, size) {
             return value;
@@ -1052,6 +1067,12 @@ impl Bus {
             value &= !(0x80 << shift);
         }
         slice_store(&mut self.io, off as usize, value, size);
+        if covers_byte(off, size, 0x128) {
+            let shift = (0x128 - off) * 8;
+            if value & (0x80 << shift) != 0 {
+                self.sio_start = 317;
+            }
+        }
         if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
             self.sync_waitcnt();
         }
@@ -1660,6 +1681,7 @@ impl Bus {
         }
 
         let mask = self.timers.tick(1);
+        self.tick_sio_start();
         self.tick_apu(mask);
         for index in 0..4u32 {
             if mask & (1 << index) != 0 {

@@ -274,6 +274,7 @@ impl Machine {
 
             if tick_timers {
                 let mask = self.bus.timers.tick(1);
+                self.bus.tick_sio_start();
                 self.bus.tick_apu(mask);
                 for index in 0..4u32 {
                     if mask & (1 << index) != 0 {
