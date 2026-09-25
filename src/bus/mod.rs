@@ -925,7 +925,7 @@ impl Bus {
     fn read_save8(&mut self, addr: u32) -> u32 {
         match &mut self.save {
             SaveChip::None | SaveChip::Eeprom(_) => 0xFF,
-            SaveChip::Sram(data) => u32::from(data[(addr & 0xFFFF) as usize]),
+            SaveChip::Sram(data) => u32::from(data[(addr & 0x7FFF) as usize]),
             SaveChip::Flash(flash) => u32::from(flash.read(addr)),
         }
     }
@@ -934,7 +934,7 @@ impl Bus {
         match &mut self.save {
             SaveChip::None | SaveChip::Eeprom(_) => {}
             SaveChip::Sram(data) => {
-                data[(addr & 0xFFFF) as usize] = value;
+                data[(addr & 0x7FFF) as usize] = value;
                 self.save_dirty = true;
             }
             SaveChip::Flash(flash) => {
