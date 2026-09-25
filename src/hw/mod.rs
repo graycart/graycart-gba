@@ -344,11 +344,12 @@ impl Machine {
             if self.bus.irq.pending() {
                 // An enabled pending IRQ leaves Halt (SWI 2) even when CPSR I blocks entry.
                 // IntrWait owns halt until the check-flag match completes the SWI return.
+                let from_halt = self.bus.halted && !self.cpu.intr_waiting();
                 if !self.cpu.intr_waiting() {
                     self.bus.halted = false;
                 }
                 if self.cpu.cpsr() & 0x80 == 0 {
-                    self.cpu.raise_irq(&mut self.bus);
+                    self.cpu.raise_irq_from(&mut self.bus, from_halt);
                 }
             }
 

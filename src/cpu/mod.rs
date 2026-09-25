@@ -44,6 +44,9 @@ pub struct Cpu {
     /// When `Some`, Halted for IntrWait / VBlankIntrWait until `0x03007FF8` matches.
     #[serde(default)]
     intr_wait_mask: Option<u16>,
+    /// Game PC to resume after a Halt IRQ. The stacked BIOS link is not that PC.
+    #[serde(default)]
+    halt_resume: Option<u32>,
 }
 
 fn default_last_op() -> &'static str {
@@ -72,6 +75,7 @@ impl Cpu {
             faults: 0,
             last_op: "reset",
             intr_wait_mask: None,
+            halt_resume: None,
         };
         cpu.gpr[13] = 0x0300_7F00;
         cpu.r13b[0] = 0x0300_7F00;
@@ -147,6 +151,12 @@ impl Cpu {
     /// IRQ entry. With no BIOS image, HLE the vector: IRQ mode, LR → return stub,
     /// latch the during-IRQ prefetch word, jump to `[0x03007FFC]`.
     pub fn raise_irq(&mut self, bus: &mut Bus) {
+        self.raise_irq_from(bus, false);
+    }
+
+    /// IRQ entry. `from_halt` is the Halt wakeup path: the BIOS prologue runs
+    /// before `[0x03007FFC]`, which is 42 cycles on the halt-pc timer (0xAD → 0xD7).
+    pub fn raise_irq_from(&mut self, bus: &mut Bus, from_halt: bool) {
         if self.cpsr & 0x80 != 0 {
             return;
         }
@@ -154,7 +164,13 @@ impl Cpu {
         let ret = self.fetch_pc.wrapping_add(4);
         self.write_cpsr(0x92, 0xFFFF_FFFF);
         self.set_spsr(spsr, 0xFFFF_FFFF);
-        self.gpr[14] = ret;
+        if from_halt {
+            bus.elapse(42);
+            self.halt_resume = Some(self.fetch_pc);
+            self.gpr[14] = 0x74;
+        } else {
+            self.gpr[14] = ret;
+        }
 
         // stmfd sp!, {r0-r3,r12,lr} — same stack frame the BIOS builds before the user ISR.
         let sp = self.gpr[13].wrapping_sub(24);
@@ -186,7 +202,13 @@ impl Cpu {
         self.gpr[13] = sp.wrapping_add(24);
 
         let spsr = self.spsr();
-        let ret = self.gpr[14].wrapping_sub(4);
+        let bios_halt = self.gpr[14] == 0x74;
+        let resume = self.halt_resume.take();
+        let ret = if bios_halt {
+            resume.unwrap_or(self.gpr[14])
+        } else {
+            self.gpr[14].wrapping_sub(4)
+        };
         self.write_cpsr(spsr, 0xFFFF_FFFF);
         if self.thumb() {
             self.fetch_pc = ret & !1;
