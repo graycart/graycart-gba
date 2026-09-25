@@ -1869,6 +1869,20 @@ impl Bus {
         }
     }
 
+    /// Quiet code read for the ARM7 prefetch queue. No waitstates and no bus latch.
+    pub(crate) fn peek_code(&self, addr: u32, size: u32) -> Option<u32> {
+        let addr = addr & !(size.max(1) - 1);
+        let region = addr >> 24;
+        let value = match region {
+            0x02 => slice_load(&self.ewram, (addr & 0x3_FFFF) as usize, size),
+            0x03 => slice_load(&self.iwram, (addr & 0x7FFF) as usize, size),
+            0x06 => slice_load(&self.vram, vram_off(addr), size),
+            0x08..=0x0D => self.load_rom(addr, size),
+            _ => return None,
+        };
+        Some(value)
+    }
+
     fn load_rom(&self, addr: u32, size: u32) -> u32 {
         let off = (addr & 0x01FF_FFFF) as usize;
         if self.rom.is_empty() {

@@ -47,6 +47,13 @@ pub struct Cpu {
     /// Game PC to resume after a Halt IRQ. The stacked BIOS link is not that PC.
     #[serde(default)]
     halt_resume: Option<u32>,
+    /// Opcodes read two instructions ahead, before a later store can overwrite them.
+    #[serde(default)]
+    ahead: [u32; 2],
+    #[serde(default)]
+    ahead_pc: [u32; 2],
+    #[serde(default)]
+    ahead_len: u8,
 }
 
 fn default_last_op() -> &'static str {
@@ -76,6 +83,9 @@ impl Cpu {
             last_op: "reset",
             intr_wait_mask: None,
             halt_resume: None,
+            ahead: [0; 2],
+            ahead_pc: [0; 2],
+            ahead_len: 0,
         };
         cpu.gpr[13] = 0x0300_7F00;
         cpu.r13b[0] = 0x0300_7F00;
@@ -136,16 +146,75 @@ impl Cpu {
             return Ok(());
         }
         if self.thumb() {
-            let instr = bus.fetch16(self.fetch_pc);
-            self.exec_pc = self.fetch_pc;
-            self.fetch_pc = self.fetch_pc.wrapping_add(2);
-            self.exec_thumb(bus, instr)
+            let pc = self.fetch_pc;
+            let instr = match self.take_ahead(pc) {
+                Some(bits) => {
+                    let _ = bus.fetch16(pc);
+                    bits as u16
+                }
+                None => bus.fetch16(pc),
+            };
+            if let Some(bits) = bus.peek_code(pc.wrapping_add(4), 2) {
+                self.push_ahead(pc.wrapping_add(4), bits);
+            }
+            self.exec_pc = pc;
+            self.fetch_pc = pc.wrapping_add(2);
+            let seq = self.fetch_pc;
+            let result = self.exec_thumb(bus, instr);
+            if self.fetch_pc != seq {
+                self.ahead_len = 0;
+            }
+            result
         } else {
-            let instr = bus.fetch32(self.fetch_pc);
-            self.exec_pc = self.fetch_pc;
-            self.fetch_pc = self.fetch_pc.wrapping_add(4);
-            self.exec_arm(bus, instr)
+            let pc = self.fetch_pc;
+            let instr = match self.take_ahead(pc) {
+                Some(bits) => {
+                    let _ = bus.fetch32(pc);
+                    bits
+                }
+                None => bus.fetch32(pc),
+            };
+            if let Some(bits) = bus.peek_code(pc.wrapping_add(8), 4) {
+                self.push_ahead(pc.wrapping_add(8), bits);
+            }
+            self.exec_pc = pc;
+            self.fetch_pc = pc.wrapping_add(4);
+            let seq = self.fetch_pc;
+            let result = self.exec_arm(bus, instr);
+            if self.fetch_pc != seq {
+                self.ahead_len = 0;
+            }
+            result
         }
+    }
+
+    fn take_ahead(&mut self, pc: u32) -> Option<u32> {
+        while self.ahead_len > 0 && self.ahead_pc[0] < pc {
+            self.ahead[0] = self.ahead[1];
+            self.ahead_pc[0] = self.ahead_pc[1];
+            self.ahead_len -= 1;
+        }
+        if self.ahead_len > 0 && self.ahead_pc[0] == pc {
+            let instr = self.ahead[0];
+            self.ahead[0] = self.ahead[1];
+            self.ahead_pc[0] = self.ahead_pc[1];
+            self.ahead_len -= 1;
+            Some(instr)
+        } else {
+            None
+        }
+    }
+
+    fn push_ahead(&mut self, pc: u32, instr: u32) {
+        if self.ahead_len == 2 {
+            self.ahead[0] = self.ahead[1];
+            self.ahead_pc[0] = self.ahead_pc[1];
+            self.ahead_len = 1;
+        }
+        let index = self.ahead_len as usize;
+        self.ahead[index] = instr;
+        self.ahead_pc[index] = pc;
+        self.ahead_len += 1;
     }
 
     /// IRQ entry. With no BIOS image, HLE the vector: IRQ mode, LR → return stub,
