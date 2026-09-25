@@ -1616,6 +1616,7 @@ impl Bus {
         const HBLANK_START: u64 = 960;
         const LINES: u64 = 228;
         let line = (abs / CYCLES_PER_LINE) % LINES;
+        let old_vmatch = self.vcount_match();
         self.vcount = line as u16;
         let vblank = self.vcount >= 160;
         let hblank = (abs % CYCLES_PER_LINE) >= HBLANK_START;
@@ -1623,8 +1624,12 @@ impl Bus {
         let hblank_edge = hblank && !self.hblank;
         self.vblank = vblank;
         self.hblank = hblank;
+        let dispstat = self.dispstat_written();
         if vblank_edge {
             self.dma_on_vblank();
+            if dispstat & (1 << 3) != 0 {
+                self.irq.raise(1);
+            }
         }
         if hblank_edge {
             if self.vcount < 160 {
@@ -1633,6 +1638,12 @@ impl Bus {
             if (2..=161).contains(&self.vcount) {
                 self.dma_on_video_capture();
             }
+            if dispstat & (1 << 4) != 0 {
+                self.irq.raise(2);
+            }
+        }
+        if self.vcount_match() && !old_vmatch && dispstat & (1 << 5) != 0 {
+            self.irq.raise(4);
         }
 
         let mask = self.timers.tick(1);
