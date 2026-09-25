@@ -154,6 +154,9 @@ pub struct Bus {
     /// Deferred HBlank was armed during writeCycle (vs mid-read).
     #[serde(skip)]
     dma_hblank_from_write: bool,
+    /// Deferred HBlank was armed on the source beat of the last unit.
+    #[serde(skip)]
+    dma_hblank_src_edge: bool,
     /// Absolute cycle that armed the deferred HBlank.
     #[serde(skip)]
     dma_hblank_defer_abs: u64,
@@ -235,6 +238,7 @@ impl Bus {
             dma_rom_seq_resume: false,
             dma_hblank_deferred: false,
             dma_hblank_from_write: false,
+            dma_hblank_src_edge: false,
             dma_hblank_defer_abs: 0,
             dma_unit_written: false,
         }
@@ -1280,6 +1284,7 @@ impl Bus {
 
     /// Fire every channel armed for HBlank (one shot per rising edge).
     pub fn dma_on_hblank(&mut self) {
+        self.dma_hblank_src_edge = false;
         if self.dma_write_cycle {
             if self.dma_beat == 2 && self.dma_unit_written && !self.dma_last_unit {
                 self.dma_hblank_from_write = false;
@@ -1296,6 +1301,7 @@ impl Bus {
             self.dma_hblank_deferred = true;
             self.dma_hblank_from_write = true;
             self.dma_hblank_defer_abs = self.dma_abs();
+            self.dma_hblank_src_edge = self.dma_beat == 1 && self.dma_last_unit;
             return;
         }
         if self.dma_active.is_some() && !self.dma_unit_written {
@@ -1485,11 +1491,17 @@ impl Bus {
         if nested && self.dma_hblank_from_write {
             // The parent unit's remaining write already elapsed after the edge.
             // That is not the 2-cycle startup, and the preempt still owes both.
-            let startup = if self.dma_abs() == self.dma_hblank_defer_abs {
+            let mut startup = if self.dma_abs() == self.dma_hblank_defer_abs {
                 6
             } else {
                 4
             };
+            // Last unit, edge on the source beat: the write-beat startup samples
+            // the timer two counts late (DMA_pause_timing_end_4).
+            if self.dma_hblank_src_edge {
+                startup -= 2;
+            }
+            self.dma_hblank_src_edge = false;
             for _ in 0..startup {
                 self.dma_phase_tick();
             }
