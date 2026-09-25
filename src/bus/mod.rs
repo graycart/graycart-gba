@@ -83,7 +83,7 @@ pub struct Bus {
     openbus_logged: HashSet<u32>,
     sio_warned: bool,
     /// Cycles left until an internal serial start bit (SIOCNT bit 7) clears.
-    /// 317 separates alyosha serial_time_start_bit (still set) from serial_time_start_bit_2 (clear).
+    /// 316 leaves serial_time_start_bit set and serial_time_start_bit_2 clear.
     #[serde(default)]
     sio_start: u16,
     /// Bitmask of SWI numbers that already emitted a once-per-run warn line.
@@ -1082,7 +1082,7 @@ impl Bus {
         if covers_byte(off, size, 0x128) {
             let shift = (0x128 - off) * 8;
             if value & (0x80 << shift) != 0 {
-                self.sio_start = 317;
+                self.sio_start = 316;
             }
         }
         if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
