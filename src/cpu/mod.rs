@@ -254,6 +254,13 @@ impl Cpu {
         self.gpr[14] = IRQ_RETURN_STUB;
         bus.set_bios_prefetch(LATCH_DURING_IRQ);
         let handler = bus.read32(0x0300_7FFC);
+        // Stack stores and the handler load charge step_cycles, but IRQ entry is
+        // outside Cpu::step, so the next instruction used to drop them. Halt's
+        // 42-cycle prologue already accounts for that frame.
+        if !from_halt {
+            let charged = bus.take_step_cycles();
+            bus.elapse(charged);
+        }
         self.fetch_pc = handler & !3;
         self.last_op = "irq";
     }
