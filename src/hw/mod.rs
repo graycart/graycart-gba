@@ -361,8 +361,9 @@ impl Machine {
         }
         if hblank_dma {
             // The edge landed inside this instruction. Finish those cycles first
-            // (they already ran above), then pay the 2-cycle DMA startup before
-            // the channel reads. Pause-timing samples are 4 ticks early otherwise.
+            // (they already ran above), then pay the DMA startup before the
+            // channel reads. Two ticks leave DMA_pause_timing_end_1 one count early.
+            self.bus.dma_phase_tick();
             self.bus.dma_phase_tick();
             self.bus.dma_phase_tick();
             self.bus.dma_on_hblank();
