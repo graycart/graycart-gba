@@ -341,8 +341,8 @@ impl Cpu {
                 self.last_op = "strb";
             } else {
                 bus.write32(addr, self.gpr[rd]);
-                // Thumb STR: 2N (GBATEK) — data beat plus trailing bus slot.
-                bus.add_internal_cycles(2);
+                // Thumb STR is 2N: the data beat is already charged, plus one trailing slot.
+                bus.add_internal_cycles(1);
                 self.last_op = "str";
             }
             return Ok(());
