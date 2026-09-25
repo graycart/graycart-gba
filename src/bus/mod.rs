@@ -416,10 +416,10 @@ impl Bus {
         if !(0x08..=0x0D).contains(&region) {
             return;
         }
-        // Thumb I/O and internal cycles still fill the prefetch buffer after a
-        // cart fetch (alyosha Push_no_regs). ARM keeps the internal-only rule.
+        // Non-cart cycles after a Game Pak fetch fill the prefetch buffer.
+        let _ = thumb;
         let idle = if self.step_pak {
-            if thumb { self.cart_idle } else { 0 }
+            self.cart_idle
         } else {
             self.step_cycles
         };
@@ -1712,9 +1712,17 @@ impl Bus {
             }
             2 => self.timers.write16(base, value as u16),
             4 => {
+                let was = self.timers.read16(base.wrapping_add(2)) & 0x80 != 0;
+                let prelude = self
+                    .step_cycles
+                    .saturating_sub(internal_cycles(0x0400_0100, Width::Word));
                 self.timers.write16(base, value as u16);
                 self.timers
                     .write16(base.wrapping_add(2), (value >> 16) as u16);
+                let enabling = (value >> 16) & 0x80 != 0;
+                if enabling && !was {
+                    self.timers.arm_skip((base / 4) as usize, prelude as u8);
+                }
             }
             _ => {}
         }

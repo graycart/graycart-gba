@@ -21,6 +21,9 @@ struct Timer {
     control_dirty: bool,
     divider: u32,
     start_latency: u8,
+    /// Opcode-fetch cycles already charged before a CPU enable write.
+    #[serde(default)]
+    skip: u8,
 }
 
 impl Timer {
@@ -34,6 +37,7 @@ impl Timer {
             control_dirty: false,
             divider: 0,
             start_latency: 0,
+            skip: 0,
         }
     }
 
@@ -49,18 +53,23 @@ impl Timer {
         PRESCALE[(self.control & 0b11) as usize]
     }
 
-    fn apply_control_latch(&mut self) {
+    fn apply_control_latch(&mut self) -> bool {
         if !self.control_dirty {
-            return;
+            return false;
         }
         let was_started = self.started();
+        let was_ffff = self.counter == 0xFFFF;
         self.control = self.control_latch;
         self.control_dirty = false;
         if !was_started && self.started() {
             self.counter = self.enable_reload;
             self.divider = 0;
             self.start_latency = 1;
+            // A stopped counter sitting on 0xFFFF overflows on the enable edge
+            // (alyosha timer_disable's second start).
+            return was_ffff;
         }
+        false
     }
 }
 
@@ -73,6 +82,12 @@ impl Timers {
     pub fn new() -> Self {
         Self {
             timers: [Timer::new(); 4],
+        }
+    }
+
+    pub fn arm_skip(&mut self, index: usize, cycles: u8) {
+        if index < 4 {
+            self.timers[index].skip = cycles;
         }
     }
 
@@ -138,7 +153,10 @@ impl Timers {
             let mut prev_overflow = false;
             for i in 0..4 {
                 let mut this_overflow = false;
-                if self.timers[i].started() {
+                if self.timers[i].skip > 0 {
+                    self.timers[i].skip -= 1;
+                    prev_overflow = false;
+                } else if self.timers[i].started() {
                     if self.timers[i].start_latency > 0 {
                         self.timers[i].start_latency -= 1;
                         prev_overflow = false;
@@ -168,7 +186,9 @@ impl Timers {
                         }
                     }
                 }
-                self.timers[i].apply_control_latch();
+                if self.timers[i].apply_control_latch() {
+                    overflowed |= 1 << i;
+                }
                 prev_overflow = this_overflow;
             }
         }

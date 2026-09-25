@@ -35,6 +35,20 @@ fn rising_enable_latches_until_next_tick() {
 }
 
 #[test]
+fn enable_while_counter_is_ffff_overflows() {
+    let mut timers = Timers::new();
+    timers.write16_immediate(0, 0xFFFF);
+    timers.write16_immediate(2, 0x80);
+    timers.write16_immediate(2, 0);
+    assert_eq!(timers.counter(0), 0xFFFF);
+    timers.write16(0, 0);
+    timers.write16(2, 0xC0);
+    let mask = timers.tick(1);
+    assert_eq!(mask & 1, 1, "enable at 0xFFFF overflows before the new reload");
+    assert_eq!(timers.counter(0), 0);
+}
+
+#[test]
 fn falling_enable_stops_immediately() {
     let mut timers = Timers::new();
     timers.write16_immediate(0, 0);
