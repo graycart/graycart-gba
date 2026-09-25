@@ -1258,13 +1258,12 @@ impl Bus {
 
     /// Fire every channel armed for HBlank (one shot per rising edge).
     pub fn dma_on_hblank(&mut self) {
-        // ares: finish the active unit before a higher-priority read.
         if self.dma_write_cycle {
-            // Destination beat of a unit that still has another after it: the
-            // higher channel reads the timer on this edge, before the beat's tick.
-            // The last unit keeps the deferred write so its startup still runs.
             if self.dma_beat == 2 && self.dma_unit_written && !self.dma_last_unit {
                 self.dma_hblank_from_write = false;
+                for _ in 0..4 {
+                    self.dma_phase_tick();
+                }
                 for channel in 0..4 {
                     if self.dma.reason(channel) == Some(StartReason::HBlank) {
                         self.dma_fire(channel, StartReason::HBlank);
@@ -1284,8 +1283,14 @@ impl Bus {
             return;
         }
         if self.dma_active.is_some() {
-            // Later unit boundary: the higher channel reads before this cycle's timer tick.
+            // Idle between units. A 3-cycle unit (read, write, idle) is at
+            // phase 2 here when only the idle remains; that read is one tick
+            // sooner than a preempt that still owes the write.
             self.dma_hblank_from_write = false;
+            let ticks = if self.dma_cycles_paid % 3 == 2 { 3 } else { 4 };
+            for _ in 0..ticks {
+                self.dma_phase_tick();
+            }
             for channel in 0..4 {
                 if self.dma.reason(channel) == Some(StartReason::HBlank) {
                     self.dma_fire(channel, StartReason::HBlank);
@@ -1455,8 +1460,14 @@ impl Bus {
         // arming cycle still owes GBATEK's 2-cycle startup; that cycle was
         // the in-progress write, not the turnaround.
         if nested && self.dma_hblank_from_write {
-            if self.dma_abs() == self.dma_hblank_defer_abs {
-                self.dma_phase_tick();
+            // The parent unit's remaining write already elapsed after the edge.
+            // That is not the 2-cycle startup, and the preempt still owes both.
+            let startup = if self.dma_abs() == self.dma_hblank_defer_abs {
+                6
+            } else {
+                4
+            };
+            for _ in 0..startup {
                 self.dma_phase_tick();
             }
         } else if !nested {
@@ -1490,17 +1501,18 @@ impl Bus {
             // Idle between units before a preempted channel reads.
             // EWRAM's access beats already include that turnaround.
             if unit + 1 < job.units && (dst >> 24) != 0x02 {
-                // Next unit is not the last, and its source beat is the HBlank
-                // edge: read the higher channel before this idle increments the timer.
                 let next_src = self.dma_abs().wrapping_add(2);
                 if unit + 2 < job.units && next_src % 1232 == 960 {
+                    self.hblank = true;
                     self.dma_hblank_from_write = false;
+                    for _ in 0..3 {
+                        self.dma_phase_tick();
+                    }
                     for channel in 0..4 {
                         if self.dma.reason(channel) == Some(StartReason::HBlank) {
                             self.dma_fire(channel, StartReason::HBlank);
                         }
                     }
-                    self.hblank = true;
                 }
                 self.dma_phase_tick();
             }
