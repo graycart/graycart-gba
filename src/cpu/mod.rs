@@ -282,7 +282,12 @@ impl Cpu {
         } else {
             mask
         };
-        let merged = (self.cpsr & !mask) | (value & mask);
+        let mut merged = (self.cpsr & !mask) | (value & mask);
+        // An MSR that clears mode bit 4 is ignored for that bit. Hardware keeps
+        // it set, so mode 0x03 lands as Supervisor 0x13 (alyosha psr).
+        if mask & 0x10 != 0 && merged & 0x10 == 0 {
+            merged |= 0x10;
+        }
         let new_mode = merged & 0x1F;
         if bank_index(old_mode) != bank_index(new_mode) || (old_mode == 0x11) != (new_mode == 0x11)
         {
