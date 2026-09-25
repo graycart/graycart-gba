@@ -676,6 +676,13 @@ impl Bus {
         self.sio_start -= 1;
         if self.sio_start == 0 {
             self.io[0x128] &= !0x80;
+            // Normal 8-bit, nothing connected: the idle line shifts in 0xFF.
+            // The high byte of SIODATA8 stays what software wrote.
+            let mode = (self.io[0x129] >> 4) & 3;
+            let rcnt = u16::from(self.io[0x134]) | (u16::from(self.io[0x135]) << 8);
+            if mode == 0 && rcnt & 0x8000 == 0 {
+                self.io[0x12A] = 0xFF;
+            }
         }
     }
 
