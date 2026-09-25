@@ -1507,7 +1507,13 @@ impl Bus {
             self.dma_beat = 1;
             let resume_seq = self.dma_rom_seq_resume;
             self.dma_rom_seq_resume = false;
-            for _ in 0..self.dma_access_ticks(src, width, resume_seq) {
+            // Nested HBlank latches an I/O source before this beat. Counting the
+            // beat again leaves the following timer read one high (ROM_to_IWRAM).
+            let mut src_ticks = self.dma_access_ticks(src, width, resume_seq);
+            if nested && (src >> 24) == 0x04 {
+                src_ticks = 0;
+            }
+            for _ in 0..src_ticks {
                 self.dma_phase_tick();
             }
             self.dma_beat = 2;
