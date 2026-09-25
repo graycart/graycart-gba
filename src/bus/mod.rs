@@ -683,6 +683,10 @@ impl Bus {
             if mode == 0 && rcnt & 0x8000 == 0 {
                 self.io[0x12A] = 0xFF;
             }
+            // SIOCNT bit 14: raise the serial IRQ when the transfer ends.
+            if self.io[0x129] & 0x40 != 0 {
+                self.irq.raise(0x80);
+            }
         }
     }
 
