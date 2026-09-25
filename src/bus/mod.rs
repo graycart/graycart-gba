@@ -1086,7 +1086,10 @@ impl Bus {
         if covers_byte(off, size, 0x128) {
             let shift = (0x128 - off) * 8;
             if value & (0x80 << shift) != 0 {
-                self.sio_start = 316;
+                let baud = self.io[0x128] & 3;
+                // 115200 finishes sooner than 38400. 316 is the 38400 start-bit
+                // sample; 90 is the 115200 timer sample.
+                self.sio_start = if baud == 3 { 90 } else { 316 };
             }
         }
         if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
