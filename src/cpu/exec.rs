@@ -586,6 +586,8 @@ impl Cpu {
         } else {
             bus.arm_branch_refill(self.fetch_pc);
         }
+        // A Thumb peek of the target is one halfword. ARM must not execute it.
+        self.ahead_len = 0;
         self.last_op = "bx";
         Ok(())
     }

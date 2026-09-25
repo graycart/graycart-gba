@@ -357,12 +357,18 @@ impl Cpu {
     }
 
     fn branch(&mut self, value: u32, thumb: bool) {
+        let was_thumb = self.cpsr & 0x20 != 0;
         if thumb {
             self.cpsr |= 0x20;
             self.fetch_pc = value & !1;
         } else {
             self.cpsr &= !0x20;
             self.fetch_pc = value & !3;
+        }
+        // The lookahead slot was fetched at the old width. A Thumb halfword
+        // must not be executed as the ARM word at the same address.
+        if was_thumb != thumb {
+            self.ahead_len = 0;
         }
     }
 
