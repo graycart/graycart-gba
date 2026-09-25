@@ -15,7 +15,7 @@ use crate::timing::{Width, internal_cycles};
 /// Cycles for BIOS entry before the first transfer unit (SWI 0x0B/0x0C).
 const BIOS_CPUSET_PROLOGUE: u32 = 0x46;
 /// Cycles for BIOS exit after the last transfer unit.
-const BIOS_CPUSET_EPILOGUE: u32 = 0x21;
+const BIOS_CPUSET_EPILOGUE: u32 = 0x08;
 
 /// Length is `ctrl` bits 0–20. Bit 24 = fill (source does not advance). Bit 26 = 32-bit units, else 16-bit.
 pub fn cpu_set(bus: &mut Bus, mut src: u32, mut dst: u32, ctrl: u32) {
