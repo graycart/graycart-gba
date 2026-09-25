@@ -1602,7 +1602,7 @@ impl Bus {
     /// One DMA bus phase: scanline first so HBlank DMA samples the timer before
     /// this cycle's increment (matches CPU `advance_cycles` edge-before-use for
     /// the same absolute time), then tick timers/APU.
-    fn dma_phase_tick(&mut self) {
+    pub(crate) fn dma_phase_tick(&mut self) {
         if !self.dma_timing {
             return;
         }

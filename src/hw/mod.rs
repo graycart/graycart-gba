@@ -265,6 +265,7 @@ impl Machine {
     }
 
     fn advance_clock(&mut self, count: u32, tick_timers: bool) -> bool {
+        let mut hblank_dma = false;
         for _ in 0..count {
             self.cycles += 1;
             self.bus.emu_cycles = self.cycles;
@@ -303,7 +304,7 @@ impl Machine {
             if self.bus.hblank && !self.prev_hblank {
                 // HBlank DMA only on visible lines; VBlank lines still raise HBlank IRQ.
                 if self.bus.vcount < 160 {
-                    self.bus.dma_on_hblank();
+                    hblank_dma = true;
                 }
                 // DMA3 video capture: GBATEK starts at VCOUNT=2, last line is 161.
                 if (2..=161).contains(&self.bus.vcount) {
@@ -355,6 +356,14 @@ impl Machine {
                 self.bus.warn_halt_forever();
                 return true;
             }
+        }
+        if hblank_dma {
+            // The edge landed inside this instruction. Finish those cycles first
+            // (they already ran above), then pay the 2-cycle DMA startup before
+            // the channel reads. Pause-timing samples are 4 ticks early otherwise.
+            self.bus.dma_phase_tick();
+            self.bus.dma_phase_tick();
+            self.bus.dma_on_hblank();
         }
         false
     }
