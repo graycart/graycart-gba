@@ -1,0 +1,39 @@
+gba-debug: machine=arm7
+gba-debug: warn cgb-audio pandocs-vs-gbatek unimplemented keep=graycart-apu
+gba-debug: warn sio unlinked
+gba-debug: warn apu rom skipped
+gba-debug: save kind=flash128
+gba-debug: cpu frame=60 pc=0x03007D62 region=iwram cpsr=0x0000003F mode=System thumb=true i_mask=false ime=1 ie=0x0005 if=0x0000 power=Run
+gba-debug: ppu frame=60 mode=0 sprites=128
+gba-debug: dma frame=60 ch=2 words=4 reason=fifo
+gba-debug: irq summary frame=60 absent
+gba-debug: ppu health frame=60 absent
+gba-debug: apu host frame=60 absent
+gba-debug: swi summary frame=60 absent
+gba-debug: apu health frame=60 master=1 pwm=13378Hz fifoA=timer0 underrun=0/0 overrun=83/83 empty=0/0 lag=0/0 dma_req=2494/2494 peak=[-128..120] dc≈[0,0] clip=0 extreme=0 psg_on=0xB psg_nr50=0x77 fifoB=timer0
+gba-debug: wait frame=60 rom_n=3 rom_s=1 rom_i=1 sram=8 stall=50561280 prefetch=8904835
+gba-debug: timer frame=60 t0=65083 c0=0 t1=0 c1=0 t2=0 c2=0 t3=32 c3=0
+gba-debug: irq frame=60 ie=0x0005 if=0x0000 ime=1
+gba-debug: cpu frame=120 pc=0x03007D62 region=iwram cpsr=0x0000003F mode=System thumb=true i_mask=false ime=1 ie=0x0005 if=0x0000 power=Run
+gba-debug: ppu frame=120 mode=0 sprites=128
+gba-debug: dma frame=120 ch=2 words=4 reason=fifo
+gba-debug: irq summary frame=120 absent
+gba-debug: ppu health frame=120 absent
+gba-debug: apu host frame=120 absent
+gba-debug: swi summary frame=120 absent
+gba-debug: apu health frame=120 master=1 pwm=13378Hz fifoA=timer0 underrun=0/0 overrun=83/83 empty=0/0 lag=0/0 dma_req=2494/2494 peak=[-128..120] dc≈[0,0] clip=0 extreme=0 psg_on=0xB psg_nr50=0x77 fifoB=timer0
+gba-debug: wait frame=120 rom_n=3 rom_s=1 rom_i=1 sram=8 stall=50561280 prefetch=8904835
+gba-debug: timer frame=120 t0=65083 c0=0 t1=0 c1=0 t2=0 c2=0 t3=32 c3=0
+gba-debug: irq frame=120 ie=0x0005 if=0x0000 ime=1
+gba-debug: cpu frame=180 pc=0x03007D62 region=iwram cpsr=0x0000003F mode=System thumb=true i_mask=false ime=1 ie=0x0005 if=0x0000 power=Run
+gba-debug: ppu frame=180 mode=0 sprites=128
+gba-debug: dma frame=180 ch=2 words=4 reason=fifo
+gba-debug: irq summary frame=180 absent
+gba-debug: ppu health frame=180 absent
+gba-debug: apu host frame=180 absent
+gba-debug: swi summary frame=180 absent
+gba-debug: apu health frame=180 master=1 pwm=13378Hz fifoA=timer0 underrun=0/0 overrun=83/83 empty=0/0 lag=0/0 dma_req=2494/2494 peak=[-128..120] dc≈[0,0] clip=0 extreme=0 psg_on=0xB psg_nr50=0x77 fifoB=timer0
+gba-debug: wait frame=180 rom_n=3 rom_s=1 rom_i=1 sram=8 stall=50561280 prefetch=8904835
+gba-debug: timer frame=180 t0=65083 c0=0 t1=0 c1=0 t2=0 c2=0 t3=32 c3=0
+gba-debug: irq frame=180 ie=0x0005 if=0x0000 ime=1
+gba-debug: cpu result=FAIL r12=16 r7=4096 pc=0x03007D62 mnemonic=b

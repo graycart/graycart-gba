@@ -60,8 +60,7 @@ fn rom_ns(waitcnt: u16, addr: u32) -> (u32, u32) {
 ///
 /// 8/16-bit: one N or one S. 32-bit Game Pak is two 16-bit beats; a non-sequential
 /// word inserts one internal cycle between halves (N+1+S). A sequential word is
-/// S+S (both halves sequential — no extra turnaround). Prefetch word hits stay
-/// cost 1 in `Prefetch::take_n`.
+/// S+S (both halves sequential). Prefetch word hits stay cost 1 in `Prefetch::take_n`.
 pub fn rom_cycles(waitcnt: u16, addr: u32, width: Width, sequential: bool) -> u32 {
     let (n, s) = rom_ns(waitcnt, addr);
     match width {

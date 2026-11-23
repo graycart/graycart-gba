@@ -168,7 +168,10 @@ fn build_report(cap: &CaptureState, ring: &DiagnosticRing) -> String {
     out.push_str(&format!("samples_in_window: {}\n\n", window.len()));
 
     out.push_str("## PERFORMANCE\n\n");
-    out.push_str("target_cycles_per_sec: 4194304\n");
+    let target_hz = last
+        .map(|h| h.target_cycles_per_sec())
+        .unwrap_or(4_194_304.0);
+    out.push_str(&format!("target_cycles_per_sec: {target_hz:.0}\n"));
     out.push_str(&format!("avg_cycles_per_sec: {:.0}\n", avg(&cycles)));
     out.push_str(&format!(
         "min_cycles_per_sec: {:.0}\n",
@@ -176,7 +179,11 @@ fn build_report(cap: &CaptureState, ring: &DiagnosticRing) -> String {
     ));
     out.push_str(&format!(
         "realtime_pct: {:.2}\n",
-        avg(&cycles) / 4_194_304.0 * 100.0
+        if target_hz > 0.0 {
+            avg(&cycles) / target_hz * 100.0
+        } else {
+            0.0
+        }
     ));
     out.push_str(&format!("avg_emu_fps: {:.3}\n", avg(&fps)));
     out.push_str(&format!("p95_frame_ms: {:.2}\n", pct(&frame_ms, 0.95)));
@@ -296,7 +303,10 @@ pub fn build_snapshot_report(
     out.push_str("kind: snapshot (current state only)\n\n");
 
     out.push_str("## PERFORMANCE\n\n");
-    out.push_str("target_cycles_per_sec: 4194304\n");
+    out.push_str(&format!(
+        "target_cycles_per_sec: {:.0}\n",
+        host.target_cycles_per_sec()
+    ));
     out.push_str(&format!(
         "cycles_per_sec: {:.0}\n",
         host.emu_tcycles_per_sec

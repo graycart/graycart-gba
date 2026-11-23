@@ -576,3 +576,34 @@ fn hblank_mid_read_defers_until_unit_write_finishes() {
     machine.bus.fire_ready_imm();
     assert_ne!(machine.bus.read16(IWRAM + 0x40), 0x00FF);
 }
+
+#[test]
+fn rom_fixed_boundary_dma_cycle_count() {
+    // alyosha DMA_ROM_Fixed: Game Pak ignores fixed SRC and increments; a fixed
+    // source parked on 0x…1FFFC forces non-sequential every beat (GBAHawk glitch).
+    let mut machine = Machine::from_rom(vec![0u8; 0x2_0100]);
+    machine.bus.write16(0x0400_0204, 0x0014);
+    machine.bus.timers.write16_immediate(0x00, 0x0009);
+    machine.bus.timers.write16_immediate(0x02, 0x0080);
+
+    machine.bus.dma_timing = true;
+    machine.bus.begin_step_at(machine.cycles);
+    write_channel(
+        &mut machine.bus,
+        DMA1,
+        0x0801_FFFC,
+        IWRAM,
+        0x20,
+        enable_immediate() | (1 << 10) | (2 << 7) | (2 << 5),
+    );
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.tick_imm_dma_wait();
+    machine.bus.timers.tick(2);
+    machine.bus.cycle_base = machine.cycles;
+    machine.bus.dma_cycles_paid = 0;
+    machine.bus.fire_ready_imm();
+    let paid = machine.bus.take_dma_cycles_paid();
+    // Phased copy: startup + 32×(word N + IWRAM) + 31 idles + page-end glitch
+    // overhead ≈ 249 with WAITCNT 0x14 (alyosha DMA_ROM_Fixed).
+    assert_eq!(paid, 249, "unexpected fixed-ROM DMA stall {paid}");
+}

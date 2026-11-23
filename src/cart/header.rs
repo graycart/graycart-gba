@@ -41,6 +41,13 @@ pub fn parse_header(rom: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// True when the ROM embeds the Seiko SIIRTC library (`SIIRTC_V`).
+///
+/// Ruby / Sapphire / Emerald (and a few others) need cart GPIO + S-3511A.
+pub fn detect_rtc(rom: &[u8]) -> bool {
+    contains_bytes(rom, b"SIIRTC_V")
+}
+
 /// Scan ROM for Nintendo save-ID ASCII strings. Longer matches win.
 ///
 /// EEPROM 512 vs 8 KiB is not decided here.
@@ -273,5 +280,13 @@ mod tests {
         assert_eq!(SaveKind::Flash64.name(), "flash64");
         assert_eq!(SaveKind::Flash128.name(), "flash128");
         assert_eq!(SaveKind::Eeprom.name(), "eeprom");
+    }
+
+    #[test]
+    fn detect_rtc_siirtc_string() {
+        let mut rom = vec![0u8; 192];
+        assert!(!detect_rtc(&rom));
+        rom.extend_from_slice(b"SIIRTC_V001");
+        assert!(detect_rtc(&rom));
     }
 }

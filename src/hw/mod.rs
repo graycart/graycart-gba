@@ -47,9 +47,11 @@ pub struct ArmMachineState {
 
 impl Machine {
     pub fn from_rom(rom: Vec<u8>) -> Self {
+        let mut bus = Bus::new(rom);
+        bus.timers.set_post_boot();
         Self {
             cpu: Cpu::new(),
-            bus: Bus::new(rom),
+            bus,
             ppu: Ppu::new(),
             cycles: 0,
             idle: false,
@@ -93,10 +95,10 @@ impl Machine {
         if !self.bus.save_dirty() {
             return Ok(());
         }
-        let Some(bytes) = self.bus.save_bytes() else {
+        let Some(bytes) = self.bus.sidecar_bytes() else {
             return Ok(());
         };
-        write_sidecar(&path, bytes)?;
+        write_sidecar(&path, &bytes)?;
         self.bus.clear_save_dirty();
         Ok(())
     }
@@ -137,8 +139,15 @@ impl Machine {
         self.bus.mark_save_dirty();
     }
 
+    /// Advance by `frames` more frames from the current cycle count.
+    ///
+    /// The play shell calls this with `1` every host tick; the budget is relative
+    /// so a second call still moves time. Absolute caps from reset belong on
+    /// [`Self::run_debug`].
     pub fn run_frames(&mut self, frames: u32) {
-        let budget = u64::from(frames) * CYCLES_PER_FRAME;
+        let budget = self
+            .cycles
+            .saturating_add(u64::from(frames).saturating_mul(CYCLES_PER_FRAME));
         let _ = self.run_until(budget, false);
     }
 
@@ -194,7 +203,6 @@ impl Machine {
             if self.error.is_some() {
                 break DebugEnd::Failed;
             }
-            let frame_before = self.cycles / CYCLES_PER_FRAME;
 
             let advance = if self.bus.dma.stall > 0 {
                 self.bus.dma.stall -= 1;
@@ -237,15 +245,10 @@ impl Machine {
             if self.advance_cycles(advance) {
                 break DebugEnd::Failed;
             }
-
-            let frame_after = self.cycles / CYCLES_PER_FRAME;
-            if frame_after != frame_before {
-                self.render_frame();
-            }
         };
         self.bus.dma_timing = false;
         self.idle = self.cpu.idle;
-        // Idle can land mid-frame; always settle the picture on exit.
+        // One software draw per run_until — enough for present and headless hashes.
         self.render_frame();
         end
     }
@@ -256,14 +259,6 @@ impl Machine {
         self.advance_clock(count, true)
     }
 
-    /// Scanline-only I/O Word remainder (timers already paid one beat).
-    fn advance_ppu_only(&mut self, count: u32) -> bool {
-        if count == 0 {
-            return false;
-        }
-        self.advance_clock(count, false)
-    }
-
     fn advance_clock(&mut self, count: u32, tick_timers: bool) -> bool {
         let mut hblank_dma = false;
         for _ in 0..count {
@@ -272,18 +267,8 @@ impl Machine {
 
             self.bus.tick_imm_dma_wait();
 
-            if tick_timers {
-                let mask = self.bus.timers.tick(1);
-                self.bus.tick_sio_start();
-                self.bus.tick_apu(mask);
-                for index in 0..4u32 {
-                    if mask & (1 << index) != 0 {
-                        let control = self.bus.timers.read16(index * 4 + 2);
-                        if control & (1 << 6) != 0 {
-                            self.bus.irq.raise(1 << (3 + index));
-                        }
-                    }
-                }
+            if tick_timers && !self.bus.take_timer_ahead() {
+                self.bus.tick_timers_one();
             }
             if self.bus.keypad.irq_asserted() {
                 self.bus.irq.raise(0x1000);
@@ -339,17 +324,19 @@ impl Machine {
             }
 
             if self.bus.halted {
+                self.bus.halt_age = self.bus.halt_age.saturating_add(1);
                 self.cpu.poll_intr_wait(&mut self.bus);
             }
 
-            if self.bus.irq.pending() {
-                // An enabled pending IRQ leaves Halt (SWI 2) even when CPSR I blocks entry.
-                // IntrWait owns halt until the check-flag match completes the SWI return.
+            // Halt wakes on IE&IF (IME / CPSR.I are don't-care). The CPU IRQ line
+            // still needs IME and I clear before the handler runs.
+            let latched = self.bus.take_irq_latch();
+            if self.bus.irq.halt_wake() || latched {
                 let from_halt = self.bus.halted && !self.cpu.intr_waiting();
                 if !self.cpu.intr_waiting() {
                     self.bus.halted = false;
                 }
-                if self.cpu.cpsr() & 0x80 == 0 {
+                if (self.bus.irq.pending() || latched) && self.cpu.cpsr() & 0x80 == 0 {
                     self.cpu.raise_irq_from(&mut self.bus, from_halt);
                 }
             }
@@ -357,6 +344,20 @@ impl Machine {
             if self.bus.halted && !self.bus.irq.can_wake() {
                 self.bus.warn_halt_forever();
                 return true;
+            }
+        }
+        // BIOS Halt→IRQ prologue (~42 cycles): advance Machine clock + timers only.
+        // bus.elapse() desyncs vcount/IF (Metroid Fusion stuck in SWI Halt). Snapping
+        // prev_vblank here skips the next VBlank edge. Leaving prev_* alone lets the
+        // next advance_cycles tick re-derive vcount from self.cycles and still raise.
+        let halt_irq_cycles = self.cpu.take_halt_irq_cycles();
+        for _ in 0..halt_irq_cycles {
+            self.cycles += 1;
+            self.bus.emu_cycles = self.cycles;
+            if tick_timers {
+                let mask = self.bus.timers.tick(1);
+                self.bus.tick_sio_start();
+                self.bus.tick_apu(mask);
             }
         }
         if hblank_dma {

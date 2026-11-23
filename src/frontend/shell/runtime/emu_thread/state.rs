@@ -50,6 +50,9 @@ pub(super) struct EmuState {
     pub quit: bool,
     pub status_toast: Option<String>,
     pub exit_error: Option<String>,
+    /// Reused each Arm audio submit (i16 PCM → host StereoSample).
+    pub gba_pcm_scratch: Vec<(i16, i16)>,
+    pub gba_sample_scratch: Vec<graycart::StereoSample>,
 }
 
 impl EmuState {
@@ -96,6 +99,8 @@ impl EmuState {
             quit: false,
             status_toast: None,
             exit_error: None,
+            gba_pcm_scratch: Vec::with_capacity(1024),
+            gba_sample_scratch: Vec::with_capacity(1536),
         }
     }
 }

@@ -1,0 +1,6 @@
+=== graycart-gba AV report (frame=180) ===
+PPU mode=0 dispcnt=0x0140 blank=0 hash=e2cc2a1fa6131cf4d86faa3baf78851f35a36853e2467c257b3df9d89e85cce5
+PPU pixels nonzero=0
+APU master=1 pwm=13378Hz fifoA=timer0 fifoB=timer0 underrun=0/0 overrun=83/83 empty_drain=0/0 peak=[-128..120] dc≈[0,0] clip=0
+save kind=flash128
+SWI unhandled=(none)

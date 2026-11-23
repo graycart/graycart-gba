@@ -321,9 +321,10 @@ fn try_config(
     let mut config: StreamConfig = supported.into();
     let channels = config.channels;
 
-    // Soft target ~5 display frames (~83 ms @ 48 kHz): margin for USB /
-    // wireless headsets whose WASAPI Default period often lands near ~10 ms.
-    let target_frames = ((sample_rate as usize) / 60).saturating_mul(5).max(1024);
+    // Soft target ~3 display frames (~50 ms @ 48 kHz). Five frames left GBA
+    // play sitting at 100ms+ latency with the PLL pegged compressing; built-in
+    // CoreAudio does not need the old USB-headset margin.
+    let target_frames = ((sample_rate as usize) / 60).saturating_mul(3).max(1024);
     let max_frames = ((sample_rate as usize) * 3 / 20).max(target_frames * 2);
     let capacity_samples = max_frames * 2;
 

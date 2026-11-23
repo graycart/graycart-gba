@@ -13,7 +13,7 @@ use graycart_gba::ppu::sprite_count;
 
 #[cfg(feature = "frontend")]
 mod play_shell {
-    pub use graycart_gba::frontend::shell::run;
+    pub use graycart_gba::frontend::shell::{run, run_rom};
 }
 
 fn main() -> ExitCode {
@@ -34,6 +34,19 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Err(err) if err == "no file selected" => Ok(ExitCode::SUCCESS),
             Err(err) => Err(err),
         };
+    }
+
+    // `graycart-gba <rom.gba>` (no --frames/--debug) opens the play window.
+    #[cfg(feature = "frontend")]
+    if args.len() == 1 && !args[0].starts_with('-') {
+        let path = Path::new(&args[0]);
+        if path.is_file() {
+            return match play_shell::run_rom(path) {
+                Ok(()) => Ok(ExitCode::SUCCESS),
+                Err(err) if err == "no file selected" => Ok(ExitCode::SUCCESS),
+                Err(err) => Err(err),
+            };
+        }
     }
 
     let opts = parse(args)?;
@@ -269,6 +282,8 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 fn usage(why: &str) -> String {
     format!(
         "{why}\n\
+graycart-gba\n\
+graycart-gba <rom>\n\
 graycart-gba <rom-or-directory> --frames <n> [--debug]\n\
 graycart-gba <rom-or-directory> --debug [--frames <n>]"
     )

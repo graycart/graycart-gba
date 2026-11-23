@@ -4,9 +4,11 @@
 //! Cited: ARM DDI 0210C, ARM7TDMI Technical Reference Manual.
 
 mod exec;
+mod halt;
 mod shift;
 
 use crate::bus::Bus;
+use halt::halt_entry;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StepError {
@@ -47,6 +49,12 @@ pub struct Cpu {
     /// Game PC to resume after a Halt IRQ. The stacked BIOS link is not that PC.
     #[serde(default)]
     halt_resume: Option<u32>,
+    /// CPSR T bit when Halt was entered — restored if the IRQ path drops it.
+    #[serde(default)]
+    halt_thumb: bool,
+    /// BIOS Halt→IRQ prologue cycles owed to Machine (see [`Self::raise_irq_from`]).
+    #[serde(default)]
+    halt_irq_cycles: u32,
     /// Opcodes read two instructions ahead, before a later store can overwrite them.
     #[serde(default)]
     ahead: [u32; 2],
@@ -83,6 +91,8 @@ impl Cpu {
             last_op: "reset",
             intr_wait_mask: None,
             halt_resume: None,
+            halt_thumb: false,
+            halt_irq_cycles: 0,
             ahead: [0; 2],
             ahead_pc: [0; 2],
             ahead_len: 0,
@@ -116,6 +126,16 @@ impl Cpu {
         self.swi(bus, number << 16);
     }
 
+    /// Test helper: replace CPSR (full mask), switching register banks.
+    pub fn write_cpsr_for_test(&mut self, value: u32) {
+        self.write_cpsr(value, 0xFFFF_FFFF);
+    }
+
+    /// Test helper: MSR-style CPSR write with a field mask.
+    pub fn write_cpsr_for_test_masked(&mut self, value: u32, mask: u32) {
+        self.write_cpsr(value, mask);
+    }
+
     /// While halted for IntrWait, check `0x03007FF8` against the wait mask.
     pub fn poll_intr_wait(&mut self, bus: &mut Bus) {
         let Some(mask) = self.intr_wait_mask else {
@@ -139,9 +159,17 @@ impl Cpu {
         self.intr_wait_mask.is_some()
     }
 
+    /// Take BIOS Halt→IRQ prologue cycles for Machine to advance on the full clock.
+    pub fn take_halt_irq_cycles(&mut self) -> u32 {
+        let n = self.halt_irq_cycles;
+        self.halt_irq_cycles = 0;
+        n
+    }
+
     pub fn step(&mut self, bus: &mut Bus) -> Result<(), StepError> {
         // HLE BIOS IRQ return stub (real ROM at 0x138): ldmfd + subs pc, lr, #4.
-        if self.fetch_pc == IRQ_RETURN_STUB {
+        // Only in IRQ mode — Thumb fall-through of BIOS must not pop the frame.
+        if self.fetch_pc == IRQ_RETURN_STUB && self.cpsr & 0x1F == 0x12 {
             self.hle_irq_return(bus);
             return Ok(());
         }
@@ -224,7 +252,8 @@ impl Cpu {
     }
 
     /// IRQ entry. `from_halt` is the Halt wakeup path: the BIOS prologue runs
-    /// before `[0x03007FFC]`, which is 42 cycles on the halt-pc timer (0xAD → 0xD7).
+    /// before `[0x03007FFC]`; its length and stacked LR come from the phase
+    /// model in `halt.rs` (cycles since the SWI, wake source).
     pub fn raise_irq_from(&mut self, bus: &mut Bus, from_halt: bool) {
         if self.cpsr & 0x80 != 0 {
             return;
@@ -234,9 +263,17 @@ impl Cpu {
         self.write_cpsr(0x92, 0xFFFF_FFFF);
         self.set_spsr(spsr, 0xFFFF_FFFF);
         if from_halt {
-            bus.elapse(42);
+            // BIOS Halt wakeup. Prologue cycles are paid by Machine via
+            // take_halt_irq_cycles; the phase model lives in `halt.rs`.
+            let age = bus.take_halt_age();
+            let wake = bus.irq.ie() & bus.irq.iff();
+            // DISPSTAT-only (bits 0–2) gets the short BIOS wake (Halt_IRQ).
+            let short_wake = wake != 0 && wake & !0x0007 == 0;
+            let (lr, prologue) = halt_entry(age, bus.halt_via_swi, short_wake);
             self.halt_resume = Some(self.fetch_pc);
-            self.gpr[14] = 0x74;
+            self.halt_thumb = spsr & 0x20 != 0;
+            self.gpr[14] = lr;
+            self.halt_irq_cycles = self.halt_irq_cycles.saturating_add(prologue);
         } else {
             self.gpr[14] = ret;
         }
@@ -277,13 +314,22 @@ impl Cpu {
         self.gpr[14] = bus.read32(sp.wrapping_add(20));
         self.gpr[13] = sp.wrapping_add(24);
 
-        let spsr = self.spsr();
-        let bios_halt = self.gpr[14] == 0x74;
-        let resume = self.halt_resume.take();
+        let mut spsr = self.spsr();
+        let stacked_lr = self.gpr[14];
+        // BIOS Halt stacks 0x74 (settled) or 0xB8 (early). Keep halt_resume
+        // across mismatched pops.
+        let bios_halt = matches!(stacked_lr, 0x74 | 0xB8);
         let ret = if bios_halt {
-            resume.unwrap_or(self.gpr[14])
+            // Metroid's dispatcher clears T while in System mode before bx to the
+            // ISR; a nested IRQ in that window can restore SPSR without T. Re-apply
+            // the Halt-entry T bit only (ARM Halt tests must stay ARM).
+            if self.halt_thumb {
+                spsr |= 0x20;
+            }
+            self.halt_thumb = false;
+            self.halt_resume.take().unwrap_or(stacked_lr)
         } else {
-            self.gpr[14].wrapping_sub(4)
+            stacked_lr.wrapping_sub(4)
         };
         self.write_cpsr(spsr, 0xFFFF_FFFF);
         if self.thumb() {
@@ -291,6 +337,7 @@ impl Cpu {
         } else {
             self.fetch_pc = ret & !3;
         }
+        self.ahead_len = 0;
         self.last_op = "irq";
     }
 
@@ -444,7 +491,8 @@ impl Cpu {
     fn swi(&mut self, bus: &mut Bus, comment: u32) {
         let number = (comment >> 16) & 0xFF;
         if number == 2 {
-            bus.halted = true;
+            // BIOS Halt: write HALTCNT byte 0 (same as SWI body on hardware).
+            bus.enter_halt_swi();
             self.last_op = "swi";
             return;
         }

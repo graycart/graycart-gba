@@ -71,9 +71,14 @@ impl Irq {
         self.check_flags = value;
     }
 
-    /// True when IME bit 0 is set and `(IE & IF) != 0`.
+    /// True when IME bit 0 is set and `(IE & IF) != 0` (CPU IRQ line).
     pub fn pending(&self) -> bool {
         self.ime && (self.ie & self.iff) != 0
+    }
+
+    /// Halt/Stop wake: `(IE & IF) != 0`. IME and CPSR I are don't-care (GBATEK).
+    pub fn halt_wake(&self) -> bool {
+        (self.ie & self.iff) != 0
     }
 
     pub fn ie(&self) -> u16 {
@@ -88,9 +93,9 @@ impl Irq {
         self.ime
     }
 
-    /// False when a halted CPU can never be woken: IME is off, or IE is 0.
+    /// False when Halt can never wake: no interrupt sources enabled in IE.
     pub fn can_wake(&self) -> bool {
-        self.ime && self.ie != 0
+        self.ie != 0
     }
 }
 

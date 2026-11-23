@@ -223,3 +223,19 @@ fn idle_branch_stops_before_the_frame_cap() {
     );
     assert!(machine.cycles < 1232, "cycles={}", machine.cycles);
 }
+
+#[test]
+fn run_frames_advances_from_current_cycle_count() {
+    // The host tick path calls run_frames(1) every frame; a second call must not
+    // treat `1` as an absolute budget from reset (that freezes after frame 1).
+    let mut machine = Machine::from_rom(vec![0; 0xC0]);
+    machine.bus.halted = true;
+    machine.bus.irq.write16(0, 1);
+    machine.bus.irq.write16(8, 1);
+    machine.run_frames(1);
+    let after_one = machine.cycles;
+    assert_eq!(after_one, 1232 * 228);
+    machine.run_frames(1);
+    assert_eq!(machine.cycles, after_one * 2);
+    assert_eq!(machine.frames_done(), 2);
+}

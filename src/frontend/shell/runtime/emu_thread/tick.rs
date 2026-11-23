@@ -195,28 +195,41 @@ impl EmuState {
                 }
             }
             Some(Machine::Arm { inner, .. }) => {
-                let pcm = inner.bus.apu.drain_pcm();
+                self.gba_pcm_scratch = inner.bus.apu.drain_pcm();
                 if profile_detail {
                     let mut peak_l = 0.0f32;
                     let mut peak_r = 0.0f32;
-                    for (l, r) in &pcm {
-                        peak_l = peak_l.max((*l as f32 / 32768.0).abs());
-                        peak_r = peak_r.max((*r as f32 / 32768.0).abs());
+                    for (l, r) in &self.gba_pcm_scratch {
+                        peak_l = peak_l.max((*l as f32 / 512.0).abs());
+                        peak_r = peak_r.max((*r as f32 / 512.0).abs());
                     }
                     self.peak_l = peak_l;
                     self.peak_r = peak_r;
                 }
-                if submit && let Some(a) = &self.audio {
-                    let host_rate = a.sample_rate;
-                    let resampled = crate::frontend::resample_linear(&pcm, GBA_PCM_HZ, host_rate);
-                    let samples: Vec<StereoSample> = resampled
-                        .iter()
-                        .map(|(l, r)| StereoSample {
-                            left: *l as f32 / 32768.0,
-                            right: *r as f32 / 32768.0,
-                        })
-                        .collect();
-                    a.submit_gain(&samples, self.audio_gain);
+                if submit {
+                    let host_rate = self.audio.as_ref().map(|a| a.sample_rate);
+                    if let Some(host_rate) = host_rate {
+                        let resampled = crate::frontend::resample_linear(
+                            &self.gba_pcm_scratch,
+                            GBA_PCM_HZ,
+                            host_rate,
+                        );
+                        // Mixer peaks sit near ±512 (8-bit FIFO ± bias headroom), not full i16.
+                        // /32768 leaves Emerald inaudible; /512 matches the practical PWM range.
+                        const GBA_PCM_FULL_SCALE: f32 = 512.0;
+                        self.gba_sample_scratch.clear();
+                        self.gba_sample_scratch.reserve(resampled.len());
+                        for (l, r) in &resampled {
+                            self.gba_sample_scratch.push(StereoSample {
+                                left: (*l as f32 / GBA_PCM_FULL_SCALE).clamp(-1.0, 1.0),
+                                right: (*r as f32 / GBA_PCM_FULL_SCALE).clamp(-1.0, 1.0),
+                            });
+                        }
+                        let gain = self.audio_gain;
+                        if let Some(a) = &self.audio {
+                            a.submit_gain(&self.gba_sample_scratch, gain);
+                        }
+                    }
                 }
             }
             None => {}
@@ -345,12 +358,21 @@ impl EmuState {
         };
 
         let is_arm = matches!(self.machine, Some(Machine::Arm { .. }));
-        let framebuffer = match self.machine.as_ref() {
-            Some(Machine::Sm83 { bus, .. }) => {
-                Some(PresentFrame::Sm83(bus.ppu.framebuffer.clone()))
+        // Skip the framebuffer copy when this tick did not advance a frame — the UI
+        // keeps the last texture, and title-screen Emerald is already near the
+        // 16.7 ms budget before host present.
+        let framebuffer = if frame_done {
+            match self.machine.as_ref() {
+                Some(Machine::Sm83 { bus, .. }) => {
+                    Some(PresentFrame::Sm83(bus.ppu.framebuffer.clone()))
+                }
+                Some(Machine::Arm { inner, .. }) => {
+                    Some(PresentFrame::Arm(inner.ppu.pixels.to_vec()))
+                }
+                None => None,
             }
-            Some(Machine::Arm { inner, .. }) => Some(PresentFrame::Arm(inner.ppu.pixels.to_vec())),
-            None => None,
+        } else {
+            None
         };
         let title = self
             .machine

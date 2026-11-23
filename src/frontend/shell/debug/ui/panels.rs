@@ -85,7 +85,11 @@ fn draw_panel(ui: &mut Ui, frame: &mut DebugFrame<'_>, id: PanelId) {
                 mono_kv(
                     ui,
                     "CYCLES",
-                    &format!("{:>5.3}M / 4.194M", host.emu_tcycles_per_sec / 1e6),
+                    &format!(
+                        "{:>5.3}M / {:>5.3}M",
+                        host.emu_tcycles_per_sec / 1e6,
+                        host.target_cycles_per_sec() / 1e6
+                    ),
                 );
                 mono_kv(ui, "REALTIME", &fmt_overview_pct(host.realtime_pct()));
                 mono_kv(ui, "EMU FPS", &fmt_overview_fps(host.emu_fps));

@@ -18,6 +18,7 @@ fn no_path_exits_with_a_clear_error() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("graycart-gba <rom-or-directory> --frames <n> [--debug]"));
     assert!(err.contains("graycart-gba <rom-or-directory> --debug [--frames <n>]"));
+    assert!(err.contains("graycart-gba\n") || err.contains("graycart-gba <rom>"));
     assert!(!err.to_lowercase().contains("unimplemented"));
 }
 

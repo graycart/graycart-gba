@@ -10,6 +10,8 @@ use super::playback::SpeedPreset;
 
 /// DMG CPU clock (Hz).
 pub const GB_CPU_HZ: u64 = 4_194_304;
+/// GBA CPU clock (Hz).
+pub const GBA_CPU_HZ: u64 = 16_777_216;
 /// T-cycles per full frame (154 lines × 456).
 pub const T_CYCLES_PER_FRAME: u64 = 70_224;
 

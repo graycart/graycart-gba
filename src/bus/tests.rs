@@ -164,6 +164,90 @@ fn gpio_off_by_default_reads_rom() {
 }
 
 #[test]
+fn mgba_debug_printf_captures_line() {
+    let mut bus = Bus::new(Vec::new());
+    bus.write16(0x04FF_F780, 0xC0DE);
+    assert_eq!(bus.read16(0x04FF_F780), 0x1A00);
+    for (i, b) in b"hi\0".iter().enumerate() {
+        bus.write8(0x04FF_F600 + i as u32, *b);
+    }
+    bus.write16(0x04FF_F700, 0x100);
+    assert_eq!(bus.mgba_log, vec!["hi".to_string()]);
+}
+
+#[test]
+fn siirtc_rom_gets_rtc_not_reject_warn() {
+    let mut rom = vec![0u8; 0x200];
+    rom.extend_from_slice(b"SIIRTC_V001");
+    let mut bus = Bus::new(rom);
+    assert!(bus.has_rtc());
+    bus.write16(0x0800_00C8, 1); // readable
+    bus.write16(0x0800_00C6, 0xF); // all out
+    bus.write16(0x0800_00C4, 0x1); // SCK high
+    bus.write16(0x0800_00C4, 0x5); // CS rise, SCK high
+    assert!(
+        !bus.warn_lines.iter().any(|l| l.contains("gpio")),
+        "RTC carts must not emit the unsupported-GPIO warn"
+    );
+}
+
+/// pret `SiiRtcGetStatus` over the bus GPIO registers — POWER bit must be clear.
+#[test]
+fn pret_get_status_no_battery_dry() {
+    let mut rom = vec![0u8; 0x200];
+    rom.extend_from_slice(b"SIIRTC_V001");
+    let mut bus = Bus::new(rom);
+    bus.write16(0x0800_00C8, 1);
+
+    // CS rise while SCK high
+    bus.write16(0x0800_00C6, 0xF);
+    bus.write16(0x0800_00C4, 0x1);
+    bus.write16(0x0800_00C4, 0x5);
+
+    // WriteCommand(CMD_STATUS|RD = 0x63) MSB-first
+    for i in 0..8 {
+        let bit = (0x63u16 >> (7 - i)) & 1;
+        bus.write16(0x0800_00C4, (bit << 1) | 4);
+        bus.write16(0x0800_00C4, (bit << 1) | 1 | 4);
+    }
+
+    // SIO input for read
+    bus.write16(0x0800_00C6, 0x5); // SCK out, SIO in, CS out
+
+    let mut status = 0u8;
+    for _ in 0..8 {
+        bus.write16(0x0800_00C4, 0x4); // SCK low
+        let data = bus.read16(0x0800_00C4);
+        let sio = (data >> 1) & 1;
+        status = (status >> 1) | ((sio as u8) << 7);
+        bus.write16(0x0800_00C4, 0x5); // SCK high
+    }
+
+    assert_eq!(status & 0x80, 0, "STATUS_POWER must be clear, got {status:#x}");
+    assert_ne!(status & 0x40, 0, "STATUS_24HOUR must be set, got {status:#x}");
+}
+
+#[test]
+fn sapphire_rom_detects_rtc_if_present() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        manifest.join("../carts/Pokemon - Sapphire Version (USA, Europe) (Rev 2).gba"),
+        manifest.join("carts/Pokemon - Sapphire Version (USA, Europe) (Rev 2).gba"),
+    ];
+    let Some(path) = candidates.into_iter().find(|p| p.exists()) else {
+        return;
+    };
+    let rom = std::fs::read(&path).expect("read sapphire");
+    let bus = Bus::new(rom);
+    assert!(bus.has_rtc(), "Sapphire must auto-enable S-3511A RTC");
+    assert!(
+        bus.warn_lines.is_empty(),
+        "no GPIO reject on construct: {:?}",
+        bus.warn_lines
+    );
+}
+
+#[test]
 fn io_past_1k_is_openbus_not_dispcnt_alias() {
     let mut bus = Bus::new(Vec::new());
     bus.write16(0x0400_0000, 0x0404);
@@ -369,3 +453,5 @@ fn dma32_unused_io_keeps_arm_prefetch_after_unused_half_read() {
         "must not copy the fetched ldrh opcode at PC"
     );
 }
+
+

@@ -41,7 +41,7 @@ fn pending_requires_ime_and_ie_mask() {
 }
 
 #[test]
-fn can_wake_false_when_ime_off_or_ie_zero() {
+fn can_wake_depends_on_ie_not_ime() {
     let mut irq = Irq::new();
     assert!(!irq.can_wake());
 
@@ -51,10 +51,14 @@ fn can_wake_false_when_ime_off_or_ie_zero() {
     irq.write16(0, 1 << 0);
     assert!(irq.can_wake());
 
+    // IME off still wakes Halt (GBATEK); only IE==0 is forever.
     irq.write16(8, 0);
-    assert!(!irq.can_wake());
+    assert!(irq.can_wake());
+    assert!(!irq.halt_wake());
 
-    irq.write16(8, 1);
+    irq.raise(1);
+    assert!(irq.halt_wake());
+
     irq.write16(0, 0);
     assert!(!irq.can_wake());
 }

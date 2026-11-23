@@ -11,8 +11,10 @@ categories = ["emulators"]
 publish = false
 
 [features]
-default = []
-# Window, egui, file dialog, audio device, and gamepad. Headless `--frames` stays free of these.
+# Default includes the play window so `cargo run` opens the empty launcher
+# without a ROM path. Headless CI: `cargo test --no-default-features`.
+default = ["frontend"]
+# Window, egui, file dialog, audio device, and gamepad.
 frontend = [
     "dep:arboard",
     "dep:cpal",

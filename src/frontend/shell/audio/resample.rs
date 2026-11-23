@@ -13,8 +13,10 @@ const KP: f64 = 0.8;
 const KI: f64 = 0.05;
 /// Max stretch when queue is low (step down to `1 - this`): +1.2% more outs.
 pub const MAX_STRETCH: f64 = 0.012;
-/// Max compress when queue is high (step up by this): −0.8% outs.
-const MAX_COMPRESS: f64 = 0.008;
+/// Max compress when queue is high (step up by this). Was 0.8% — too weak to
+/// drain a GBA ring that had already climbed past target after catch-up bursts.
+/// Cap pitch-up when the queue is long. 1% is enough to drain; 2.5% sounded "fast".
+const MAX_COMPRESS: f64 = 0.01;
 /// Ignore tiny occupancy noise near the target.
 const DEADBAND: f64 = 0.02;
 /// Clamp on integrated error (normalized).

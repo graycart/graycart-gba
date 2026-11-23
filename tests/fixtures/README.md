@@ -2,6 +2,8 @@
 
 Each folder is someone else's suite. `LICENSE` in that folder is the license for those files. The `graycart-gba` crate stays MIT.
 
+**These fixtures are not covered by this repository’s MIT license** — they keep upstream copyright and terms (see each folder’s `LICENSE` / README).
+
 | Folder | Upstream | Commit | License |
 |--------|----------|--------|---------|
 | `jsmolka/` | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | `a7113b67e63f83a9b321696ddd7042ccfad6c881` | MIT |
@@ -12,6 +14,20 @@ Each folder is someone else's suite. `LICENSE` in that folder is the license for
 | `hades/` | [hades-emu/Hades-Tests](https://github.com/hades-emu/Hades-Tests) | `29274ce31005f45bf5ca214bbb599377633a511e` | GPL-2.0 |
 | `fuzzarm/` | [DenSinH/FuzzARM](https://github.com/DenSinH/FuzzARM) | `a675329cd57da48e3e406216ba2d79dd7e09ee20` | GPL-3.0 |
 
-`mgba-suite/` is the source tree. It has no built `suite.gba`. A harness skips until that ROM exists.
+`mgba-suite/` is the source tree. It has no built `suite.gba`. A harness skips until that ROM exists — a skip is not a pass.
 
-`fuzzarm/` does not include the bundled FASMARM assembler. That directory had no license file.
+`fuzzarm/` does not include the bundled FASMARM assembler.
+
+Do not add commercial cartridges under this tree (`carts/` is for local dumps).
+
+## Harness
+
+```bash
+# Must-gate (jsmolka CPU/bus/BIOS/save + PPU hashes)
+cargo test --test roms
+
+# Edge matrices (ignored until green)
+cargo test --test roms -- --ignored --nocapture
+```
+
+Full notes: [`docs/conformance.md`](../../docs/conformance.md).

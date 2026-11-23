@@ -10,7 +10,7 @@ pub use layout::game_image_size;
 pub use palette::{Palette, PalettePreset, fill_rgba, framebuffer_to_rgba};
 pub use rgb555::rgb555_framebuffer_to_rgba;
 
-use graycart::{Framebuffer, SCREEN_HEIGHT, SCREEN_WIDTH};
+use graycart::Framebuffer;
 use pixels::{Pixels, PixelsBuilder, PixelsContext, SurfaceTexture, wgpu};
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
@@ -151,22 +151,41 @@ impl Renderer {
     }
 }
 
-/// Default window attributes for a scaled 160×144 LCD plus menu bar chrome.
+/// Menu bar chrome reserved above the game image (logical px).
+const MENU_CHROME: f64 = 28.0;
+
+/// Default window attributes for a scaled GBA LCD (240×160) plus menu bar chrome.
+#[allow(dead_code)] // kept as the GBA-sized default entry point
 pub fn window_attributes(title: &str) -> winit::window::WindowAttributes {
-    // ~28 logical px reserves room so the 4× game area sits fully below the menu.
-    const MENU_CHROME: f64 = 28.0;
+    window_attributes_for(title, GBA_WIDTH, GBA_HEIGHT)
+}
+
+/// Window attributes for a scaled `fb_w`×`fb_h` framebuffer plus menu bar chrome.
+pub fn window_attributes_for(
+    title: &str,
+    fb_w: u32,
+    fb_h: u32,
+) -> winit::window::WindowAttributes {
     let size = LogicalSize::new(
-        (SCREEN_WIDTH as u32 * SCALE) as f64,
-        (SCREEN_HEIGHT as u32 * SCALE) as f64 + MENU_CHROME,
+        (fb_w * SCALE) as f64,
+        (fb_h * SCALE) as f64 + MENU_CHROME,
     );
     Window::default_attributes()
         .with_title(title)
         .with_inner_size(size)
         .with_min_inner_size(LogicalSize::new(
-            SCREEN_WIDTH as f64,
-            SCREEN_HEIGHT as f64 + MENU_CHROME,
+            fb_w as f64,
+            fb_h as f64 + MENU_CHROME,
         ))
         .with_resizable(true)
+}
+
+/// Logical inner size for `fb_w`×`fb_h` at [`SCALE`] plus menu chrome.
+pub fn window_inner_size_for(fb_w: u32, fb_h: u32) -> LogicalSize<f64> {
+    LogicalSize::new(
+        (fb_w * SCALE) as f64,
+        (fb_h * SCALE) as f64 + MENU_CHROME,
+    )
 }
 
 /// Shade→palette for DMG/compat; RGB555→RGBA for NativeCgb. Then host effects.

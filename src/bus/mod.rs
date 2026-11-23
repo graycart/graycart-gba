@@ -5,12 +5,30 @@
 use std::collections::HashSet;
 
 use crate::apu::Apu;
-use crate::cart::{Eeprom, Flash, FlashSize, SaveKind, detect_save, gpio_reject_line};
+use crate::cart::{
+    Eeprom, Flash, FlashSize, Gpio, RTC_SAVE_LEN, SaveKind, detect_rtc, detect_save,
+    gpio_reject_line,
+};
 use crate::dma::{self, Dma, StartReason};
 use crate::input::Keypad;
 use crate::irq::Irq;
 use crate::timer::Timers;
 use crate::timing::{Prefetch, Width, internal_cycles, rom_cycles, sram_cycles, ws0_ns};
+
+/// Cycles before a DMA's first bus access (GBATEK: two idle cycles after the request).
+const DMA_STARTUP: u32 = 2;
+
+/// IE/IF/IME and timer-stop accesses happen part-way through an instruction.
+/// Clocks past the end of the access's first bus beat at which the interrupt
+/// controller sees a read or a write, and the timer block sees a stop
+/// (alyosha irq/IE, IF, IF_Timer).
+const IRQ_READ_DELTA: u32 = 1;
+const IRQ_WRITE_DELTA: u32 = 2;
+const TIMER_STOP_DELTA: u32 = 2;
+/// A timer stop lands at most this many clocks into its instruction, so an
+/// ARM `str` (two-clock opcode fetch) does not park the counter on 0xFFFF
+/// (alyosha irq/BL_IRQ_3).
+const TIMER_STOP_MAX: u32 = 4;
 
 const EWRAM: usize = 256 * 1024;
 const IWRAM: usize = 32 * 1024;
@@ -41,8 +59,8 @@ pub struct Bus {
     io: Vec<u8>,
     save: SaveChip,
     save_kind: SaveKind,
-    /// When true, 0x080000C4/C6/C8 are cart GPIO (unsupported). Default false.
-    has_gpio: bool,
+    /// Cart GPIO at 0x080000C4/C6/C8. `Some` for SIIRTC carts or test-forced GPIO.
+    gpio: Option<Gpio>,
     gpio_warned: bool,
     pub timers: Timers,
     pub irq: Irq,
@@ -51,6 +69,12 @@ pub struct Bus {
     pub apu: Apu,
     /// Set by HALTCNT byte 0 or SWI 2; cleared when an enabled IRQ wakes the CPU.
     pub halted: bool,
+    /// CPU cycles spent in Halt since entry (alyosha halt_pc stacked LR phase).
+    #[serde(default)]
+    pub halt_age: u32,
+    /// Halt was entered through SWI 2 (BIOS body ahead of HALTCNT), not a raw write.
+    #[serde(default)]
+    pub halt_via_swi: bool,
     halt_forever_warned: bool,
     pub vblank: bool,
     pub hblank: bool,
@@ -80,6 +104,13 @@ pub struct Bus {
     iwram_bus: u32,
     bios_prefetch: u32,
     pub warn_lines: Vec<String>,
+    /// Captured MGBA debug-printf lines (`0x04FFF600` / `0x04FFF700` / `0x04FFF780`).
+    #[serde(skip)]
+    pub mgba_log: Vec<String>,
+    #[serde(skip)]
+    mgba_enabled: bool,
+    #[serde(skip)]
+    mgba_buf: Vec<u8>,
     openbus_logged: HashSet<u32>,
     sio_warned: bool,
     /// Cycles left until an internal serial start bit (SIOCNT bit 7) clears.
@@ -98,6 +129,17 @@ pub struct Bus {
     pub prefetch: Prefetch,
     /// Cycles charged for the current CPU instruction (not DMA).
     step_cycles: u32,
+    /// Timer cycles already ticked ahead of the machine clock (IE/IF/IME access
+    /// timing). The machine skips that many timer ticks as it pays the step.
+    #[serde(default)]
+    timer_ahead: u32,
+    /// The CPU IRQ line was asserted just before an IE/IF/IME write dropped it.
+    /// The core already sampled it, so the next instruction boundary still takes it.
+    #[serde(default)]
+    irq_latch: bool,
+    /// CPU IRQ line one timer clock ago (the core samples it a cycle late).
+    #[serde(default)]
+    irq_prev: bool,
     /// True when this step touched ROM or SRAM (not internal-only).
     step_pak: bool,
     /// Cycles this step spent off the Game Pak bus (I/O, internal). Prefetch fills then.
@@ -175,6 +217,11 @@ impl Bus {
             SaveKind::Flash128 => SaveChip::Flash(Flash::new(FlashSize::K128)),
             SaveKind::Eeprom => SaveChip::Eeprom(Eeprom::new()),
         };
+        let gpio = if detect_rtc(&rom) {
+            Some(Gpio::with_rtc())
+        } else {
+            None
+        };
         Self {
             rom,
             ewram: vec![0; EWRAM],
@@ -185,7 +232,7 @@ impl Bus {
             io: vec![0; IO],
             save,
             save_kind: kind,
-            has_gpio: false,
+            gpio,
             gpio_warned: false,
             timers: Timers::new(),
             irq: Irq::new(),
@@ -193,6 +240,8 @@ impl Bus {
             dma: Dma::new(),
             apu: Apu::new(),
             halted: false,
+            halt_age: 0,
+            halt_via_swi: false,
             halt_forever_warned: false,
             vblank: false,
             hblank: false,
@@ -208,6 +257,9 @@ impl Bus {
             // Post-boot latch: last BIOS opcode word (at 0xE4), not a fetch of 0.
             bios_prefetch: 0xE129_F000,
             warn_lines: Vec::new(),
+            mgba_log: Vec::new(),
+            mgba_enabled: false,
+            mgba_buf: vec![0; 256],
             openbus_logged: HashSet::new(),
             sio_warned: false,
             sio_start: 0,
@@ -219,6 +271,9 @@ impl Bus {
             wait_sram: 4,
             prefetch: Prefetch::new(),
             step_cycles: 0,
+            timer_ahead: 0,
+            irq_latch: false,
+            irq_prev: false,
             step_pak: false,
             cart_idle: 0,
             prefetch_ns: false,
@@ -264,22 +319,57 @@ impl Bus {
         self.save_kind
     }
 
-    /// Enable unsupported cart GPIO at 0x080000C4/C6/C8 (tests only).
+    /// Enable cart GPIO at 0x080000C4/C6/C8 without an RTC (tests / reject path).
     pub fn set_has_gpio(&mut self, yes: bool) {
-        self.has_gpio = yes;
+        if yes {
+            if self.gpio.is_none() {
+                self.gpio = Some(Gpio::unsupported());
+            }
+        } else {
+            self.gpio = None;
+        }
+        self.gpio_warned = false;
     }
 
-    /// Load sidecar bytes into the save chip (no-op for [`SaveKind::None`]).
+    /// True when this cart has GPIO (RTC or test-forced).
+    pub fn has_gpio(&self) -> bool {
+        self.gpio.is_some()
+    }
+
+    /// True when an S-3511A RTC is attached.
+    pub fn has_rtc(&self) -> bool {
+        self.gpio.as_ref().is_some_and(|g| g.has_rtc())
+    }
+
+    /// Load sidecar bytes into the save chip (and RTC trailer when present).
     pub fn load_save(&mut self, bytes: &[u8]) {
+        let chip_len = self.save_chip_len();
+        let (chip, rtc_trailer) = if chip_len > 0 && bytes.len() >= chip_len + RTC_SAVE_LEN {
+            (&bytes[..chip_len], Some(&bytes[chip_len..chip_len + RTC_SAVE_LEN]))
+        } else if chip_len > 0 && bytes.len() > chip_len {
+            (&bytes[..chip_len], None)
+        } else {
+            (bytes, None)
+        };
         match &mut self.save {
             SaveChip::None => {}
             SaveChip::Sram(data) => {
                 data.fill(0xFF);
-                let n = bytes.len().min(data.len());
-                data[..n].copy_from_slice(&bytes[..n]);
+                let n = chip.len().min(data.len());
+                data[..n].copy_from_slice(&chip[..n]);
             }
-            SaveChip::Flash(flash) => flash.load_bytes(bytes),
-            SaveChip::Eeprom(eeprom) => eeprom.load_bytes(bytes),
+            SaveChip::Flash(flash) => flash.load_bytes(chip),
+            SaveChip::Eeprom(eeprom) => eeprom.load_bytes(chip),
+        }
+        if let Some(gpio) = self.gpio.as_mut()
+            && let Some(rtc) = gpio.rtc_mut()
+        {
+            if let Some(trailer) = rtc_trailer {
+                rtc.load_bytes(trailer);
+            } else {
+                // No trailer: sync from host with a good battery.
+                *rtc = crate::cart::SiRtc::new_from_host();
+            }
         }
         self.save_dirty = false;
     }
@@ -301,7 +391,7 @@ impl Bus {
         }
     }
 
-    /// Current save-chip bytes for the sidecar, if any.
+    /// Current save-chip bytes (no RTC trailer). Prefer [`Self::sidecar_bytes`] for flush.
     pub fn save_bytes(&self) -> Option<&[u8]> {
         match &self.save {
             SaveChip::None => None,
@@ -312,6 +402,47 @@ impl Bus {
                 if b.is_empty() { None } else { Some(b) }
             }
         }
+    }
+
+    /// Sidecar payload: save chip bytes plus a 16-byte RTC trailer when present.
+    pub fn sidecar_bytes(&mut self) -> Option<Vec<u8>> {
+        let chip = self.save_bytes()?.to_vec();
+        let mut out = chip;
+        if let Some(gpio) = self.gpio.as_mut()
+            && let Some(rtc) = gpio.rtc_mut()
+        {
+            out.extend_from_slice(&rtc.save_bytes());
+        }
+        Some(out)
+    }
+
+    fn save_chip_len(&self) -> usize {
+        match &self.save {
+            SaveChip::None => 0,
+            SaveChip::Sram(data) => data.len(),
+            SaveChip::Flash(flash) => flash.bytes().len(),
+            SaveChip::Eeprom(eeprom) => eeprom.bytes().len(),
+        }
+    }
+
+    /// Enter Halt (SWI 2 / HALTCNT byte 0). Resets the Halt-age counter.
+    pub fn enter_halt(&mut self) {
+        self.halted = true;
+        self.halt_age = 0;
+        self.halt_via_swi = false;
+    }
+
+    /// Enter Halt through SWI 2: the BIOS body runs before HALTCNT (see `cpu::halt`).
+    pub fn enter_halt_swi(&mut self) {
+        self.enter_halt();
+        self.halt_via_swi = true;
+    }
+
+    /// Cycles spent halted since [`Self::enter_halt`], then clear.
+    pub fn take_halt_age(&mut self) -> u32 {
+        let age = self.halt_age;
+        self.halt_age = 0;
+        age
     }
 
     /// Record `gba-debug: warn halt forever` at most once per machine.
@@ -347,8 +478,9 @@ impl Bus {
     }
 
     /// ARM B/BL/BX pipeline refill: opcode fetch already paid 1 bus cycle; pay the
-    /// remaining 1N (ARM 2S+1N total with the next step's sequential fetch) and leave
-    /// `last_rom` so the next fetch at `target` is sequential (GBATEK).
+    /// remaining 1N (ARM 2S+1N total). Forces the next fetch non-sequential; the
+    /// prefetch buffer is kept so a hit at `target` still costs 1 (GBAHawk).
+    /// Branch-to-next while empty: CPU pays N while the unit keeps its S cursor.
     pub fn arm_branch_refill(&mut self, target: u32) {
         if self.dma.busy {
             return;
@@ -393,6 +525,7 @@ impl Bus {
     }
 
     /// Clear per-instruction wait accounting before [`Cpu::step`](crate::cpu::Cpu::step).
+
     pub fn begin_step(&mut self) {
         self.begin_step_at(0);
     }
@@ -746,6 +879,11 @@ impl Bus {
                     self.latch(value);
                     return value;
                 }
+                if (0x00FF_F600..=0x00FF_F801).contains(&off) {
+                    let value = self.load_mgba_debug(off, size);
+                    self.latch(value);
+                    return value;
+                }
                 if off >= IO as u32 {
                     return self.openbus(addr, size, "io");
                 }
@@ -770,8 +908,7 @@ impl Bus {
                 self.open_slice(word, addr, size)
             }
             0x08..=0x0C => {
-                if self.touch_gpio(addr) {
-                    let value = 0;
+                if let Some(value) = self.read_gpio(addr, size) {
                     self.latch(value);
                     return value;
                 }
@@ -821,6 +958,11 @@ impl Bus {
                     self.cgb_romdis = value & 8 != 0;
                     return;
                 }
+                // mGBA debug port (libgba / tonc printf). Outside the 1 KiB I/O window.
+                if (0x00FF_F600..=0x00FF_F801).contains(&off) {
+                    self.store_mgba_debug(off, value, size);
+                    return;
+                }
                 if off >= IO as u32 {
                     return;
                 }
@@ -830,7 +972,7 @@ impl Bus {
             0x06 => self.store_vram(addr, value, size),
             0x07 => self.store_oam(addr, value, size),
             0x08..=0x0C => {
-                let _ = self.touch_gpio(addr);
+                self.write_gpio(addr, value);
             }
             0x0D => {
                 if self.save_kind == SaveKind::Eeprom
@@ -960,16 +1102,125 @@ impl Bus {
         }
     }
 
-    /// Unsupported cart GPIO at the three fixed ROM addresses. Warns once.
-    fn touch_gpio(&mut self, addr: u32) -> bool {
-        if !self.has_gpio || !matches!(addr, 0x0800_00C4 | 0x0800_00C6 | 0x0800_00C8) {
-            return false;
+    fn gpio_offset(addr: u32) -> Option<u32> {
+        // Only the cartridge-header GPIO hole (mirrored across WS0–WS2).
+        match addr & 0x1_FFFF {
+            0xC4 => Some(0xC4),
+            0xC6 => Some(0xC6),
+            0xC8 => Some(0xC8),
+            _ => None,
         }
-        if !self.gpio_warned {
-            self.gpio_warned = true;
-            self.warn_lines.push(gpio_reject_line().to_string());
+    }
+
+    fn load_mgba_debug(&self, off: u32, size: u32) -> u32 {
+        match off {
+            // mGBA returns `0x1A00` when the debug port is live.
+            0x00FF_F780 => u32::from(if self.mgba_enabled { 0x1A00u16 } else { 0 }),
+            0x00FF_F600..=0x00FF_F6FF => {
+                let i = (off - 0x00FF_F600) as usize;
+                match size {
+                    1 => u32::from(self.mgba_buf.get(i).copied().unwrap_or(0)),
+                    2 => {
+                        let lo = u32::from(self.mgba_buf.get(i).copied().unwrap_or(0));
+                        let hi = u32::from(self.mgba_buf.get(i + 1).copied().unwrap_or(0));
+                        lo | (hi << 8)
+                    }
+                    _ => {
+                        let mut w = 0u32;
+                        for n in 0..4 {
+                            w |= u32::from(self.mgba_buf.get(i + n).copied().unwrap_or(0)) << (8 * n);
+                        }
+                        w
+                    }
+                }
+            }
+            _ => 0,
         }
-        true
+    }
+
+    /// mGBA emulator printf protocol (enable `0xC0DE`, string at `0xFFF600`, flush via flags).
+    fn store_mgba_debug(&mut self, off: u32, value: u32, size: u32) {
+        match off {
+            0x00FF_F780 if size >= 2 => {
+                self.mgba_enabled = (value as u16) == 0xC0DE;
+            }
+            0x00FF_F700 if size >= 2 && self.mgba_enabled => {
+                // Bit 8 set = print the string buffer as one line.
+                if value & 0x100 != 0 {
+                    let end = self
+                        .mgba_buf
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(self.mgba_buf.len());
+                    let line = String::from_utf8_lossy(&self.mgba_buf[..end])
+                        .trim_end_matches(['\r', '\n'])
+                        .to_string();
+                    if !line.is_empty() {
+                        self.mgba_log.push(line);
+                    }
+                    self.mgba_buf.fill(0);
+                }
+            }
+            0x00FF_F600..=0x00FF_F6FF if self.mgba_enabled => {
+                let i = (off - 0x00FF_F600) as usize;
+                match size {
+                    1 if i < self.mgba_buf.len() => self.mgba_buf[i] = value as u8,
+                    2 if i + 1 < self.mgba_buf.len() => {
+                        self.mgba_buf[i] = value as u8;
+                        self.mgba_buf[i + 1] = (value >> 8) as u8;
+                    }
+                    4 if i + 3 < self.mgba_buf.len() => {
+                        self.mgba_buf[i] = value as u8;
+                        self.mgba_buf[i + 1] = (value >> 8) as u8;
+                        self.mgba_buf[i + 2] = (value >> 16) as u8;
+                        self.mgba_buf[i + 3] = (value >> 24) as u8;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Read cart GPIO when present. Returns `None` so the caller falls through to ROM.
+    fn read_gpio(&mut self, addr: u32, size: u32) -> Option<u32> {
+        let offset = Self::gpio_offset(addr)?;
+        let Some(gpio) = self.gpio.as_mut() else {
+            return None;
+        };
+        if !gpio.has_rtc() {
+            if !self.gpio_warned {
+                self.gpio_warned = true;
+                self.warn_lines.push(gpio_reject_line().to_string());
+            }
+            return Some(0);
+        }
+        let half = u32::from(gpio.read(offset));
+        let value = match size {
+            1 => half & 0xFF,
+            2 => half,
+            _ => half,
+        };
+        Some(value)
+    }
+
+    /// Write cart GPIO when present.
+    fn write_gpio(&mut self, addr: u32, value: u32) {
+        let Some(offset) = Self::gpio_offset(addr) else {
+            return;
+        };
+        let Some(gpio) = self.gpio.as_mut() else {
+            return;
+        };
+        if !gpio.has_rtc() {
+            if !self.gpio_warned {
+                self.gpio_warned = true;
+                self.warn_lines.push(gpio_reject_line().to_string());
+            }
+            return;
+        }
+        gpio.write(offset, value as u16);
+        self.save_dirty = true;
     }
 
     fn eeprom_region(addr: u32) -> bool {
@@ -1025,7 +1276,82 @@ impl Bus {
         }
     }
 
+    /// IE/IF/IME touch the interrupt controller part-way through an instruction.
+    /// Bring the timers (the IF sources that race software) up to that point.
+    fn sync_irq_access(&mut self, off: u32, size: u32, delta: u32) {
+        if matches!(off, 0x200..=0x20B) {
+            self.sync_timers(size, delta, u32::MAX);
+        }
+    }
+
+    /// Tick the timers up to the point of the current access. `step_cycles`
+    /// already includes it; a 32-bit access is two halfword beats on the 16-bit
+    /// bus and the register sees the first one.
+    fn sync_timers(&mut self, size: u32, delta: u32, max: u32) {
+        if self.dma.busy {
+            return;
+        }
+        let beats = if size == 4 { 2 } else { 1 };
+        let target = self
+            .step_cycles
+            .saturating_add(delta + 1)
+            .saturating_sub(beats)
+            .min(max);
+        while self.timer_ahead < target {
+            self.timer_ahead += 1;
+            self.tick_timers_one();
+        }
+    }
+
+    /// A CPU write that stops a running timer lands a few clocks into the
+    /// instruction; the counter keeps running until then (alyosha IF_Timer).
+    fn sync_timer_stop(&mut self, off: u32, size: u32, value: u32) {
+        let base = off.wrapping_sub(0x100);
+        let (reg, control) = match size {
+            4 if base & 3 == 0 => (base, value >> 16),
+            2 if base & 3 == 2 => (base & !3, value),
+            1 if base & 3 == 2 => (base & !3, value),
+            _ => return,
+        };
+        if control & 0x80 != 0 || self.timers.read16(reg + 2) & 0x80 == 0 {
+            return;
+        }
+        self.sync_timers(size, TIMER_STOP_DELTA, TIMER_STOP_MAX);
+    }
+
+    /// One timer clock: counters, serial start, APU FIFO, and timer IRQ requests.
+    pub(crate) fn tick_timers_one(&mut self) {
+        self.irq_prev = self.irq.pending();
+        let mask = self.timers.tick(1);
+        self.tick_sio_start();
+        self.tick_apu(mask);
+        for index in 0..4u32 {
+            if mask & (1 << index) != 0 {
+                let control = self.timers.read16(index * 4 + 2);
+                if control & (1 << 6) != 0 {
+                    self.irq.raise(1 << (3 + index));
+                }
+            }
+        }
+    }
+
+    /// Consume the latched IRQ sample (see `irq_latch`).
+    pub(crate) fn take_irq_latch(&mut self) -> bool {
+        std::mem::take(&mut self.irq_latch)
+    }
+
+    /// Machine clock hook: true when this timer tick was already paid ahead.
+    pub(crate) fn take_timer_ahead(&mut self) -> bool {
+        if self.timer_ahead > 0 {
+            self.timer_ahead -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
     fn load_io(&mut self, off: u32, size: u32) -> u32 {
+        self.sync_irq_access(off, size, IRQ_READ_DELTA);
         if sio_touches(off, size) {
             self.warn_sio();
         }
@@ -1059,6 +1385,10 @@ impl Bus {
     }
 
     fn store_io(&mut self, off: u32, value: u32, size: u32) {
+        self.sync_irq_access(off, size, IRQ_WRITE_DELTA);
+        if matches!(off, 0x200..=0x20B) && self.irq_prev {
+            self.irq_latch = true;
+        }
         if self.store_io_device(off, value, size) {
             return;
         }
@@ -1087,8 +1417,9 @@ impl Bus {
             let shift = (0x128 - off) * 8;
             if value & (0x80 << shift) != 0 {
                 let baud = self.io[0x128] & 3;
-                // 115200 finishes sooner than 38400. 316 is the 38400 start-bit
-                // sample; 90 is the 115200 timer sample.
+                // 115200 finishes sooner than 38400. 316 straddles start_bit /
+                // start_bit_2; 90 is serial_time_2M*. serial_time* Halt padding is
+                // in Cpu::raise_irq_from, not here.
                 self.sio_start = if baud == 3 { 90 } else { 316 };
             }
         }
@@ -1168,7 +1499,7 @@ impl Bus {
             if byte & 0x80 != 0 && prepared {
                 self.gb_mode = true;
             } else if byte == 0 {
-                self.halted = true;
+                self.enter_halt();
             }
             return true;
         }
@@ -1179,7 +1510,10 @@ impl Bus {
     ///
     /// On a FIFO DMA request, runs channel 1 (A) or 2 (B) through [`Self::request_fifo`].
     pub fn tick_apu(&mut self, timer_overflow: u8) {
-        let (req_a, req_b) = self.apu.tick(timer_overflow);
+        // Do not clock FIFO samples while a DMA burst owns the bus; a nested
+        // overflow would steal bytes from the fill (alyosha fifo.gba).
+        let overflow = if self.dma.busy { 0 } else { timer_overflow };
+        let (req_a, req_b) = self.apu.tick(overflow);
         if req_a {
             self.request_fifo(1);
         }
@@ -1242,18 +1576,34 @@ impl Bus {
 
         // FIFO A: 0xA0..=0xA3, FIFO B: 0xA4..=0xA7. 8/16/32-bit stores push bytes
         // (low byte first). A full word at A0/A4 uses the atomic 4-byte push.
+        // alyosha fifo.gba t002: CPU FIFO fills while sound is "off" (SOUNDCNT_H
+        // FIFO enables clear and/or master off) do not queue — first timer overflow
+        // still DMAs as if the FIFOs were empty.
+        let master_on = self.apu.psg.read_master() & 0x80 != 0;
+        let cnt_h = self.apu.cnt_h();
+        // DMA refills must enqueue even when mixer enables are clear.
+        let a_on = self.dma.busy || (master_on && (cnt_h & 0x0300) != 0);
+        let b_on = self.dma.busy || (master_on && (cnt_h & 0x3000) != 0);
         if size == 4 && off == 0xA0 {
-            self.apu.fifo_a.push_word(value);
+            if a_on {
+                self.apu.fifo_a.push_word(value);
+            }
         } else if size == 4 && off == 0xA4 {
-            self.apu.fifo_b.push_word(value);
+            if b_on {
+                self.apu.fifo_b.push_word(value);
+            }
         } else {
             for i in 0..size {
                 let addr = off.wrapping_add(i);
                 let byte = (value >> (8 * i)) as u8;
                 if (0xA0..=0xA3).contains(&addr) {
-                    self.apu.fifo_a.push_byte(byte);
+                    if a_on {
+                        self.apu.fifo_a.push_byte(byte);
+                    }
                 } else if (0xA4..=0xA7).contains(&addr) {
-                    self.apu.fifo_b.push_byte(byte);
+                    if b_on {
+                        self.apu.fifo_b.push_byte(byte);
+                    }
                 }
             }
         }
@@ -1264,7 +1614,15 @@ impl Bus {
             0x60..=0x7E => self.apu.psg.write(off - 0x60, value),
             0x80 => self.apu.set_cnt_l(value),
             0x82 => self.apu.set_cnt_h(value),
-            0x84 => self.apu.psg.write(0x20, value),
+            0x84 => {
+                let was_on = self.apu.psg.read_master() & 0x80 != 0;
+                self.apu.psg.write(0x20, value);
+                // alyosha fifo.gba t003: disabling master clears both FIFOs.
+                if was_on && self.apu.psg.read_master() & 0x80 == 0 {
+                    self.apu.fifo_a.reset();
+                    self.apu.fifo_b.reset();
+                }
+            }
             0x88 => self.apu.set_bias(value),
             0x90..=0x9E => self.apu.psg.write(off - 0x60, value),
             _ => {}
@@ -1449,8 +1807,12 @@ impl Bus {
         let prev = self.dma_active;
         let parent_written = self.dma_unit_written;
         let nested = prev.is_some();
-        let phased =
-            self.dma_timing && (nested || reason == StartReason::Immediate);
+        // FIFO special needs phased beats so TIM1 sees real EWRAM/ROM waitstates
+        // during the refill (alyosha fifo_dma timing ROMs).
+        let phased = self.dma_timing
+            && (nested
+                || reason == StartReason::Immediate
+                || reason == StartReason::Fifo);
         self.dma_active = Some(channel as u8);
         self.dma.busy = true;
         self.dma_unit_written = false;
@@ -1472,7 +1834,61 @@ impl Bus {
         }
         if phased {
             self.dma.stall = 0;
+        } else if self.dma_timing && !nested && reason == StartReason::Fifo {
+            // Sound FIFO bursts are not phased; charge their bus beats as CPU stall
+            // (GBATEK: 2-cycle start, then source and destination access per unit).
+            self.dma.stall = self.dma_atomic_stall(&job);
         }
+    }
+
+    /// Bus cycles an unphased copy holds the CPU: startup plus each unit's source
+    /// and destination beats and the idle between units (as in [`Self::dma_copy_phased`]).
+    fn dma_atomic_stall(&self, job: &dma::Copy) -> u32 {
+        let unit_size = if job.width32 { 4u32 } else { 2 };
+        let width = if job.width32 { Width::Word } else { Width::Half };
+        let mut src = job.src;
+        let mut dst = job.dst;
+        let mut rom_addr = src;
+        let mut prev_rom: Option<u32> = None;
+        let mut rom_dec_glitch = false;
+        let mut cycles = DMA_STARTUP;
+        for unit in 0..job.units {
+            let src_rom = (0x08..=0x0D).contains(&(src >> 24));
+            let read_addr = if src_rom { rom_addr } else { src };
+            let mut force_n = false;
+            if src_rom {
+                if rom_dec_glitch {
+                    rom_dec_glitch = false;
+                    force_n = true;
+                }
+                let mask = if job.width32 { 0x1_FFFC } else { 0x1_FFFE };
+                if src & mask == mask {
+                    rom_dec_glitch = true;
+                }
+            }
+            let seq = !force_n
+                && src_rom
+                && prev_rom == Some(read_addr)
+                && read_addr & 0x1_FFFF != 0;
+            cycles += if src_rom {
+                rom_cycles(self.waitcnt(), read_addr, width, seq).max(1)
+            } else {
+                self.dma_access_ticks(src, width, false)
+            };
+            if src_rom {
+                prev_rom = Some(read_addr.wrapping_add(unit_size));
+                rom_addr = rom_addr.wrapping_add(unit_size);
+            } else {
+                prev_rom = None;
+            }
+            cycles += self.dma_access_ticks(dst, width, false);
+            if unit + 1 < job.units && (dst >> 24) != 0x02 {
+                cycles += 1;
+            }
+            src = dma_step_addr(src, job.src_ctrl, unit_size);
+            dst = dma_step_addr(dst, job.dst_ctrl, unit_size);
+        }
+        cycles
     }
 
     fn dma_copy_atomic(&mut self, job: &dma::Copy) -> u32 {
@@ -1521,26 +1937,63 @@ impl Bus {
             }
         } else if !nested {
             self.dma_phase_tick();
+            self.last_rom = None;
         }
         if nested {
             self.dma_hblank_from_write = false;
         }
+        // Game Pak ignores fixed/decrement: a separate ROM burst address always
+        // increments (mGBA/GBAHawk). Fixed SRC near 0x1FFFC also forces N each beat.
+        let mut rom_addr = src;
+        let mut rom_dec_glitch = false;
+        let src_is_rom = (0x08..=0x0D).contains(&(src >> 24));
         for unit in 0..job.units {
             self.dma_last_unit = unit + 1 == job.units;
             self.dma_drain_hblank();
-            let value = self.dma_read_unit(src, width32);
+            let read_addr = if src_is_rom { rom_addr } else { src };
+            let value = self.dma_read_unit(read_addr, width32);
             self.dma_write_cycle = true;
             self.dma_beat = 1;
             let resume_seq = self.dma_rom_seq_resume;
             self.dma_rom_seq_resume = false;
+            let mut force_n = false;
+            if src_is_rom {
+                if rom_dec_glitch {
+                    rom_dec_glitch = false;
+                    force_n = true;
+                }
+                let mask = if width32 { 0x1_FFFC } else { 0x1_FFFE };
+                if src & mask == mask {
+                    rom_dec_glitch = true;
+                }
+            }
+            let sequential = !force_n
+                && read_addr & 0x1_FFFF != 0
+                && (resume_seq
+                    || match self.last_rom {
+                        Some((prev, prev_w)) => read_addr == prev.wrapping_add(prev_w),
+                        None => false,
+                    });
             // Nested HBlank latches an I/O source before this beat. Counting the
             // beat again leaves the following timer read one high (ROM_to_IWRAM).
-            let mut src_ticks = self.dma_access_ticks(src, width, resume_seq);
+            let mut src_ticks = if src_is_rom {
+                rom_cycles(self.waitcnt(), read_addr, width, sequential).max(1)
+            } else {
+                self.dma_access_ticks(src, width, resume_seq)
+            };
             if nested && (src >> 24) == 0x04 {
                 src_ticks = 0;
             }
             for _ in 0..src_ticks {
                 self.dma_phase_tick();
+            }
+            if src_is_rom {
+                self.last_rom = Some((read_addr, unit_size));
+                rom_addr = rom_addr.wrapping_add(unit_size);
+            } else if (0x08..=0x0D).contains(&(src >> 24)) {
+                self.last_rom = Some((src, unit_size));
+            } else {
+                self.last_rom = None;
             }
             self.dma_beat = 2;
             let stored = if width32 { value } else { value & 0xffff };
@@ -1574,6 +2027,19 @@ impl Bus {
             self.dma_drain_hblank();
         }
         self.dma_finish_eeprom(job);
+        // GBAHawk: fixed Game Pak SRC parked on the last word of a 128 KiB page
+        // (`addr & 0x1FFFC == 0x1FFFC`) forces non-sequential timing every beat and
+        // an extra cart turnaround our wait table under-counts. For WAITCNT 0x14 /
+        // 32-word Immediate this is 25 clocks (alyosha DMA_ROM_Fixed → timer 0x30).
+        if src_is_rom && job.src_ctrl == 2 {
+            let mask = if width32 { 0x1_FFFC } else { 0x1_FFFE };
+            if job.src & mask == mask {
+                const FIXED_PAGE_END_EXTRA: u32 = 25;
+                let _ = self.timers.tick(FIXED_PAGE_END_EXTRA);
+                self.dma_cycles_paid =
+                    self.dma_cycles_paid.saturating_add(FIXED_PAGE_END_EXTRA);
+            }
+        }
         job.units
     }
 
@@ -1584,10 +2050,11 @@ impl Bus {
         let region = addr >> 24;
         if (0x08..=0x0D).contains(&region) {
             let sequential = force_seq
-                || match self.last_rom {
-                    Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
-                    None => false,
-                };
+                || (addr & 0x1_FFFF != 0
+                    && match self.last_rom {
+                        Some((prev, prev_w)) => addr == prev.wrapping_add(prev_w),
+                        None => false,
+                    });
             rom_cycles(self.waitcnt(), addr, width, sequential).max(1)
         } else if region == 0x04 {
             1
@@ -1608,6 +2075,8 @@ impl Bus {
     }
 
     fn dma_read_unit(&mut self, addr: u32, width32: bool) -> u32 {
+        // Mask low bits every beat (ares): latch may retain an odd Thumb-bit address.
+        let addr = if width32 { addr & !3 } else { addr & !1 };
         let inaccessible = Self::dma_source_inaccessible(addr);
         let unused_io = Self::dma_source_unused_io(addr);
         let raw = if width32 {
@@ -1643,6 +2112,7 @@ impl Bus {
     }
 
     fn dma_write_unit(&mut self, addr: u32, value: u32, width32: bool) {
+        let addr = if width32 { addr & !3 } else { addr & !1 };
         if width32 {
             self.store(addr, value, 4);
         } else {
@@ -1762,6 +2232,7 @@ impl Bus {
     }
 
     fn store_timer_io(&mut self, off: u32, value: u32, size: u32) {
+        self.sync_timer_stop(off, size, value);
         let base = off.wrapping_sub(0x100);
         match size {
             1 => {
@@ -1789,7 +2260,8 @@ impl Bus {
                     .write16(base.wrapping_add(2), (value >> 16) as u16);
                 let enabling = (value >> 16) & 0x80 != 0;
                 if enabling && !was {
-                    self.timers.arm_skip((base / 4) as usize, prelude as u8);
+                    let skip = prelude.min(255) as u8;
+                    self.timers.arm_skip((base / 4) as usize, skip);
                 }
             }
             _ => {}

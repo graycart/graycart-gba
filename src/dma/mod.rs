@@ -277,13 +277,13 @@ impl Dma {
     /// Destination address control is forced to fixed so the burst does not walk.
     pub fn fifo_job(&self, channel: usize) -> Copy {
         let ch = &self.channels[channel];
-        let cnt_h = ch.cnt_h;
         Copy {
             src: ch.latch_src,
             dst: fifo_dest(channel),
             units: timing::FIFO_UNITS,
             width32: true,
-            src_ctrl: timing::src_ctrl(cnt_h),
+            // GBATEK: FIFO sound DMA always increments the source.
+            src_ctrl: 0,
             dst_ctrl: 2, // fixed
         }
     }
@@ -298,7 +298,11 @@ impl Dma {
     ) -> Option<u16> {
         let ch = &mut self.channels[channel];
         let cnt_h = ch.cnt_h;
-        let src_ctrl = timing::src_ctrl(cnt_h);
+        let src_ctrl = if reason == Reason::Fifo {
+            0
+        } else {
+            timing::src_ctrl(cnt_h)
+        };
         let dst_ctrl = timing::dst_ctrl(cnt_h);
         let unit_size = if width32 { 4 } else { 2 };
 

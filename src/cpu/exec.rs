@@ -42,7 +42,46 @@ impl Cpu {
             self.swi(bus, instr & 0x00FF_FFFF);
             return Ok(());
         }
+        // Coprocessor: GBA only implements CP14 MRC/MCR (ICEbreaker disabled —
+        // MRC returns the prefetched opcode at $+8). All other CP ops are undef.
+        if instr & 0x0C00_0000 == 0x0C00_0000 {
+            return self.coprocessor(bus, instr);
+        }
         self.fail(format!("arm {instr:#010X}"))
+    }
+
+    fn coprocessor(&mut self, bus: &mut Bus, instr: u32) -> Result<(), StepError> {
+        let cp = (instr >> 8) & 0xF;
+        // MRC/MCR: 1110 …. bit4=1. CDP is 1110 with bit4=0; LDC/STC are 110x.
+        let mrc_mcr = instr & 0x0F00_0010 == 0x0E00_0010;
+        if cp != 14 || !mrc_mcr {
+            return self.fail(format!("arm {instr:#010X}"));
+        }
+        let load = instr & (1 << 20) != 0;
+        let rd = ((instr >> 12) & 0xF) as usize;
+        if load {
+            // GBATEK: any MRC P14 returns the prefetched opcode at [$+8].
+            let addr = self.exec_pc.wrapping_add(8);
+            let value = if self.ahead_len > 0 && self.ahead_pc[0] == addr {
+                self.ahead[0]
+            } else {
+                bus.read32(addr)
+            };
+            // Coprocessor data transfer: busy-wait I-cycles on top of the opcode
+            // fetch (alyosha Coprocessor_14 samples timer 0x75 after the MRC).
+            bus.add_internal_cycles(19);
+            if rd == 15 {
+                // MRC to R15: load flags from the result (alyosha Coprocessor_14).
+                self.cpsr = (self.cpsr & !0xF000_0000) | (value & 0xF000_0000);
+            } else {
+                self.gpr[rd] = value;
+            }
+            self.last_op = "mrc";
+        } else {
+            bus.add_internal_cycles(1);
+            self.last_op = "mcr";
+        }
+        Ok(())
     }
 
     pub(super) fn exec_thumb(&mut self, bus: &mut Bus, instr: u16) -> Result<(), StepError> {
@@ -427,11 +466,15 @@ impl Cpu {
             }
             let count = list.count_ones();
             if load {
-                // Empty POP writeback is 16 words and ends the prefetch burst
-                // (alyosha Pop_no_regs: timer 0x16, SP low byte 0x3C).
+                // Empty POP transfers R15 and writes back 16 words (GBATEK
+                // LDM/STM empty Rlist; alyosha Pop_no_regs).
                 if count == 0 {
+                    let value = bus.read32(self.gpr[13]);
                     self.gpr[13] = self.gpr[13].wrapping_add(64);
-                    bus.prefetch.invalidate();
+                    self.branch(value, true);
+                    bus.thumb_branch_refill(self.fetch_pc);
+                    // Empty Rlist burns LDM slots after R15 (alyosha Pop_no_regs).
+                    bus.add_internal_cycles(7);
                     bus.mark_prefetch_ns();
                     self.last_op = "pop";
                     return Ok(());
@@ -453,15 +496,17 @@ impl Cpu {
                 self.gpr[13] = self.gpr[13].wrapping_add(count.wrapping_mul(4));
                 self.last_op = "pop";
             } else {
-                // Empty PUSH still drops SP by one word. The data beat is the
-                // PC value a following POP reads (alyosha Push_no_regs: 0x5C).
-                let slots = if count == 0 { 1 } else { count };
-                let mut addr = self.gpr[13].wrapping_sub(slots.wrapping_mul(4));
-                self.gpr[13] = addr;
+                // Empty PUSH stores R15 (instruction + 6) at the lowest address of a
+                // 16-word block and drops SP by 0x40 (GBATEK; alyosha Push_no_regs).
                 if count == 0 {
-                    let pc = self.exec_pc.wrapping_add(6);
-                    bus.poke32(addr, pc);
+                    let addr = self.gpr[13].wrapping_sub(64);
+                    self.gpr[13] = addr;
+                    bus.write32(addr, self.exec_pc.wrapping_add(6));
+                    self.last_op = "push";
+                    return Ok(());
                 }
+                let mut addr = self.gpr[13].wrapping_sub(count.wrapping_mul(4));
+                self.gpr[13] = addr;
                 for reg in 0..16 {
                     if list & (1 << reg) == 0 {
                         continue;

@@ -186,6 +186,12 @@ impl AudioOut {
             return;
         }
         let queued = self.queued_frames();
+        // Shed latency when catch-up bursts leave the ring well above target.
+        // Dropping a chunk clicks less than sitting at 100ms+ with pitch warble.
+        // Shed above ~125% of target so the PLL is not stuck at max compress (pitch-up).
+        if queued >= self.target_frames.saturating_mul(5).saturating_div(4) {
+            return;
+        }
         let adapted = self
             .resampler
             .borrow_mut()

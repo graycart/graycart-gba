@@ -62,6 +62,8 @@ pub struct HostMetrics {
     pub profile: FrameProfile,
     pub profile_summary: ProfileSummary,
     pub rom_title: String,
+    /// When true, cycle target is GBA 16.78 MHz (not DMG 4.19 MHz).
+    pub is_arm: bool,
 }
 
 impl HostMetrics {
@@ -86,6 +88,7 @@ impl HostMetrics {
         runtime_emu_fps: Option<f64>,
         audio_from_runtime: Option<RuntimeAudioMetrics>,
         audio_init_error: Option<String>,
+        is_arm: bool,
     ) -> Self {
         let (emu_hz, emu_fps, frame_avg, frame_max, render_avg, render_max, redraws) =
             telemetry.instant_rates();
@@ -208,11 +211,26 @@ impl HostMetrics {
             profile,
             profile_summary,
             rom_title,
+            is_arm,
+        }
+    }
+
+    /// Target CPU Hz for the loaded machine (GBA 16.78 MHz or DMG 4.19 MHz).
+    pub fn target_cycles_per_sec(&self) -> f64 {
+        if self.is_arm {
+            super::super::pace::GBA_CPU_HZ as f64
+        } else {
+            4_194_304.0
         }
     }
 
     pub fn realtime_pct(&self) -> f64 {
-        self.emu_tcycles_per_sec / 4_194_304.0 * 100.0
+        let target = self.target_cycles_per_sec();
+        if target <= 0.0 {
+            0.0
+        } else {
+            self.emu_tcycles_per_sec / target * 100.0
+        }
     }
 
     /// Configured play with no host stream / sample rate is not "quiet but healthy".

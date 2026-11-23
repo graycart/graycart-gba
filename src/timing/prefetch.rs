@@ -127,6 +127,19 @@ impl Prefetch {
         self.hits
     }
 
+    /// Stub for bus branch-refill hooks (full model lands with page-11 prefetch).
+    pub fn branch_to_next_empty(&self, _target: u32) -> bool {
+        false
+    }
+
+    /// Stub: no post-full restart-as-N latch in the simple buffer.
+    pub fn take_restart_ns(&mut self) -> bool {
+        false
+    }
+
+    /// Stub: producer cursor sync is a no-op without the full fill frontier.
+    pub fn sync_after_fetch(&mut self, _addr: u32, _bytes: u32) {}
+
     fn drop_buffer(&mut self) {
         self.len = 0;
         self.carry = 0;

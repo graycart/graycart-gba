@@ -52,4 +52,4 @@ mod ui;
 mod video;
 
 #[cfg(feature = "frontend")]
-pub use app::run;
+pub use app::{run, run_rom};

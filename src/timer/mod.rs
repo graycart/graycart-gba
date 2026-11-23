@@ -9,6 +9,9 @@
 #[cfg(test)]
 mod tests;
 
+/// TIM0 counter left by the BIOS boot sequence (only the low byte is pinned by hardware tests).
+const POST_BOOT_TIM0: u16 = 0x008B;
+
 const PRESCALE: [u32; 4] = [1, 64, 256, 1024];
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -85,6 +88,13 @@ impl Timers {
         }
     }
 
+    /// State a cart sees after the BIOS boot jingle: TIM0 is stopped part-way
+    /// through a count and its low byte is 0x8B (alyosha timer_reset reads it
+    /// before touching the counter).
+    pub fn set_post_boot(&mut self) {
+        self.timers[0].counter = POST_BOOT_TIM0;
+    }
+
     pub fn arm_skip(&mut self, index: usize, cycles: u8) {
         if index < 4 {
             self.timers[index].skip = cycles;
@@ -155,11 +165,9 @@ impl Timers {
                 let mut this_overflow = false;
                 if self.timers[i].skip > 0 {
                     self.timers[i].skip -= 1;
-                    prev_overflow = false;
                 } else if self.timers[i].started() {
                     if self.timers[i].start_latency > 0 {
                         self.timers[i].start_latency -= 1;
-                        prev_overflow = false;
                     } else {
                         let cascade = i > 0 && self.timers[i].count_up();
                         let step = if cascade {
@@ -189,6 +197,7 @@ impl Timers {
                 if self.timers[i].apply_control_latch() {
                     overflowed |= 1 << i;
                 }
+                // Cascade input for timer i+1 (false when this timer skipped/latency).
                 prev_overflow = this_overflow;
             }
         }

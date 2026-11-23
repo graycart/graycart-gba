@@ -138,15 +138,19 @@ impl Apu {
         let timer_a = fifo_timer_index(self.cnt_h, true);
         let timer_b = fifo_timer_index(self.cnt_h, false);
 
+        // Only latch a DMA request after a timer-driven sample pop. Checking
+        // occupancy every cycle would refill an empty FIFO before the first
+        // overflow (alyosha fifo.gba t002 / fifo_2).
+        let mut req_a = false;
+        let mut req_b = false;
         if timer_overflow & (1 << timer_a) != 0 {
             self.sample_a = self.fifo_a.pop();
+            req_a = self.fifo_a.take_dma_request();
         }
         if timer_overflow & (1 << timer_b) != 0 {
             self.sample_b = self.fifo_b.pop();
+            req_b = self.fifo_b.take_dma_request();
         }
-
-        let req_a = self.fifo_a.take_dma_request();
-        let req_b = self.fifo_b.take_dma_request();
 
         let psg = self.psg.step(1);
         self.mix_cycles += 1;

@@ -29,7 +29,9 @@ use super::screenshot::write_presented_png;
 use super::settings::FrontendSettings;
 use super::telemetry::{HostTelemetry, PaceDiag};
 use super::ui::{Gui, UiAction};
-use super::video::{Renderer, SCALE, window_attributes};
+use super::video::{
+    GBA_HEIGHT, GBA_WIDTH, Renderer, SCALE, window_attributes_for, window_inner_size_for,
+};
 use graycart::hw::CGB_BOOT_ROM_SIZE;
 use graycart::{BootMode, SCREEN_HEIGHT, SCREEN_WIDTH};
 use std::collections::HashSet;
@@ -45,13 +47,43 @@ use winit::window::WindowId;
 /// Open the application window. Flushes `.sav` on exit when a ROM was loaded.
 pub fn run() -> Result<(), String> {
     // SM83 bus is larger than the default Windows main-thread stack.
-    std::thread::Builder::new()
-        .name("gba-play".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(run_on_thread)
-        .map_err(|e| e.to_string())?
-        .join()
-        .unwrap_or_else(|_| Err("play thread panicked".into()))
+    // winit on macOS requires EventLoop on the process main thread.
+    #[cfg(target_os = "windows")]
+    {
+        std::thread::Builder::new()
+            .name("gba-play".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(run_on_thread)
+            .map_err(|e| e.to_string())?
+            .join()
+            .unwrap_or_else(|_| Err("play thread panicked".into()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        run_on_thread()
+    }
+}
+
+/// Open the play window with `path` already loaded (no File → Open).
+pub fn run_rom(path: &std::path::Path) -> Result<(), String> {
+    let opened = open_rom_file(path)?;
+    let launch = LaunchRom { opened };
+    #[cfg(target_os = "windows")]
+    {
+        std::thread::Builder::new()
+            .name("gba-play".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                run_inner(Some(launch), BootMode::Fast, Verbosity::Normal, false, None)
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .unwrap_or_else(|_| Err("play thread panicked".into()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        run_inner(Some(launch), BootMode::Fast, Verbosity::Normal, false, None)
+    }
 }
 
 fn run_on_thread() -> Result<(), String> {
@@ -86,6 +118,9 @@ fn run_inner(
 
     let initial_path = initial.as_ref().map(|l| l.path());
     let initial_loaded = cold_launch_rom_attached(initial.as_ref());
+    let initial_is_arm = initial
+        .as_ref()
+        .is_some_and(|launch| launch.opened.is_arm());
 
     let runtime = EmulationRuntime::spawn(RuntimeConfig {
         unthrottled,
@@ -131,9 +166,17 @@ fn run_inner(
         cached_title: String::new(),
         cached_rom_path: initial_path.unwrap_or_default(),
         rom_loaded: initial_loaded,
-        is_arm: false,
-        fb_w: SCREEN_WIDTH,
-        fb_h: SCREEN_HEIGHT,
+        is_arm: initial_is_arm,
+        fb_w: if initial_is_arm {
+            GBA_WIDTH as usize
+        } else {
+            SCREEN_WIDTH
+        },
+        fb_h: if initial_is_arm {
+            GBA_HEIGHT as usize
+        } else {
+            SCREEN_HEIGHT
+        },
         display_pacer: FramePacer::new(pace.pacer),
         ready: false,
         exit_error: None,
@@ -206,6 +249,27 @@ fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+fn default_carts_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("carts"));
+        candidates.push(cwd.join("../carts"));
+        candidates.push(cwd.join("../../carts"));
+    }
+    if let Some(exe) = exe_dir() {
+        candidates.push(exe.join("carts"));
+        candidates.push(exe.join("../carts"));
+    }
+    for candidate in candidates {
+        if let Ok(canon) = candidate.canonicalize()
+            && canon.is_dir()
+        {
+            return Some(canon);
+        }
+    }
+    None
 }
 
 fn set_clipboard_text(text: &str) -> Result<(), String> {
@@ -743,6 +807,7 @@ impl App {
             Some(self.runtime_emu_fps),
             self.runtime_audio.clone(),
             self.audio_init_error.clone(),
+            self.is_arm,
         )
     }
 
@@ -1093,10 +1158,21 @@ impl App {
         let mut dialog = rfd::FileDialog::new()
             .add_filter("GBA / Game Boy ROM", rom_dialog_extensions())
             .set_title("Open ROM");
-        if let Some(dir) = &self.settings.last_rom_dir {
+        if let Some(dir) = self.rom_picker_dir() {
             dialog = dialog.set_directory(dir);
         }
         dialog.pick_file()
+    }
+
+    /// Prefer the last opened folder; otherwise open on `carts/` when present
+    /// (workspace root, package cwd, or next to the binary).
+    fn rom_picker_dir(&self) -> Option<PathBuf> {
+        if let Some(dir) = &self.settings.last_rom_dir
+            && dir.is_dir()
+        {
+            return Some(dir.clone());
+        }
+        default_carts_dir()
     }
 
     fn load_rom_path(&mut self, path: &Path) -> Result<(), String> {
@@ -1114,12 +1190,13 @@ impl App {
     fn install_opened(&mut self, opened: OpenedRom) -> Result<(), String> {
         self.is_arm = opened.is_arm();
         if self.is_arm {
-            self.fb_w = 240;
-            self.fb_h = 160;
+            self.fb_w = GBA_WIDTH as usize;
+            self.fb_h = GBA_HEIGHT as usize;
         } else {
             self.fb_w = SCREEN_WIDTH;
             self.fb_h = SCREEN_HEIGHT;
         }
+        self.fit_window_to_framebuffer();
         let path = opened.path().to_path_buf();
         let title = opened.title().to_string();
         self.settings.remember_rom(&path, &title);
@@ -1129,6 +1206,17 @@ impl App {
         self.input.reset_edges();
         self.runtime.send(EmuCommand::LoadRom(opened));
         Ok(())
+    }
+
+    fn fit_window_to_framebuffer(&mut self) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        if self.fullscreen {
+            return;
+        }
+        let size = window_inner_size_for(self.fb_w as u32, self.fb_h as u32);
+        let _ = renderer.window().request_inner_size(size);
     }
 
     fn note_window_focus(&mut self, window_id: WindowId, focused: bool) {
@@ -1176,7 +1264,12 @@ impl ApplicationHandler for App {
         }
 
         let title = brand::window_title(&self.cached_title);
-        let attrs = window_attributes(&title);
+        let (fb_w, fb_h) = if self.is_arm {
+            (GBA_WIDTH, GBA_HEIGHT)
+        } else {
+            (SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
+        };
+        let attrs = window_attributes_for(&title, fb_w, fb_h);
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -1213,10 +1306,10 @@ impl ApplicationHandler for App {
             println!("audio: CPAL stream owned by emulation thread; callback consumes the ring");
             print!("{}", super::audio::probe_audio_backends());
             if self.unthrottled {
-                println!("display: 160×144 @ {SCALE}× scale, unthrottled");
+                println!("display: {fb_w}×{fb_h} @ {SCALE}× scale, unthrottled");
             } else {
                 println!(
-                    "display: 160×144 @ {SCALE}× scale, ~{:.1} FPS pacing",
+                    "display: {fb_w}×{fb_h} @ {SCALE}× scale, ~{:.1} FPS pacing",
                     target_fps()
                 );
             }
