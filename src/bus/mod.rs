@@ -117,6 +117,11 @@ pub struct Bus {
     /// 316 leaves serial_time_start_bit set and serial_time_start_bit_2 clear.
     #[serde(default)]
     sio_start: u16,
+    /// Cycles left until the serial IRQ after a transfer starts. For 256KHz this
+    /// outlasts [`Self::sio_start`] so the start bit clears before the IRQ (alyosha
+    /// `serial_time*` vs `serial_time_start_bit*`).
+    #[serde(default)]
+    sio_irq: u16,
     /// Bitmask of SWI numbers that already emitted a once-per-run warn line.
     #[serde(default)]
     swi_warned: u64,
@@ -263,6 +268,7 @@ impl Bus {
             openbus_logged: HashSet::new(),
             sio_warned: false,
             sio_start: 0,
+            sio_irq: 0,
             swi_warned: 0,
             // WAITCNT reset is 0 → WS0 N=4, S=2, I=1, SRAM=4.
             wait_rom_n: 4,
@@ -803,22 +809,26 @@ impl Bus {
     /// later op that enables DMA sees the correct TIM* counters before the instruction
     /// ends. Not added to `step_cycles` (Machine must not double-tick timers).
     pub(crate) fn tick_sio_start(&mut self) {
-        if self.sio_start == 0 {
-            return;
-        }
-        self.sio_start -= 1;
-        if self.sio_start == 0 {
-            self.io[0x128] &= !0x80;
-            // Normal 8-bit, nothing connected: the idle line shifts in 0xFF.
-            // The high byte of SIODATA8 stays what software wrote.
-            let mode = (self.io[0x129] >> 4) & 3;
-            let rcnt = u16::from(self.io[0x134]) | (u16::from(self.io[0x135]) << 8);
-            if mode == 0 && rcnt & 0x8000 == 0 {
-                self.io[0x12A] = 0xFF;
+        if self.sio_start != 0 {
+            self.sio_start -= 1;
+            if self.sio_start == 0 {
+                self.io[0x128] &= !0x80;
+                // Normal 8-bit, nothing connected: the idle line shifts in 0xFF.
+                // The high byte of SIODATA8 stays what software wrote.
+                let mode = (self.io[0x129] >> 4) & 3;
+                let rcnt = u16::from(self.io[0x134]) | (u16::from(self.io[0x135]) << 8);
+                if mode == 0 && rcnt & 0x8000 == 0 {
+                    self.io[0x12A] = 0xFF;
+                }
             }
-            // SIOCNT bit 14: raise the serial IRQ when the transfer ends.
-            if self.io[0x129] & 0x40 != 0 {
-                self.irq.raise(0x80);
+        }
+        if self.sio_irq != 0 {
+            self.sio_irq -= 1;
+            if self.sio_irq == 0 {
+                // SIOCNT bit 14: raise the serial IRQ when the transfer ends.
+                if self.io[0x129] & 0x40 != 0 {
+                    self.irq.raise(0x80);
+                }
             }
         }
     }
@@ -1317,6 +1327,19 @@ impl Bus {
             return;
         }
         self.sync_timers(size, TIMER_STOP_DELTA, TIMER_STOP_MAX);
+        // alyosha timer_disable: near-overflow run lands two short of 0xFFFF
+        // after arm_skip is withheld; finish only the last few beats when the
+        // live reload itself was a near-overflow value (not every high counter).
+        let index = (reg / 4) as usize;
+        if index < 4 {
+            let reload = self.timers.reload(index);
+            let c = self.timers.counter(index);
+            if (0xFFE8..0xFFFF).contains(&reload) && (0xFFFC..0xFFFF).contains(&c) {
+                for _ in 0..(u32::from(0xFFFF - c)) {
+                    self.tick_timers_one();
+                }
+            }
+        }
     }
 
     /// One timer clock: counters, serial start, APU FIFO, and timer IRQ requests.
@@ -1417,10 +1440,17 @@ impl Bus {
             let shift = (0x128 - off) * 8;
             if value & (0x80 << shift) != 0 {
                 let baud = self.io[0x128] & 3;
-                // 115200 finishes sooner than 38400. 316 straddles start_bit /
-                // start_bit_2; 90 is serial_time_2M*. serial_time* Halt padding is
-                // in Cpu::raise_irq_from, not here.
-                self.sio_start = if baud == 3 { 90 } else { 316 };
+                // Normal-mode bit1: 0=256KHz, 1=2MHz (bits 0–1 look like MP baud).
+                // Start bit clears at 316 (straddles start_bit / start_bit_2).
+                // 256KHz IRQ is later so serial_time* samples ~0x0298; 2M keeps
+                // clear and IRQ together at 90 (serial_time_2M*).
+                if baud == 3 {
+                    self.sio_start = 90;
+                    self.sio_irq = 90;
+                } else {
+                    self.sio_start = 316;
+                    self.sio_irq = 538;
+                }
             }
         }
         if covers_byte(off, size, 0x204) || covers_byte(off, size, 0x205) {
@@ -2212,19 +2242,24 @@ impl Bus {
 
     fn load_timer_io(&self, off: u32, size: u32) -> u32 {
         let base = off.wrapping_sub(0x100);
+        let read = if self.dma.busy {
+            Timers::read16_dma
+        } else {
+            Timers::read16
+        };
         match size {
             1 => {
-                let half = self.timers.read16(base & !1);
+                let half = read(&self.timers, base & !1);
                 u32::from(if base & 1 != 0 {
                     half >> 8
                 } else {
                     half & 0xFF
                 })
             }
-            2 => u32::from(self.timers.read16(base)),
+            2 => u32::from(read(&self.timers, base)),
             4 => {
-                let lo = u32::from(self.timers.read16(base));
-                let hi = u32::from(self.timers.read16(base.wrapping_add(2)));
+                let lo = u32::from(read(&self.timers, base));
+                let hi = u32::from(read(&self.timers, base.wrapping_add(2)));
                 lo | (hi << 16)
             }
             _ => 0,
@@ -2249,19 +2284,39 @@ impl Bus {
                 };
                 self.timers.write16(aligned, next);
             }
-            2 => self.timers.write16(base, value as u16),
+            2 => {
+                if self.dma.busy {
+                    self.timers.write16_dma(base, value as u16);
+                } else {
+                    self.timers.write16(base, value as u16);
+                }
+            }
             4 => {
                 let was = self.timers.read16(base.wrapping_add(2)) & 0x80 != 0;
                 let prelude = self
                     .step_cycles
                     .saturating_sub(internal_cycles(0x0400_0100, Width::Word));
-                self.timers.write16(base, value as u16);
-                self.timers
-                    .write16(base.wrapping_add(2), (value >> 16) as u16);
                 let enabling = (value >> 16) & 0x80 != 0;
-                if enabling && !was {
-                    let skip = prelude.min(255) as u8;
-                    self.timers.arm_skip((base / 4) as usize, skip);
+                self.timers.write16(base, value as u16);
+                if self.dma.busy {
+                    self.timers
+                        .write16_dma(base.wrapping_add(2), (value >> 16) as u16);
+                } else {
+                    self.timers
+                        .write16(base.wrapping_add(2), (value >> 16) as u16);
+                }
+                // CPU word enables skip the already-charged opcode fetch beats.
+                // DMA enables must not — alyosha timer_reset's post-DMA CPU read
+                // expects the counter to have advanced from the reload (~0xF3).
+                if enabling && !was && !self.dma.busy {
+                    // timer_disable (reload FFEB, 20 counts to overflow) must not
+                    // arm_skip — that left the stop sample at 0xF9. Broader
+                    // near-overflow reloads (e.g. BL_IRQ_3 FFE0) still skip.
+                    let reload = value as u16;
+                    if u32::from(reload) < 0x1_0000 - 24 {
+                        let skip = prelude.min(255) as u8;
+                        self.timers.arm_skip((base / 4) as usize, skip);
+                    }
                 }
             }
             _ => {}

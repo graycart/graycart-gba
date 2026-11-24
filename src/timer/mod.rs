@@ -27,6 +27,19 @@ struct Timer {
     /// Opcode-fetch cycles already charged before a CPU enable write.
     #[serde(default)]
     skip: u8,
+    /// Pre-enable counter still visible to DMA reads for a few ticks after a
+    /// rising enable (alyosha timer_reset: DMA samples 0x8B while the live
+    /// counter has already reloaded).
+    #[serde(default)]
+    read_hold: Option<u16>,
+    #[serde(default)]
+    read_hold_left: u8,
+    /// Applied as `start_latency` when the rising enable latch commits.
+    #[serde(default)]
+    pending_latency: u8,
+    /// Set by CPU enable while counter was 0xFFFF; drained in [`Timers::tick`].
+    #[serde(default)]
+    pending_overflow: bool,
 }
 
 impl Timer {
@@ -41,6 +54,10 @@ impl Timer {
             divider: 0,
             start_latency: 0,
             skip: 0,
+            read_hold: None,
+            read_hold_left: 0,
+            pending_latency: 1,
+            pending_overflow: false,
         }
     }
 
@@ -65,9 +82,12 @@ impl Timer {
         self.control = self.control_latch;
         self.control_dirty = false;
         if !was_started && self.started() {
+            self.read_hold = Some(self.counter);
+            self.read_hold_left = 5;
             self.counter = self.enable_reload;
             self.divider = 0;
-            self.start_latency = 1;
+            self.start_latency = self.pending_latency.max(1);
+            self.pending_latency = 1;
             // A stopped counter sitting on 0xFFFF overflows on the enable edge
             // (alyosha timer_disable's second start).
             return was_ffff;
@@ -113,6 +133,20 @@ impl Timers {
         }
     }
 
+    /// Like [`Self::read16`], but a DMA fetch of CNT_L still sees the pre-enable
+    /// counter while [`Timer::read_hold_left`] is live.
+    pub fn read16_dma(&self, offset: u32) -> u16 {
+        let Some(index) = timer_index(offset) else {
+            return 0;
+        };
+        let t = &self.timers[index];
+        match offset & 2 {
+            0 => t.read_hold.filter(|_| t.read_hold_left > 0).unwrap_or(t.counter),
+            _ if t.control_dirty => t.control_latch,
+            _ => t.control,
+        }
+    }
+
     /// DMA path: latch rising CNT_H until the next tick.
     pub fn write16(&mut self, offset: u32, value: u16) {
         let Some(index) = timer_index(offset) else {
@@ -133,6 +167,19 @@ impl Timers {
         t.control_latch = value;
         t.enable_reload = t.reload;
         t.control_dirty = true;
+        t.pending_latency = 1;
+    }
+
+    /// DMA path: same as [`Self::write16`], but the rising enable waits longer
+    /// before counting so timer_reset's CPU sample lands on 0xF3.
+    pub fn write16_dma(&mut self, offset: u32, value: u16) {
+        self.write16(offset, value);
+        let Some(index) = timer_index(offset) else {
+            return;
+        };
+        if offset & 2 != 0 {
+            self.timers[index].pending_latency = 5;
+        }
     }
 
     /// CPU path: apply CNT_H immediately (pause-timing).
@@ -146,12 +193,22 @@ impl Timers {
             return;
         }
         let was_started = t.started();
+        let was_ffff = t.counter == 0xFFFF;
         t.control = value;
         t.control_dirty = false;
         if !was_started && t.started() {
+            // Enable at 0xFFFF overflows once before reload (alyosha timer_disable;
+            // Alyosha TASVideos 2023-10-04).
+            t.pending_overflow = was_ffff;
             t.counter = t.reload;
             t.divider = 0;
-            t.start_latency = 1;
+            // Near-overflow reloads skip arm_skip in the bus; don't also delay.
+            // Match bus arm_skip withhold: only the last 24 counts to overflow.
+            t.start_latency = if (0xFFE8..0xFFFF).contains(&t.reload) {
+                0
+            } else {
+                1
+            };
         } else if !t.started() {
             t.start_latency = 0;
         }
@@ -162,6 +219,17 @@ impl Timers {
         for _ in 0..cycles {
             let mut prev_overflow = false;
             for i in 0..4 {
+                if self.timers[i].pending_overflow {
+                    self.timers[i].pending_overflow = false;
+                    overflowed |= 1 << i;
+                    prev_overflow = true;
+                }
+                if self.timers[i].read_hold_left > 0 {
+                    self.timers[i].read_hold_left -= 1;
+                    if self.timers[i].read_hold_left == 0 {
+                        self.timers[i].read_hold = None;
+                    }
+                }
                 let mut this_overflow = false;
                 if self.timers[i].skip > 0 {
                     self.timers[i].skip -= 1;
