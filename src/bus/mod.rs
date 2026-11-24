@@ -531,7 +531,6 @@ impl Bus {
     }
 
     /// Clear per-instruction wait accounting before [`Cpu::step`](crate::cpu::Cpu::step).
-
     pub fn begin_step(&mut self) {
         self.begin_step_at(0);
     }
@@ -1195,9 +1194,7 @@ impl Bus {
     /// Read cart GPIO when present. Returns `None` so the caller falls through to ROM.
     fn read_gpio(&mut self, addr: u32, size: u32) -> Option<u32> {
         let offset = Self::gpio_offset(addr)?;
-        let Some(gpio) = self.gpio.as_mut() else {
-            return None;
-        };
+        let gpio = self.gpio.as_mut()?;
         if !gpio.has_rtc() {
             if !self.gpio_warned {
                 self.gpio_warned = true;
@@ -1626,14 +1623,10 @@ impl Bus {
             for i in 0..size {
                 let addr = off.wrapping_add(i);
                 let byte = (value >> (8 * i)) as u8;
-                if (0xA0..=0xA3).contains(&addr) {
-                    if a_on {
-                        self.apu.fifo_a.push_byte(byte);
-                    }
-                } else if (0xA4..=0xA7).contains(&addr) {
-                    if b_on {
-                        self.apu.fifo_b.push_byte(byte);
-                    }
+                if (0xA0..=0xA3).contains(&addr) && a_on {
+                    self.apu.fifo_a.push_byte(byte);
+                } else if (0xA4..=0xA7).contains(&addr) && b_on {
+                    self.apu.fifo_b.push_byte(byte);
                 }
             }
         }
@@ -1773,6 +1766,7 @@ impl Bus {
             // Changing timing to Immediate while already enabled also starts
             // (alyosha DMA/DMA_Mode_Change) but does not re-latch addresses.
             StartReason::Immediate => {
+                #[allow(clippy::collapsible_if)]
                 if !rising {
                     if let Err(line) = dma::region_access(
                         channel,
@@ -1951,7 +1945,13 @@ impl Bus {
         if nested && self.dma_hblank_from_write {
             // The parent unit's remaining write already elapsed after the edge.
             // That is not the 2-cycle startup, and the preempt still owes both.
-            let mut startup = if self.dma_abs() == self.dma_hblank_defer_abs {
+            // Write-edge defer: same abs or abs==defer+1 still owes the full
+            // 6-cycle startup (alyosha DMA_pause_timing_end_2 → 0x0C). Larger
+            // skew keeps 4; src_edge subtracts 2 for end_4.
+            let abs = self.dma_abs();
+            let mut startup = if abs == self.dma_hblank_defer_abs
+                || abs == self.dma_hblank_defer_abs.wrapping_add(1)
+            {
                 6
             } else {
                 4

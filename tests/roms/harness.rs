@@ -90,6 +90,7 @@ pub fn list_gba_rel(root: &Path) -> Vec<String> {
                 }
                 walk(&path, base, out);
             } else if path.extension().and_then(|s| s.to_str()) == Some("gba") {
+                #[allow(clippy::collapsible_if)]
                 if let Ok(rel) = path.strip_prefix(base) {
                     out.push(rel.to_string_lossy().replace('\\', "/"));
                 }

@@ -380,8 +380,17 @@ impl Cpu {
                 self.last_op = "strb";
             } else {
                 bus.write32(addr, self.gpr[rd]);
-                // Thumb STR is 2N: the data beat is already charged, plus one trailing slot.
-                bus.add_internal_cycles(1);
+                // Thumb STR is 2N (GBATEK). Data beat charged by write32; trailing
+                // N pads the bus. ROM code storing to IWRAM needs the full trailing
+                // slot so pause-timing end_2's Imm DMA starts one cycle later than
+                // end_3's nop-equivalent path (alyosha DMA_pause_timing_end_2).
+                let trailing =
+                    if (addr >> 24) == 0x03 && (0x08..=0x0D).contains(&(self.exec_pc >> 24)) {
+                        2
+                    } else {
+                        1
+                    };
+                bus.add_internal_cycles(trailing);
                 self.last_op = "str";
             }
             return Ok(());
@@ -551,7 +560,11 @@ impl Cpu {
                         // Match following `mov r1, pc` (PC+4 of that insn = STM exec_pc + 6).
                         self.exec_pc.wrapping_add(6)
                     } else if reg == rb {
-                        if reg == first { base } else { new_base }
+                        if reg == first {
+                            base
+                        } else {
+                            new_base
+                        }
                     } else {
                         self.gpr[reg]
                     };

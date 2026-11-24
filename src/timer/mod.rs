@@ -1,6 +1,9 @@
 //! Four GBA hardware timers.
 //!
 //! Cited: GBATEK Timers. https://problemkaputt.de/gbatek.htm
+//! Shared free-running divider: [NBA timers](https://nba-emu.github.io/hw-docs/timers.html),
+//! mGBA `GBATimerWriteTMCNT_HI` absolute align, jgenesis `(cycles >> shift)` edges.
+//! Post-HLE phase `37` matches alyosha `timer.gba` (power-on /64 residual).
 //!
 //! DMA writes to TMxCNT_H use ares-style latch (`write16`). CPU writes apply
 //! immediately (`write16_immediate`) so pause-timing Imm/HBlank samples keep
@@ -12,7 +15,7 @@ mod tests;
 /// TIM0 counter left by the BIOS boot sequence (only the low byte is pinned by hardware tests).
 const POST_BOOT_TIM0: u16 = 0x008B;
 
-const PRESCALE: [u32; 4] = [1, 64, 256, 1024];
+const PRESCALE_SHIFT: [u8; 4] = [0, 6, 8, 10];
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Timer {
@@ -22,7 +25,6 @@ struct Timer {
     control_latch: u16,
     enable_reload: u16,
     control_dirty: bool,
-    divider: u32,
     start_latency: u8,
     /// Opcode-fetch cycles already charged before a CPU enable write.
     #[serde(default)]
@@ -51,7 +53,6 @@ impl Timer {
             control_latch: 0,
             enable_reload: 0,
             control_dirty: false,
-            divider: 0,
             start_latency: 0,
             skip: 0,
             read_hold: None,
@@ -69,8 +70,8 @@ impl Timer {
         self.control & (1 << 2) != 0
     }
 
-    fn rate(&self) -> u32 {
-        PRESCALE[(self.control & 0b11) as usize]
+    fn shift(&self) -> u8 {
+        PRESCALE_SHIFT[(self.control & 0b11) as usize]
     }
 
     fn apply_control_latch(&mut self) -> bool {
@@ -85,7 +86,6 @@ impl Timer {
             self.read_hold = Some(self.counter);
             self.read_hold_left = 5;
             self.counter = self.enable_reload;
-            self.divider = 0;
             self.start_latency = self.pending_latency.max(1);
             self.pending_latency = 1;
             // A stopped counter sitting on 0xFFFF overflows on the enable edge
@@ -99,12 +99,22 @@ impl Timer {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Timers {
     timers: [Timer; 4],
+    /// Shared free-running divider phase (NBA / mGBA absolute-time edges).
+    #[serde(default)]
+    phase: u64,
+}
+
+impl Default for Timers {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Timers {
     pub fn new() -> Self {
         Self {
             timers: [Timer::new(); 4],
+            phase: 0,
         }
     }
 
@@ -113,6 +123,8 @@ impl Timers {
     /// before touching the counter).
     pub fn set_post_boot(&mut self) {
         self.timers[0].counter = POST_BOOT_TIM0;
+        // alyosha timer.gba: shared /64 phase after HLE boot (NBA absolute divider).
+        self.phase = 37;
     }
 
     pub fn arm_skip(&mut self, index: usize, cycles: u8) {
@@ -141,7 +153,10 @@ impl Timers {
         };
         let t = &self.timers[index];
         match offset & 2 {
-            0 => t.read_hold.filter(|_| t.read_hold_left > 0).unwrap_or(t.counter),
+            0 => t
+                .read_hold
+                .filter(|_| t.read_hold_left > 0)
+                .unwrap_or(t.counter),
             _ if t.control_dirty => t.control_latch,
             _ => t.control,
         }
@@ -201,7 +216,6 @@ impl Timers {
             // Alyosha TASVideos 2023-10-04).
             t.pending_overflow = was_ffff;
             t.counter = t.reload;
-            t.divider = 0;
             // Near-overflow reloads skip arm_skip in the bus; don't also delay.
             // Match bus arm_skip withhold: only the last 24 counts to overflow.
             t.start_latency = if (0xFFE8..0xFFFF).contains(&t.reload) {
@@ -217,6 +231,8 @@ impl Timers {
     pub fn tick(&mut self, cycles: u32) -> u8 {
         let mut overflowed = 0u8;
         for _ in 0..cycles {
+            let prev_phase = self.phase;
+            self.phase = self.phase.wrapping_add(1);
             let mut prev_overflow = false;
             for i in 0..4 {
                 if self.timers[i].pending_overflow {
@@ -241,14 +257,8 @@ impl Timers {
                         let step = if cascade {
                             prev_overflow
                         } else {
-                            let t = &mut self.timers[i];
-                            t.divider += 1;
-                            if t.divider >= t.rate() {
-                                t.divider = 0;
-                                true
-                            } else {
-                                false
-                            }
+                            let shift = self.timers[i].shift();
+                            (self.phase >> shift) != (prev_phase >> shift)
                         };
                         if step {
                             let t = &mut self.timers[i];
@@ -281,9 +291,9 @@ impl Timers {
     }
 
     pub fn any_started(&self) -> bool {
-        self.timers.iter().any(|t| {
-            t.started() || (t.control_dirty && t.control_latch & (1 << 7) != 0)
-        })
+        self.timers
+            .iter()
+            .any(|t| t.started() || (t.control_dirty && t.control_latch & (1 << 7) != 0))
     }
 
     pub fn cascade(&self, index: usize) -> bool {

@@ -60,6 +60,9 @@ fn psg_enable_produces_nonzero_then_master_off_silences() {
 #[test]
 fn fifo_refill_copies_iwram_into_fifo_a() {
     let mut bus = Bus::new(vec![0; 0xC0]);
+    // Seed fill via CPU requires master + FIFO A enable.
+    bus.write16(0x0400_0084, 0x0080);
+    bus.write16(0x0400_0082, 0x0300);
     let words = [0x0403_0201u32, 0x0807_0605, 0x0C0B_0A09, 0x100F_0E0D];
     for (i, word) in words.iter().enumerate() {
         bus.write32(IWRAM + (i as u32) * 4, *word);
@@ -127,6 +130,11 @@ fn sram_is_not_a_fifo_source() {
 #[test]
 fn fifo_byte_and_halfword_stores_push() {
     let mut bus = Bus::new(vec![0; 0xC0]);
+    // CPU FIFO fills require master + channel enables (alyosha fifo.gba t002:
+    // fills while sound is off do not land). SOUNDCNT_H bits 8–9 / 12–13;
+    // avoid write-only reset bits 11/15.
+    bus.write16(0x0400_0084, 0x0080);
+    bus.write16(0x0400_0082, 0x3300);
     bus.write8(FIFO_A, 0x11);
     bus.write8(FIFO_A + 1, 0x22);
     bus.write16(FIFO_A + 2, 0x4433);

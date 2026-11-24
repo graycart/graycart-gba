@@ -4,7 +4,7 @@
 //! Fixtures: `tests/fixtures/jsmolka/` (no `unsafe.gba`).
 
 use crate::harness::{
-    JsmolkaPass, Outcome, fixture_root, print_row, run_jsmolka, run_jsmolka_ppu, summarize, tally,
+    fixture_root, print_row, run_jsmolka, run_jsmolka_ppu, summarize, tally, JsmolkaPass, Outcome,
 };
 use std::path::PathBuf;
 
@@ -72,6 +72,7 @@ fn jsmolka_must_matrix() {
     }
 
     // PPU: settled frame hashes (same values as tests/ppu_*.rs).
+    #[allow(clippy::type_complexity)]
     let ppu: &[(&str, &str, Option<[(usize, u16); 2]>)] = &[
         (
             "ppu/hello.gba",

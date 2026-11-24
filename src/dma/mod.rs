@@ -10,8 +10,8 @@ mod timing;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use immediate::Copy;
 use immediate::copy_units;
+pub(crate) use immediate::Copy;
 use timing::Reason;
 
 const CHANNELS: usize = 4;
@@ -175,9 +175,7 @@ impl Dma {
 
     /// Returns enable edge info when this halfword write hit CNT_H.
     fn store16(&mut self, off: u32, value: u16) -> Option<CntHWrite> {
-        let Some((channel, local)) = decode(off) else {
-            return None;
-        };
+        let (channel, local) = decode(off)?;
         let ch = &mut self.channels[channel];
         match local {
             0 => {
