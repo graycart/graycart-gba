@@ -16,6 +16,8 @@ use crate::timing::{Width, internal_cycles};
 const BIOS_CPUSET_PROLOGUE: u32 = 0x46;
 /// Cycles for BIOS exit after the last transfer unit.
 const BIOS_CPUSET_EPILOGUE: u32 = 0x08;
+/// Extra cycles after a transfer unit that started Immediate DMA (dma_from_bios TIM1).
+const BIOS_CPUSET_POST_DMA: u32 = 0x1D;
 
 /// Length is `ctrl` bits 0–20. Bit 24 = fill (source does not advance). Bit 26 = 32-bit units, else 16-bit.
 pub fn cpu_set(bus: &mut Bus, mut src: u32, mut dst: u32, ctrl: u32) {
@@ -26,6 +28,7 @@ pub fn cpu_set(bus: &mut Bus, mut src: u32, mut dst: u32, ctrl: u32) {
     let fill = ctrl & (1 << 24) != 0;
     let word = ctrl & (1 << 26) != 0;
     bus.elapse(BIOS_CPUSET_PROLOGUE);
+    let mut saw_imm_dma = false;
     if word {
         if fill {
             let unit = bus.read32(src);
@@ -60,8 +63,19 @@ pub fn cpu_set(bus: &mut Bus, mut src: u32, mut dst: u32, ctrl: u32) {
             src = src.wrapping_add(2);
             dst = dst.wrapping_add(2);
             count -= 1;
-            bus.elapse(unit_overhead(src, dst, false));
+            // Imm DMA is deferred (`dma_imm_wait`) then runs inside `elapse`.
+            let overhead = unit_overhead(src, dst, false);
+            let before = bus.emu_cycles;
+            bus.elapse(overhead);
+            if bus.emu_cycles > before.wrapping_add(u64::from(overhead)) {
+                saw_imm_dma = true;
+            }
         }
+    }
+    // Mid-SWI Imm DMA (alyosha dma_from_bios: CpuSet writes DMA1CNT, DMA starts
+    // TIM1) needs BIOS loop tail after the transfer that a flat epilogue misses.
+    if saw_imm_dma {
+        bus.elapse(BIOS_CPUSET_POST_DMA);
     }
     bus.elapse(BIOS_CPUSET_EPILOGUE);
 }
