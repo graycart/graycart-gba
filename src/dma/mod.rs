@@ -10,8 +10,8 @@ mod timing;
 #[cfg(test)]
 mod tests;
 
-use immediate::copy_units;
 pub(crate) use immediate::Copy;
+use immediate::copy_units;
 use timing::Reason;
 
 const CHANNELS: usize = 4;

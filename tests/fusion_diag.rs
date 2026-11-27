@@ -4,8 +4,8 @@ use graycart_gba::Machine;
 
 #[test]
 fn metroid_fusion_iwram_stub_and_past_force_blank() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../carts/Metroid Fusion (USA).gba");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../carts/Metroid Fusion (USA).gba");
     if !path.exists() {
         return;
     }

@@ -334,7 +334,7 @@ fn try_config(
 
     let (producer, consumer) = RingBuffer::<f32>::new(capacity_samples);
     let consumer = Arc::new(Mutex::new(consumer));
-    let counters = Arc::new(SharedCounters::new());
+    let counters = Arc::new(SharedCounters::with_heard(sample_rate));
     let mut buffer_size = format!("Fixed({preferred_period})");
     let stream = match build_stream(
         device,
@@ -379,6 +379,7 @@ fn try_config(
         started: Instant::now(),
         sample_rate,
         target_frames,
+        shed_gate: std::cell::Cell::new(false),
         device_name: name.to_string(),
         host_name: host_name.to_string(),
         sample_format: format!("{sample_format:?}"),

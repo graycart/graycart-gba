@@ -20,6 +20,8 @@ pub struct Fifo {
     /// Next byte to pop.
     head: usize,
     len: usize,
+    /// Last sample played. Held across empty pops (Gericom / mGBA Direct Sound).
+    last: i8,
     underrun: u32,
     overrun: u32,
     empty_drain: u32,
@@ -32,6 +34,7 @@ impl Fifo {
             buf: [0; CAPACITY],
             head: 0,
             len: 0,
+            last: 0,
             underrun: 0,
             overrun: 0,
             empty_drain: 0,
@@ -69,17 +72,22 @@ impl Fifo {
         }
     }
 
-    /// Pop one signed sample byte. Empty FIFO returns 0 and counts underrun + empty-drain.
+    /// Pop one signed sample byte.
+    ///
+    /// Empty FIFO keeps playing the last sample (hardware Direct Sound) and
+    /// counts underrun + empty-drain. Returning 0 here made Fusion/MP2K streams
+    /// sound like static when refill lagged a few timer ticks.
     pub fn pop(&mut self) -> i8 {
         if self.len == 0 {
             self.underrun = self.underrun.saturating_add(1);
             self.empty_drain = self.empty_drain.saturating_add(1);
-            return 0;
+            return self.last;
         }
         let was_above = self.len > REFILL_THRESHOLD;
         let sample = self.buf[self.head] as i8;
         self.head = (self.head + 1) % CAPACITY;
         self.len -= 1;
+        self.last = sample;
         if was_above && self.len <= REFILL_THRESHOLD {
             self.dma_requests = self.dma_requests.saturating_add(1);
         }
@@ -94,11 +102,13 @@ impl Fifo {
         self.len == 0
     }
 
-    /// Clear buffered bytes. Counters are left alone.
+    /// Clear buffered bytes. Counters are left alone; last sample clears too
+    /// (SOUNDCNT_H FIFO reset / master-off).
     pub fn reset(&mut self) {
         self.buf = [0; CAPACITY];
         self.head = 0;
         self.len = 0;
+        self.last = 0;
     }
 
     /// True when the FIFO holds 16 bytes or fewer (including empty).
@@ -149,14 +159,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_word_pops_little_endian_then_underruns() {
+    fn push_word_pops_little_endian_then_holds_last_on_underrun() {
         let mut fifo = Fifo::new();
         fifo.push_word(0x0403_0201);
         assert_eq!(fifo.pop(), 0x01_i8);
         assert_eq!(fifo.pop(), 0x02_i8);
         assert_eq!(fifo.pop(), 0x03_i8);
         assert_eq!(fifo.pop(), 0x04_i8);
-        assert_eq!(fifo.pop(), 0);
+        // Empty: keep last sample, still count underrun.
+        assert_eq!(fifo.pop(), 0x04_i8);
         assert_eq!(fifo.underrun(), 1);
         assert_eq!(fifo.empty_drain(), 1);
     }

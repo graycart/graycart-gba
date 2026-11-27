@@ -73,9 +73,7 @@ pub fn run_rom(path: &std::path::Path) -> Result<(), String> {
         std::thread::Builder::new()
             .name("gba-play".into())
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                run_inner(Some(launch), BootMode::Fast, Verbosity::Normal, false, None)
-            })
+            .spawn(move || run_inner(Some(launch), BootMode::Fast, Verbosity::Normal, false, None))
             .map_err(|e| e.to_string())?
             .join()
             .unwrap_or_else(|_| Err("play thread panicked".into()))
@@ -461,6 +459,7 @@ impl App {
         event_loop: &ActiveEventLoop,
         packet: super::runtime::FramePacket,
     ) {
+        self.diagnostics.set_heard(packet.heard.clone());
         self.rom_loaded = packet.rom_loaded;
         self.cached_title = packet.title.clone();
         self.last_frame_time = packet.last_frame_time;
@@ -470,6 +469,7 @@ impl App {
         self.runtime_audio = match (
             packet.audio_queued,
             packet.audio_target,
+            packet.audio_capacity,
             packet.audio_missing,
             packet.audio_underrun_events,
             packet.audio_dropped,
@@ -486,6 +486,7 @@ impl App {
             (
                 Some(queued),
                 Some(target),
+                Some(capacity),
                 Some(missing),
                 Some(underrun),
                 Some(dropped),
@@ -501,6 +502,8 @@ impl App {
             ) => Some(RuntimeAudioMetrics {
                 queued,
                 target,
+                capacity_frames: capacity,
+                emu_sleep: packet.emu_sleep,
                 underrun_events: underrun,
                 missing_samples: missing,
                 dropped,

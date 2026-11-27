@@ -21,7 +21,6 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const GBA_PCM_HZ: u32 = 32_768;
 const GBA_CYCLES_PER_FRAME: u64 = 1232 * 228;
 
 impl EmuState {
@@ -209,11 +208,26 @@ impl EmuState {
                 if submit {
                     let host_rate = self.audio.as_ref().map(|a| a.sample_rate);
                     if let Some(host_rate) = host_rate {
-                        let resampled = crate::frontend::resample_linear(
-                            &self.gba_pcm_scratch,
-                            GBA_PCM_HZ,
-                            host_rate,
-                        );
+                        let want =
+                            crate::frontend::gba_host_samples(&mut self.gba_audio_accum, host_rate);
+                        // One device callback pulls 960 frames. A queue whose
+                        // trough sits under that freezes the rest of the buffer
+                        // (the tick). Nudge the emit count so the ring stays
+                        // near its target, which is two callbacks deep.
+                        let n = if let Some(a) = self.audio.as_ref() {
+                            let queued = a.queued_frames() as i64;
+                            let err = a.target_frames as i64 - queued;
+                            let adjust = if queued < 960 {
+                                24
+                            } else {
+                                (err / 300).clamp(-6, 12)
+                            };
+                            (want as i64 + adjust).max(1) as usize
+                        } else {
+                            want
+                        };
+                        let incoming = self.gba_pcm_scratch.clone();
+                        let resampled = self.gba_pcm_stream.emit(&incoming, n);
                         // Mixer peaks sit near ±512 (8-bit FIFO ± bias headroom), not full i16.
                         // /32768 leaves Emerald inaudible; /512 matches the practical PWM range.
                         const GBA_PCM_FULL_SCALE: f32 = 512.0;
@@ -227,7 +241,10 @@ impl EmuState {
                         }
                         let gain = self.audio_gain;
                         if let Some(a) = &self.audio {
-                            a.submit_gain(&self.gba_sample_scratch, gain);
+                            // Fixed 32768→host ratio. Pitch correction here is the
+                            // "in and out of tune" on a machine that is already
+                            // spending the whole frame budget inside run_frames(1).
+                            a.submit_locked(&self.gba_sample_scratch, gain);
                         }
                     }
                 }
@@ -243,6 +260,12 @@ impl EmuState {
         rewinding: bool,
         speed: SpeedPreset,
     ) -> bool {
+        // Arm frames are ~15 ms of a 16.7 ms period. Skipping sleep to "refill"
+        // audio runs a second frame, blows the deadline, and the queue collapses.
+        // Game Boy still uses the reservoir catch-up.
+        if matches!(self.machine, Some(Machine::Arm { .. })) {
+            return false;
+        }
         !paused
             && !unlimited
             && !rewinding
@@ -313,6 +336,11 @@ impl EmuState {
             } else {
                 let cap = catch_up_cap(speed);
                 let mut frames = self.scheduler.frames_to_catch_up(speed, now, cap);
+                // One GBA frame already fills the host period. A second frame in
+                // the same wake is what drops realtime to ~85% and starves audio.
+                if matches!(self.machine, Some(Machine::Arm { .. })) && speed == SpeedPreset::X1 {
+                    frames = frames.min(1);
+                }
                 if frames == 0
                     && self.audio_emergency_catch_up(self.paused, unlimited, rewinding, speed)
                 {
@@ -461,6 +489,7 @@ impl EmuState {
             status_toast: self.take_status_toast(),
             fault: self.exit_error.clone(),
             last_frame_time: frame_time,
+            emu_sleep: self.last_pace_sleep,
             host_fps: self.last_host_fps,
             runtime_tcycles_per_sec: self.runtime_tcycles_per_sec,
             runtime_emu_fps: self.runtime_emu_fps,
@@ -470,6 +499,7 @@ impl EmuState {
             missed_frames: self.missed_frames,
             audio_queued,
             audio_target,
+            audio_capacity: self.audio.as_ref().map(|a| a.capacity_frames()),
             audio_missing,
             audio_underrun_events,
             audio_dropped,
@@ -484,13 +514,15 @@ impl EmuState {
             audio_buffer_size,
             audio_init_error: self.audio_init_error.clone(),
             apu_ch1_debug,
+            heard: self.audio.as_ref().map(|a| a.heard()),
         }
     }
 
     /// Pace on this thread only: `thread::sleep` + non-blocking command drain.
     /// Returns `false` if the command channel disconnected.
     pub(super) fn sleep_for_wake(&mut self, wake: HostWake, cmd_rx: &Receiver<EmuCommand>) -> bool {
-        match wake {
+        let started = Instant::now();
+        let ok = match wake {
             HostWake::WaitUntil(deadline) => wait_until(deadline, cmd_rx, self),
             HostWake::Poll => {
                 thread::yield_now();
@@ -513,6 +545,8 @@ impl EmuState {
                 }
                 true
             }
-        }
+        };
+        self.last_pace_sleep = started.elapsed();
+        ok
     }
 }

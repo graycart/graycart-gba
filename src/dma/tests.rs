@@ -6,7 +6,9 @@ use crate::hw::Machine;
 const IWRAM: u32 = 0x0300_0000;
 const DMA0: u32 = 0x0400_00B0;
 const DMA1: u32 = 0x0400_00BC;
+const DMA2: u32 = 0x0400_00C8;
 const DMA3: u32 = 0x0400_00D4;
+const FIFO_B: u32 = 0x0400_00A4;
 const CYCLES_PER_LINE: u64 = 1232;
 const HBLANK_START: u64 = 960;
 
@@ -618,4 +620,38 @@ fn rom_fixed_boundary_dma_cycle_count() {
     // Phased copy: startup + 32×(word N + IWRAM) + 31 idles + page-end glitch
     // overhead ≈ 249 with WAITCNT 0x14 (alyosha DMA_ROM_Fixed).
     assert_eq!(paid, 249, "unexpected fixed-ROM DMA stall {paid}");
+}
+
+#[test]
+fn fifo_restart_immediate_copies_from_sad_not_the_walked_source() {
+    // Advance Wars 2 restarts DMA2 by switching FIFO timing to Immediate.
+    // The internal source has walked one burst past the PCM, onto a ROM
+    // pointer (0x0806FBA5). That pointer is the left-channel tick. The
+    // restart must copy from the SAD register, which still names the sample.
+    let mut bus = Bus::new(vec![0; 0xC0]);
+    let walked = IWRAM + 0x100;
+    let sample = IWRAM + 0x180;
+    bus.write32(walked, 0x0806_FBA5);
+    bus.write32(sample, 0x1122_3344);
+    write_channel(
+        &mut bus,
+        DMA2,
+        walked,
+        FIFO_B,
+        4,
+        enable_fifo_repeat() | (1 << 10),
+    );
+    bus.request_fifo(2);
+    for _ in 0..16 {
+        let _ = bus.apu.fifo_b.pop();
+    }
+    bus.write32(DMA2, sample);
+    let cnt_h = enable_immediate() | (1 << 10);
+    bus.write32(DMA2 + 8, (u32::from(cnt_h) << 16) | 4);
+    let bytes: Vec<u8> = (0..4).map(|_| bus.apu.fifo_b.pop() as u8).collect();
+    assert_eq!(
+        bytes,
+        [0x44, 0x33, 0x22, 0x11],
+        "restart played {bytes:02X?}"
+    );
 }

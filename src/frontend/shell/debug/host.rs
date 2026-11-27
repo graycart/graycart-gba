@@ -11,6 +11,8 @@ use std::time::Duration;
 pub struct RuntimeAudioMetrics {
     pub queued: usize,
     pub target: usize,
+    pub capacity_frames: usize,
+    pub emu_sleep: Duration,
     pub underrun_events: u64,
     pub missing_samples: u64,
     pub dropped: u64,
@@ -36,6 +38,9 @@ pub struct HostMetrics {
     pub render_ms_avg: f64,
     pub render_ms_max: f64,
     pub pace_sleep_ms: f64,
+    /// Emulation-thread pace sleep. `pace_sleep_ms` is the UI pacer and stays near zero.
+    pub emu_sleep_ms: f64,
+    pub audio_capacity: usize,
     pub missed_frames: u64,
     pub input_events_per_sec: f64,
     pub redraws: u64,
@@ -94,6 +99,14 @@ impl HostMetrics {
             telemetry.instant_rates();
         let emu_hz = runtime_tcycles_per_sec.unwrap_or(emu_hz);
         let emu_fps = runtime_emu_fps.unwrap_or(emu_fps);
+        let emu_sleep_ms = audio_from_runtime
+            .as_ref()
+            .map(|r| r.emu_sleep.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let audio_capacity = audio_from_runtime
+            .as_ref()
+            .map(|r| r.capacity_frames)
+            .unwrap_or(0);
         let (
             queued,
             target,
@@ -185,6 +198,8 @@ impl HostMetrics {
             render_ms_avg: render_avg.max(last_render.as_secs_f64() * 1000.0),
             render_ms_max: render_max.max(last_render.as_secs_f64() * 1000.0),
             pace_sleep_ms: pacer.last_sleep.as_secs_f64() * 1000.0,
+            emu_sleep_ms,
+            audio_capacity,
             missed_frames,
             input_events_per_sec,
             redraws,

@@ -61,6 +61,26 @@ fn catch_up_counts_frames_behind_deadline_capped() {
 }
 
 #[test]
+fn late_present_does_not_insert_another_full_period() {
+    let now = Instant::now();
+    let mut sched = HostScheduler::new(true);
+    sched.on_frame_presented(SpeedPreset::X1, now);
+    // Finish more than one period after the armed deadline, so deadline+period
+    // is still in the past. That used to schedule yet another full idle period.
+    let late = now + FRAME_DURATION * 2 + Duration::from_millis(3);
+    sched.on_frame_presented(SpeedPreset::X1, late);
+    match sched.wake(false, false, false, late) {
+        HostWake::WaitUntil(deadline) => {
+            assert!(
+                deadline.saturating_duration_since(late) < Duration::from_millis(1),
+                "late frame must be due immediately, not a period later"
+            );
+        }
+        other => panic!("expected WaitUntil, got {other:?}"),
+    }
+}
+
+#[test]
 fn wake_wait_until_when_running_throttled() {
     let now = Instant::now();
     let mut sched = HostScheduler::new(true);

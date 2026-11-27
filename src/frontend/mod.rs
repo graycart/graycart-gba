@@ -6,7 +6,7 @@ pub mod launch;
 pub mod shell;
 pub mod video;
 
-pub use audio::{AudioOutputChoice, choose_output, resample_linear};
+pub use audio::{AudioOutputChoice, PcmStream, choose_output, gba_host_samples, resample_linear};
 pub use launch::{MachineKind, machine_kind};
 pub use video::{gba_framebuffer_to_rgba, sm83_framebuffer_to_rgba};
 

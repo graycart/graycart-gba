@@ -2,7 +2,9 @@
 
 use super::host::HostMetrics;
 use super::profile::FrameProfile;
+use crate::frontend::shell::audio::HeardAudio;
 use crate::frontend::shell::runtime::HostDebug;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CAP: usize = 450; // 30 s @ 15 Hz
@@ -23,6 +25,7 @@ pub struct DiagnosticRing {
     events: Vec<(Instant, String)>,
     capture: Option<CaptureState>,
     pub last_report: Option<String>,
+    heard: Option<Arc<HeardAudio>>,
 }
 
 #[derive(Debug)]
@@ -48,6 +51,14 @@ impl DiagnosticRing {
             events: Vec::new(),
             capture: None,
             last_report: None,
+            heard: None,
+        }
+    }
+
+    /// Latest callback recording, forwarded from the emulation thread.
+    pub fn set_heard(&mut self, heard: Option<Arc<HeardAudio>>) {
+        if heard.is_some() {
+            self.heard = heard;
         }
     }
 
@@ -134,10 +145,14 @@ fn build_report(cap: &CaptureState, ring: &DiagnosticRing) -> String {
     let mut cycles: Vec<f64> = window.iter().map(|s| s.host.emu_tcycles_per_sec).collect();
     let mut fps: Vec<f64> = window.iter().map(|s| s.host.emu_fps).collect();
     let mut frame_ms: Vec<f64> = window.iter().map(|s| s.host.frame_ms_avg).collect();
+    let mut sleep_ms: Vec<f64> = window.iter().map(|s| s.host.emu_sleep_ms).collect();
+    let mut present_ms: Vec<f64> = window.iter().map(|s| s.host.render_ms_avg).collect();
     let mut queue: Vec<f64> = window.iter().map(|s| s.host.audio_queued as f64).collect();
     cycles.sort_by(|a, b| a.partial_cmp(b).unwrap());
     fps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     frame_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sleep_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    present_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
     queue.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let avg = |v: &[f64]| {
@@ -185,23 +200,55 @@ fn build_report(cap: &CaptureState, ring: &DiagnosticRing) -> String {
             0.0
         }
     ));
-    out.push_str(&format!("avg_emu_fps: {:.3}\n", avg(&fps)));
-    out.push_str(&format!("p95_frame_ms: {:.2}\n", pct(&frame_ms, 0.95)));
-    out.push_str(&format!("p99_frame_ms: {:.2}\n", pct(&frame_ms, 0.99)));
+    let avg_fps = avg(&fps);
+    let avg_work = avg(&frame_ms);
+    let period_ms = if avg_fps > 1.0 { 1000.0 / avg_fps } else { 0.0 };
+    out.push_str(&format!("avg_emu_fps: {avg_fps:.3}\n"));
     out.push_str(&format!(
-        "max_frame_ms: {:.2}\n\n",
+        "emu_work_ms_avg: {avg_work:.2}  (inside run_tick, excludes pace sleep)\n"
+    ));
+    out.push_str(&format!("emu_work_ms_p95: {:.2}\n", pct(&frame_ms, 0.95)));
+    out.push_str(&format!(
+        "emu_work_ms_max: {:.2}\n",
         frame_ms.last().copied().unwrap_or(0.0)
+    ));
+    out.push_str(&format!("emu_sleep_ms_avg: {:.2}\n", avg(&sleep_ms)));
+    out.push_str(&format!("emu_sleep_ms_p95: {:.2}\n", pct(&sleep_ms, 0.95)));
+    out.push_str(&format!(
+        "emu_sleep_ms_max: {:.2}\n",
+        sleep_ms.last().copied().unwrap_or(0.0)
+    ));
+    out.push_str(&format!(
+        "implied_frame_period_ms: {period_ms:.2}  (1000/avg_emu_fps)\n"
+    ));
+    out.push_str(&format!(
+        "unaccounted_ms: {:.2}  (period - work - sleep; OS sleep overshoot lives here)\n",
+        (period_ms - avg_work - avg(&sleep_ms)).max(0.0)
+    ));
+    out.push_str(&format!(
+        "ui_present_ms_p95: {:.2}\n",
+        pct(&present_ms, 0.95)
+    ));
+    out.push_str(&format!(
+        "ui_present_ms_max: {:.2}\n\n",
+        present_ms.last().copied().unwrap_or(0.0)
     ));
 
     out.push_str("## AUDIO\n\n");
     if let Some(h) = last {
         out.push_str(&format_audio_section(h));
         if !h.audio_offline() {
+            out.push_str(&format!("ring_capacity: {}\n", h.audio_capacity));
             out.push_str(&format!("avg_queue: {:.0}\n", avg(&queue)));
             out.push_str(&format!(
-                "min_queue: {:.0}\n\n",
+                "min_queue: {:.0}\n",
                 queue.first().copied().unwrap_or(0.0)
             ));
+            out.push_str(&format!(
+                "max_queue: {:.0}\n",
+                queue.last().copied().unwrap_or(0.0)
+            ));
+            out.push_str(&window_counters(&window));
         }
     }
 
@@ -272,6 +319,12 @@ fn build_report(cap: &CaptureState, ring: &DiagnosticRing) -> String {
                 out.push('\n');
             }
         }
+    }
+
+    if let Some(heard) = &ring.heard {
+        out.push_str(&heard.report_section("graycart-capture.wav"));
+    } else {
+        out.push_str("## HEARD AUDIO\n\nno callback tap on this capture\n\n");
     }
 
     out.push_str("## EVENTS\n\n");
@@ -372,6 +425,45 @@ pub fn build_snapshot_report(
     out
 }
 
+fn window_counters(window: &[&TelemetrySample]) -> String {
+    let Some(first) = window.first() else {
+        return String::new();
+    };
+    let Some(last) = window.last() else {
+        return String::new();
+    };
+    let span = last
+        .at
+        .checked_duration_since(first.at)
+        .unwrap_or_default()
+        .as_secs_f64()
+        .max(0.001);
+    let delta = |a: u64, b: u64| b.saturating_sub(a);
+    let produced = delta(first.host.audio_produced, last.host.audio_produced);
+    let consumed = delta(first.host.audio_consumed, last.host.audio_consumed);
+    let missing = delta(
+        first.host.audio_missing_samples,
+        last.host.audio_missing_samples,
+    );
+    let dropped = delta(first.host.audio_overruns, last.host.audio_overruns);
+    let underruns = delta(
+        first.host.audio_underrun_events,
+        last.host.audio_underrun_events,
+    );
+    format!(
+        "\nwindow_span_s: {span:.2}\n\
+         window_produced: {produced}  ({:.0}/s)\n\
+         window_consumed: {consumed}  ({:.0}/s)\n\
+         window_missing: {missing}  ({:.0}/s)\n\
+         window_dropped: {dropped}  ({:.0}/s)\n\
+         window_underrun_events: {underruns}\n\n",
+        produced as f64 / span,
+        consumed as f64 / span,
+        missing as f64 / span,
+        dropped as f64 / span,
+    )
+}
+
 fn format_audio_section(host: &HostMetrics) -> String {
     if host.audio_offline() {
         let device = if host.audio_device.is_empty() {
@@ -402,13 +494,15 @@ fn format_audio_section(host: &HostMetrics) -> String {
              buffer_size: {}\n\
              target_queue: {}\n\
              queue: {} / {} ({:.0}%)\n\
-             samples generated/sec: {:.0}\n\
-             samples submitted/sec: {:.0}\n\
-             callback invocations/sec: {:.1}\n\
+             produced/sec: {:.0}  (frames pushed into the ring)\n\
+             consumed/sec: {:.0}  (frames the callback actually played)\n\
+             missing/sec: {:.0}  (callback frames held because the ring was empty)\n\
+             callback_hz: {:.1}\n\
              underrun_events: {}\n\
              missing_samples: {}\n\
              overruns_dropped: {}\n\
-             resample_step: {:.5}\n\n",
+             resample_step: {:.5}\n\
+             note: produced/consumed/missing rates are since the stream opened, not this window\n\n",
             host.audio_sample_rate,
             host.audio_device,
             host.audio_channels,
@@ -419,6 +513,7 @@ fn format_audio_section(host: &HostMetrics) -> String {
             host.audio_queue_pct,
             host.audio_produced as f64 / elapsed,
             host.audio_consumed as f64 / elapsed,
+            host.audio_missing_samples as f64 / elapsed,
             host.audio_callbacks as f64 / elapsed,
             host.audio_underrun_events,
             host.audio_missing_samples,

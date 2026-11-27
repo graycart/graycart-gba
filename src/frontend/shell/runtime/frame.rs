@@ -40,6 +40,8 @@ pub struct FramePacket {
     pub status_toast: Option<String>,
     pub fault: Option<String>,
     pub last_frame_time: Duration,
+    /// Previous pace-sleep on the emulation thread (the gap that is not in `last_frame_time`).
+    pub emu_sleep: Duration,
     pub host_fps: f64,
     /// Emulation-thread measured T-cycles/sec (not UI present rate).
     pub runtime_tcycles_per_sec: f64,
@@ -52,6 +54,7 @@ pub struct FramePacket {
     pub missed_frames: u64,
     pub audio_queued: Option<usize>,
     pub audio_target: Option<usize>,
+    pub audio_capacity: Option<usize>,
     pub audio_missing: Option<u64>,
     pub audio_underrun_events: Option<u64>,
     pub audio_dropped: Option<u64>,
@@ -66,6 +69,8 @@ pub struct FramePacket {
     pub audio_buffer_size: Option<String>,
     pub audio_init_error: Option<String>,
     pub apu_ch1_debug: Option<String>,
+    /// What the callback played. Cheap to clone; the samples stay on the audio thread.
+    pub heard: Option<std::sync::Arc<crate::frontend::shell::audio::HeardAudio>>,
 }
 
 impl Default for FramePacket {
@@ -83,6 +88,7 @@ impl Default for FramePacket {
             status_toast: None,
             fault: None,
             last_frame_time: Duration::ZERO,
+            emu_sleep: Duration::ZERO,
             host_fps: 0.0,
             runtime_tcycles_per_sec: 0.0,
             runtime_emu_fps: 0.0,
@@ -92,6 +98,7 @@ impl Default for FramePacket {
             missed_frames: 0,
             audio_queued: None,
             audio_target: None,
+            audio_capacity: None,
             audio_missing: None,
             audio_underrun_events: None,
             audio_dropped: None,
@@ -106,6 +113,7 @@ impl Default for FramePacket {
             audio_buffer_size: None,
             audio_init_error: None,
             apu_ch1_debug: None,
+            heard: None,
         }
     }
 }

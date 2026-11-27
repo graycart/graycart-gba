@@ -213,15 +213,15 @@ impl Machine {
                 match self.cpu.step(&mut self.bus) {
                     Ok(()) => {
                         self.bus.finish_step(self.cpu.fetch_pc, self.cpu.thumb());
-                let paid = self.bus.take_dma_cycles_paid();
-                if paid > 0 {
-                    self.cycles = self.cycles.saturating_add(u64::from(paid));
-                    self.bus.emu_cycles = self.cycles;
-                    self.prev_hblank = self.bus.hblank;
-                    self.prev_vblank = self.bus.vblank;
-                    self.prev_vmatch = self.bus.vcount_match();
-                }
-                let n = self.bus.take_step_cycles();
+                        let paid = self.bus.take_dma_cycles_paid();
+                        if paid > 0 {
+                            self.cycles = self.cycles.saturating_add(u64::from(paid));
+                            self.bus.emu_cycles = self.cycles;
+                            self.prev_hblank = self.bus.hblank;
+                            self.prev_vblank = self.bus.vblank;
+                            self.prev_vmatch = self.bus.vcount_match();
+                        }
+                        let n = self.bus.take_step_cycles();
                         self.idle = self.cpu.idle;
                         if watch && let Some(end) = watch_state.note_step(self.cpu.exec_pc) {
                             // Still advance the charged cycles so VCOUNT moves.
@@ -239,10 +239,23 @@ impl Machine {
                 1
             };
 
-            if advance == 0 {
-                continue;
+            if advance > 0 && self.advance_cycles(advance) {
+                break DebugEnd::Failed;
             }
-            if self.advance_cycles(advance) {
+            // elapse already ticked the timers. Spend the same clocks on the
+            // frame so VBlank and the sample counter stay on one clock.
+            let mut halt_fail = false;
+            for _ in 0..8 {
+                let extra = self.bus.take_elapse_frame();
+                if extra == 0 {
+                    break;
+                }
+                if self.advance_clock(extra, false) {
+                    halt_fail = true;
+                    break;
+                }
+            }
+            if halt_fail {
                 break DebugEnd::Failed;
             }
         };

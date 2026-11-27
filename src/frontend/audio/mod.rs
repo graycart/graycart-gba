@@ -72,6 +72,85 @@ fn lerp_stereo(a: (i16, i16), b: (i16, i16), frac_num: u64, frac_den: u64) -> (i
     )
 }
 
+/// Host frames owed for one GBA video frame.
+///
+/// A frame is 280896 cycles at 16.78 MHz (~59.7275 Hz). Truncating
+/// `549 * host / 32768` emits 804 every frame, about 10 samples/sec more than
+/// the device plays. The ring then sits on its ceiling and each dropped sample
+/// is a tick. The accumulator makes the long-run total exact.
+pub fn gba_host_samples(accum: &mut u64, host_rate: u32) -> usize {
+    const FRAME_CYCLES: u64 = 280_896;
+    const CPU_HZ: u64 = 16_777_216;
+    *accum = accum.wrapping_add(FRAME_CYCLES.wrapping_mul(u64::from(host_rate)));
+    let n = *accum / CPU_HZ;
+    *accum %= CPU_HZ;
+    n as usize
+}
+
+/// Continuous  mixer → host resampler.
+///
+/// Chopping each frame with [`resample_linear`] and keeping only the first 804
+/// outputs drops the tail of that frame (~13 mixer samples). The next frame
+/// starts later in the waveform, so the join clicks at 60 Hz. This carries the
+/// unread sample and plays every input sample across exactly `out_len` outputs.
+#[derive(Debug, Clone)]
+pub struct PcmStream {
+    pending: std::collections::VecDeque<(i16, i16)>,
+    phase: f64,
+}
+
+impl Default for PcmStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PcmStream {
+    pub fn new() -> Self {
+        Self {
+            pending: std::collections::VecDeque::new(),
+            phase: 0.0,
+        }
+    }
+
+    pub fn emit(&mut self, incoming: &[(i16, i16)], out_len: usize) -> Vec<(i16, i16)> {
+        self.pending.extend(incoming.iter().copied());
+        if out_len == 0 {
+            return Vec::new();
+        }
+        if self.pending.len() < 2 {
+            let sample = self.pending.back().copied().unwrap_or((0, 0));
+            return vec![sample; out_len];
+        }
+        let last = self.pending.len() - 1;
+        let span = (last as f64 - self.phase).max(0.0);
+        let step = if span > 0.0 {
+            span / out_len as f64
+        } else {
+            0.0
+        };
+        let mut out = Vec::with_capacity(out_len);
+        for _ in 0..out_len {
+            let i = (self.phase as usize).min(last - 1);
+            let t = (self.phase - i as f64).clamp(0.0, 1.0) as f32;
+            let a = self.pending[i];
+            let b = self.pending[i + 1];
+            out.push((
+                (f32::from(a.0) + (f32::from(b.0) - f32::from(a.0)) * t).round() as i16,
+                (f32::from(a.1) + (f32::from(b.1) - f32::from(a.1)) * t).round() as i16,
+            ));
+            self.phase += step;
+        }
+        let drop = (self.phase as usize).min(self.pending.len().saturating_sub(1));
+        self.pending.drain(..drop);
+        self.phase -= drop as f64;
+        if self.phase < 0.0 {
+            self.phase = 0.0;
+        }
+        out
+    }
+}
+
 /// Resample stereo PCM with linear interpolation. GBA mixer input rate is typically 32768 Hz.
 pub fn resample_linear(input: &[(i16, i16)], in_rate: u32, out_rate: u32) -> Vec<(i16, i16)> {
     if in_rate == 0 || out_rate == 0 {
@@ -157,10 +236,52 @@ mod tests {
     }
 
     #[test]
+    fn pcm_stream_joins_frames_without_a_jump() {
+        let mut stream = PcmStream::new();
+        let mut src = Vec::new();
+        for i in 0..549 * 2 {
+            let v = ((i as f32) * 0.7) as i16;
+            src.push((v, v));
+        }
+        let a = stream.emit(&src[..549], 804);
+        let b = stream.emit(&src[549..], 804);
+        assert_eq!(a.len(), 804);
+        assert_eq!(b.len(), 804);
+        let jump = (i32::from(b[0].0) - i32::from(a[803].0)).abs();
+        assert!(
+            jump < 30,
+            "frame join jumped by {jump} (tail of the chunk was discarded)"
+        );
+        assert!(
+            stream.pending.len() < 8,
+            "unread backlog {} should stay at the overlap",
+            stream.pending.len()
+        );
+    }
+
+    #[test]
     fn resample_linear_at_32768_to_32768_copies_samples() {
         let input = vec![(100, -100), (200, -200), (300, -300)];
         let out = resample_linear(&input, 32_768, 32_768);
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn gba_host_samples_track_device_rate() {
+        // 804 samples every frame is ~10/sec fast and fills the ring until drops tick.
+        let mut accum = 0u64;
+        let frames = 10_000u64;
+        let mut total = 0usize;
+        for _ in 0..frames {
+            total += gba_host_samples(&mut accum, 48_000);
+        }
+        let expect = (frames * 48_000 * 280_896 / 16_777_216) as usize;
+        assert_eq!(total, expect);
+        let naive = frames as usize * 804;
+        assert!(
+            total < naive,
+            "exact rate {total} should be under truncate-804 {naive}"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use super::super::super::state_slots::PendingSlotOp;
 use super::super::super::telemetry::HostTelemetry;
 use super::super::RuntimeConfig;
 use super::machine::Machine;
+use crate::frontend::PcmStream;
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -41,6 +42,8 @@ pub(super) struct EmuState {
     pub diag_frames: u64,
     pub runtime_tcycles_per_sec: f64,
     pub runtime_emu_fps: f64,
+    /// Wall time spent in the last pace sleep (zero when the frame was already due).
+    pub last_pace_sleep: std::time::Duration,
     pub last_runtime_diag_log: Instant,
     pub missed_frames: u64,
     pub last_host_fps: f64,
@@ -53,6 +56,10 @@ pub(super) struct EmuState {
     /// Reused each Arm audio submit (i16 PCM → host StereoSample).
     pub gba_pcm_scratch: Vec<(i16, i16)>,
     pub gba_sample_scratch: Vec<graycart::StereoSample>,
+    /// Fractional host-sample debt so GBA frames emit 48000 Hz, not 804/frame.
+    pub gba_audio_accum: u64,
+    /// Mixer samples not yet played. Carried so frame joins stay continuous.
+    pub gba_pcm_stream: PcmStream,
 }
 
 impl EmuState {
@@ -90,6 +97,7 @@ impl EmuState {
             diag_frames: 0,
             runtime_tcycles_per_sec: 0.0,
             runtime_emu_fps: 0.0,
+            last_pace_sleep: std::time::Duration::ZERO,
             last_runtime_diag_log: Instant::now(),
             missed_frames: 0,
             last_host_fps: 0.0,
@@ -101,6 +109,8 @@ impl EmuState {
             exit_error: None,
             gba_pcm_scratch: Vec::with_capacity(1024),
             gba_sample_scratch: Vec::with_capacity(1536),
+            gba_audio_accum: 0,
+            gba_pcm_stream: PcmStream::new(),
         }
     }
 }

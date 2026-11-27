@@ -4,15 +4,19 @@
 //! A PI occupancy controller (asymmetric stretch/compress) keeps the ring near
 //! its soft target. The CPAL callback only pops samples (no locks, no emulator access).
 
+mod hear;
 mod init;
 mod os_default;
 mod resample;
 mod select;
 
+use hear::HeardTap;
+pub use hear::HeardTap as HeardAudio;
+
 use graycart::StereoSample;
 use resample::{AdaptiveResampler, step_pegged_low};
 use rtrb::{Consumer, Producer};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +55,11 @@ pub(crate) struct SharedCounters {
     pub(crate) missing_samples: AtomicU64,
     pub(crate) dropped: AtomicU64,
     pub(crate) callbacks: AtomicU64,
+    /// Last stereo frame handed to the device. Held across an empty ring so a
+    /// short gap is not a hard zero (the click).
+    last_left: std::sync::atomic::AtomicU32,
+    last_right: std::sync::atomic::AtomicU32,
+    heard: std::sync::Arc<HeardTap>,
 }
 
 impl SharedCounters {
@@ -62,7 +71,16 @@ impl SharedCounters {
             missing_samples: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             callbacks: AtomicU64::new(0),
+            last_left: std::sync::atomic::AtomicU32::new(0),
+            last_right: std::sync::atomic::AtomicU32::new(0),
+            heard: std::sync::Arc::new(HeardTap::disabled()),
         }
+    }
+
+    pub(crate) fn with_heard(rate: u32) -> Self {
+        let mut counters = Self::new();
+        counters.heard = std::sync::Arc::new(HeardTap::new(rate, rate as usize * 20));
+        counters
     }
 
     fn snapshot(&self) -> AudioStats {
@@ -86,8 +104,10 @@ pub struct AudioOut {
     pub(crate) started: Instant,
     /// Device sample rate (APU should match via [`graycart::Apu::set_output_sample_rate`]).
     pub sample_rate: u32,
-    /// Soft target occupancy (~5 display frames).
+    /// Soft target occupancy (~3 display frames).
     pub target_frames: usize,
+    /// Skip whole submits while draining a catch-up overshoot (see submit_gain).
+    pub(crate) shed_gate: Cell<bool>,
     pub device_name: String,
     pub host_name: String,
     pub sample_format: String,
@@ -142,6 +162,16 @@ impl AudioOut {
         )
     }
 
+    /// Callback recording shared with the diagnostic capture.
+    pub fn heard(&self) -> std::sync::Arc<HeardTap> {
+        std::sync::Arc::clone(&self.counters.heard)
+    }
+
+    /// Stereo frames the ring can hold.
+    pub fn capacity_frames(&self) -> usize {
+        self.capacity_samples / 2
+    }
+
     /// Stereo frames waiting in the ring.
     pub fn queued_frames(&self) -> usize {
         let free = self.producer.borrow().slots();
@@ -186,10 +216,20 @@ impl AudioOut {
             return;
         }
         let queued = self.queued_frames();
-        // Shed latency when catch-up bursts leave the ring well above target.
-        // Dropping a chunk clicks less than sitting at 100ms+ with pitch warble.
-        // Shed above ~125% of target so the PLL is not stuck at max compress (pitch-up).
-        if queued >= self.target_frames.saturating_mul(5).saturating_div(4) {
+        // Hysteresis shed: enter above ~125% of target, stay out until back at
+        // target. Without this, catch-up floods pack the ring to capacity
+        // (~300% target); per-sample drops then let the callback drain to
+        // underrun, emergency catch-up floods again (AW2 capture). Hard shed
+        // with no exit hysteresis clicked the other way. Whole-chunk skip
+        // while draining keeps the PLL and the ring in the same story.
+        let high = self.target_frames.saturating_mul(5).saturating_div(4);
+        if self.shed_gate.get() {
+            if queued > self.target_frames {
+                return;
+            }
+            self.shed_gate.set(false);
+        } else if queued >= high {
+            self.shed_gate.set(true);
             return;
         }
         let adapted = self
@@ -204,7 +244,7 @@ impl AudioOut {
         for s in adapted {
             if producer.slots() < 2 {
                 dropped += 1;
-                continue;
+                break;
             }
             // push is wait-free; slots check above should guarantee success.
             if producer.push(s.left * gain).is_err() || producer.push(s.right * gain).is_err() {
@@ -221,12 +261,71 @@ impl AudioOut {
         }
     }
 
+    /// Push already-rated samples with no pitch correction and no latency shed.
+    ///
+    /// GBA PCM is resampled 32768 → host once, then must stay at that ratio.
+    /// The adaptive step was swinging 0.988–1.01 ("in and out of tune") while
+    /// the shed/catch-up loop clicked. Queue depth is the pacer's job.
+    pub fn submit_locked(&self, samples: &[StereoSample], gain: f32) {
+        if samples.is_empty() {
+            return;
+        }
+        // Sitting on the ring ceiling drops samples every callback quantum (the
+        // tick). Once past 125% of target, discard oldest frames back to target
+        // in one step instead of skipping the new ones one at a time.
+        self.trim_oldest_down_to_target();
+        let gain = gain.clamp(0.0, 1.0);
+        let mut producer = self.producer.borrow_mut();
+        let mut produced = 0u64;
+        let mut dropped = 0u64;
+        for s in samples {
+            if producer.slots() < 2 {
+                dropped += 1;
+                break;
+            }
+            if producer.push(s.left * gain).is_err() || producer.push(s.right * gain).is_err() {
+                dropped += 1;
+                break;
+            }
+            produced += 1;
+        }
+        self.counters
+            .produced
+            .fetch_add(produced, Ordering::Relaxed);
+        if dropped > 0 {
+            self.counters.dropped.fetch_add(dropped, Ordering::Relaxed);
+        }
+    }
+
+    fn trim_oldest_down_to_target(&self) {
+        let queued = self.queued_frames();
+        let high = self.target_frames.saturating_mul(5).saturating_div(4);
+        if queued <= high {
+            return;
+        }
+        let drop = queued.saturating_sub(self.target_frames);
+        let Ok(mut consumer) = self.consumer.try_lock() else {
+            return;
+        };
+        let mut dropped = 0u64;
+        for _ in 0..drop {
+            if consumer.pop().is_err() || consumer.pop().is_err() {
+                break;
+            }
+            dropped += 1;
+        }
+        if dropped > 0 {
+            self.counters.dropped.fetch_add(dropped, Ordering::Relaxed);
+        }
+    }
+
     /// Drop haunted PCM and reset adaptive history after load-state / rewind release.
     pub fn after_restore(&self) {
         if let Ok(mut consumer) = self.consumer.lock() {
             while consumer.pop().is_ok() {}
         }
         *self.resampler.borrow_mut() = AdaptiveResampler::new();
+        self.shed_gate.set(false);
         let prime = (self.target_frames * 85 / 100) * 2;
         let mut producer = self.producer.borrow_mut();
         for _ in 0..prime {
@@ -276,18 +375,25 @@ pub(crate) fn fill_interleaved<T>(
     for frame in out.chunks_exact_mut(channels) {
         match (consumer.pop(), consumer.pop()) {
             (Ok(l), Ok(r)) => {
+                counters.last_left.store(l.to_bits(), Ordering::Relaxed);
+                counters.last_right.store(r.to_bits(), Ordering::Relaxed);
+                counters.heard.record(l, r, false);
                 write_host_frame(frame, l, r, &encode, silence);
                 frames_ok += 1;
             }
             (Ok(l), Err(_)) => {
                 // Odd leftover mono sample — treat as underrun for the frame.
+                counters.last_left.store(l.to_bits(), Ordering::Relaxed);
+                counters.last_right.store(l.to_bits(), Ordering::Relaxed);
+                counters.heard.record(l, l, true);
                 write_host_frame(frame, l, l, &encode, silence);
                 frames_missing += 1;
             }
             (Err(_), _) => {
-                for s in frame.iter_mut() {
-                    *s = silence;
-                }
+                let l = f32::from_bits(counters.last_left.load(Ordering::Relaxed));
+                let r = f32::from_bits(counters.last_right.load(Ordering::Relaxed));
+                counters.heard.record(l, r, true);
+                write_host_frame(frame, l, r, &encode, silence);
                 frames_missing += 1;
             }
         }

@@ -99,6 +99,20 @@ fn mono_callback_downmixes() {
 }
 
 #[test]
+fn underrun_repeats_last_frame_instead_of_silence() {
+    let (mut producer, mut consumer) = RingBuffer::<f32>::new(16);
+    producer.push(0.4).unwrap();
+    producer.push(-0.2).unwrap();
+    let counters = SharedCounters::new();
+    let mut out = [0.0f32; 4]; // 2 stereo frames, second is empty
+    fill_f32(&mut out, 2, &mut consumer, &counters);
+    assert_eq!(&out[0..2], &[0.4, -0.2]);
+    assert_eq!(&out[2..4], &[0.4, -0.2]);
+    assert_eq!(counters.consumed.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.missing_samples.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn surround_underrun_counts_host_frames_not_channels() {
     let (_producer, mut consumer) = RingBuffer::<f32>::new(16);
     let counters = SharedCounters::new();

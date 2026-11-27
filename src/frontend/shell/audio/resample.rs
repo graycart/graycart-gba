@@ -13,14 +13,28 @@ const KP: f64 = 0.8;
 const KI: f64 = 0.05;
 /// Max stretch when queue is low (step down to `1 - this`): +1.2% more outs.
 pub const MAX_STRETCH: f64 = 0.012;
-/// Max compress when queue is high (step up by this). Was 0.8% — too weak to
-/// drain a GBA ring that had already climbed past target after catch-up bursts.
-/// Cap pitch-up when the queue is long. 1% is enough to drain; 2.5% sounded "fast".
+/// Base max compress near target. Stronger caps apply when occupancy is deep
+/// (see [`compress_limit`]) so catch-up floods can drain without sitting at
+/// ring capacity and dropping every new frame.
 const MAX_COMPRESS: f64 = 0.01;
 /// Ignore tiny occupancy noise near the target.
 const DEADBAND: f64 = 0.02;
 /// Clamp on integrated error (normalized).
 const MAX_INTEGRAL: f64 = 0.08;
+
+/// Compress authority from normalized queue error `(queued - target) / target`.
+///
+/// Mild overshoot stays at 1% (inaudible). Past ~1.5× / 2× target, allow up to
+/// 4% / 8% so the ring can fall before the next emergency catch-up lands.
+pub fn compress_limit(norm_err: f64) -> f64 {
+    if norm_err > 1.0 {
+        0.08
+    } else if norm_err > 0.5 {
+        0.04
+    } else {
+        MAX_COMPRESS
+    }
+}
 
 /// True when `step` is at (or past) the max-stretch floor.
 pub fn step_pegged_low(step: f64) -> bool {
@@ -71,7 +85,7 @@ impl AdaptiveResampler {
         }
         let raw = err * KP + self.integral * KI;
         // Negative correction = stretch (more outs); positive = compress.
-        let correction = raw.clamp(-MAX_STRETCH, MAX_COMPRESS);
+        let correction = raw.clamp(-MAX_STRETCH, compress_limit(err));
         1.0 + correction
     }
 
@@ -83,7 +97,7 @@ impl AdaptiveResampler {
         if err.abs() < DEADBAND {
             err = 0.0;
         }
-        let correction = (err * KP).clamp(-MAX_STRETCH, MAX_COMPRESS);
+        let correction = (err * KP).clamp(-MAX_STRETCH, compress_limit(err));
         1.0 + correction
     }
 
@@ -187,15 +201,28 @@ mod tests {
     fn correction_is_clamped_asymmetric() {
         let mut r = AdaptiveResampler::new();
         let lo = r.step_for_queue(0, 1000);
+        let mild = r.step_for_queue(1_200, 1000);
         let hi = r.step_for_queue(10_000, 1000);
         assert!((1.0 - lo) <= MAX_STRETCH + 1e-9);
-        assert!((hi - 1.0) <= MAX_COMPRESS + 1e-9);
+        assert!((mild - 1.0) <= MAX_COMPRESS + 1e-9);
+        assert!((hi - 1.0) <= compress_limit(9.0) + 1e-9);
+        assert!(
+            (hi - 1.0) > MAX_COMPRESS,
+            "deep overshoot must unlock stronger compress"
+        );
         assert!(
             1.0 - lo > MAX_COMPRESS,
-            "stretch should exceed compress authority"
+            "stretch should exceed base compress authority"
         );
         assert!(step_pegged_low(lo));
         assert!(!step_pegged_low(1.0));
+    }
+
+    #[test]
+    fn compress_limit_scales_with_overshoot() {
+        assert!((compress_limit(0.2) - MAX_COMPRESS).abs() < 1e-12);
+        assert!((compress_limit(0.6) - 0.04).abs() < 1e-12);
+        assert!((compress_limit(1.5) - 0.08).abs() < 1e-12);
     }
 
     #[test]

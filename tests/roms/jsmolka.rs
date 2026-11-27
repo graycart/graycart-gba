@@ -4,7 +4,7 @@
 //! Fixtures: `tests/fixtures/jsmolka/` (no `unsafe.gba`).
 
 use crate::harness::{
-    fixture_root, print_row, run_jsmolka, run_jsmolka_ppu, summarize, tally, JsmolkaPass, Outcome,
+    JsmolkaPass, Outcome, fixture_root, print_row, run_jsmolka, run_jsmolka_ppu, summarize, tally,
 };
 use std::path::PathBuf;
 

@@ -161,31 +161,18 @@ pub fn window_attributes(title: &str) -> winit::window::WindowAttributes {
 }
 
 /// Window attributes for a scaled `fb_w`×`fb_h` framebuffer plus menu bar chrome.
-pub fn window_attributes_for(
-    title: &str,
-    fb_w: u32,
-    fb_h: u32,
-) -> winit::window::WindowAttributes {
-    let size = LogicalSize::new(
-        (fb_w * SCALE) as f64,
-        (fb_h * SCALE) as f64 + MENU_CHROME,
-    );
+pub fn window_attributes_for(title: &str, fb_w: u32, fb_h: u32) -> winit::window::WindowAttributes {
+    let size = LogicalSize::new((fb_w * SCALE) as f64, (fb_h * SCALE) as f64 + MENU_CHROME);
     Window::default_attributes()
         .with_title(title)
         .with_inner_size(size)
-        .with_min_inner_size(LogicalSize::new(
-            fb_w as f64,
-            fb_h as f64 + MENU_CHROME,
-        ))
+        .with_min_inner_size(LogicalSize::new(fb_w as f64, fb_h as f64 + MENU_CHROME))
         .with_resizable(true)
 }
 
 /// Logical inner size for `fb_w`×`fb_h` at [`SCALE`] plus menu chrome.
 pub fn window_inner_size_for(fb_w: u32, fb_h: u32) -> LogicalSize<f64> {
-    LogicalSize::new(
-        (fb_w * SCALE) as f64,
-        (fb_h * SCALE) as f64 + MENU_CHROME,
-    )
+    LogicalSize::new((fb_w * SCALE) as f64, (fb_h * SCALE) as f64 + MENU_CHROME)
 }
 
 /// Shade→palette for DMG/compat; RGB555→RGBA for NativeCgb. Then host effects.

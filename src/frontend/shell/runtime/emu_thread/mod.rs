@@ -98,20 +98,29 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn wait_until(deadline: Instant, cmd_rx: &Receiver<EmuCommand>, state: &mut EmuState) -> bool {
-    while Instant::now() < deadline {
+    // macOS `sleep(1ms)` in a loop overshoots the ~2 ms left after a 15 ms GBA
+    // frame. That idle is why play sat near 48 fps while frame work was 14.7 ms,
+    // and why the callback kept writing silence (the tick). Spin the last few
+    // milliseconds; sleep only when the wait is long enough to absorb the slop.
+    const SPIN_TAIL: Duration = Duration::from_millis(4);
+    loop {
         if !drain_commands(state, cmd_rx) {
             return false;
         }
         if state.quit {
             return true;
         }
-        let rem = deadline.saturating_duration_since(Instant::now());
-        if rem.is_zero() {
-            break;
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
         }
-        thread::sleep(rem.min(Duration::from_millis(1)));
+        let rem = deadline - now;
+        if rem > SPIN_TAIL + SPIN_TAIL {
+            thread::sleep(rem - SPIN_TAIL);
+        } else {
+            thread::yield_now();
+        }
     }
-    true
 }
 
 /// Drain pending commands with `try_recv` only. Returns `false` on disconnect.

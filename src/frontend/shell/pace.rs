@@ -134,7 +134,10 @@ impl HostScheduler {
             None => now + period,
             Some(deadline) => {
                 let next = deadline + period;
-                if next < now { now + period } else { next }
+                // A late frame is already due. Scheduling `now + period` inserts a
+                // full extra idle slot after the overrun (GBA play sat near 48 fps
+                // and the callback filled the gap with silence).
+                if next < now { now } else { next }
             }
         });
     }

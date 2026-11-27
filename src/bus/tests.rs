@@ -223,8 +223,16 @@ fn pret_get_status_no_battery_dry() {
         bus.write16(0x0800_00C4, 0x5); // SCK high
     }
 
-    assert_eq!(status & 0x80, 0, "STATUS_POWER must be clear, got {status:#x}");
-    assert_ne!(status & 0x40, 0, "STATUS_24HOUR must be set, got {status:#x}");
+    assert_eq!(
+        status & 0x80,
+        0,
+        "STATUS_POWER must be clear, got {status:#x}"
+    );
+    assert_ne!(
+        status & 0x40,
+        0,
+        "STATUS_24HOUR must be set, got {status:#x}"
+    );
 }
 
 #[test]
@@ -453,5 +461,3 @@ fn dma32_unused_io_keeps_arm_prefetch_after_unused_half_read() {
         "must not copy the fetched ldrh opcode at PC"
     );
 }
-
-

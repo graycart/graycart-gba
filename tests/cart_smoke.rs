@@ -34,11 +34,7 @@ struct CartReport {
 }
 
 fn smoke_one(path: &std::path::Path, frames: u32) -> CartReport {
-    let name = path
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let bytes = std::fs::read(path).expect("read");
     let save = cart::detect_save(&bytes);
     let rtc = cart::detect_rtc(&bytes);
@@ -104,10 +100,7 @@ fn cart_folder_inventory_and_boot() {
     }
 
     // Advance Wars 2: should keep running and draw something.
-    if let Some(aw2) = reports
-        .iter()
-        .find(|r| r.name.contains("Advance Wars 2"))
-    {
+    if let Some(aw2) = reports.iter().find(|r| r.name.contains("Advance Wars 2")) {
         assert!(aw2.fault.is_none(), "AW2 fault: {:?}", aw2.fault);
         assert!(aw2.nonzero > 0, "AW2 expected pixels, got 0");
         assert_eq!(aw2.save, "flash64");

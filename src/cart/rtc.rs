@@ -348,12 +348,11 @@ impl SiRtc {
     fn output_bit(&self) -> bool {
         let byte = match self.reg {
             REG_STATUS => self.status,
-            REG_DATETIME | REG_TIME | REG_ALARM => {
-                self.transfer
-                    .get(self.data_index as usize)
-                    .copied()
-                    .unwrap_or(0xFF)
-            }
+            REG_DATETIME | REG_TIME | REG_ALARM => self
+                .transfer
+                .get(self.data_index as usize)
+                .copied()
+                .unwrap_or(0xFF),
             _ => 0xFF,
         };
         (byte >> self.bits_read) & 1 != 0
@@ -370,15 +369,7 @@ impl SiRtc {
             self.second,
         ];
         if self.reg == REG_TIME {
-            self.transfer = [
-                self.hour,
-                self.minute,
-                self.second,
-                0,
-                0,
-                0,
-                0,
-            ];
+            self.transfer = [self.hour, self.minute, self.second, 0, 0, 0, 0];
         }
     }
 
@@ -474,7 +465,9 @@ impl SiRtc {
             self.hour ^= 0x80;
         }
         self.weekday = (self.weekday + 1) % 7;
-        let mut days = [0x31u8, 0x28, 0x31, 0x30, 0x31, 0x30, 0x31, 0x31, 0x30, 0x31, 0x30, 0x31];
+        let mut days = [
+            0x31u8, 0x28, 0x31, 0x30, 0x31, 0x30, 0x31, 0x31, 0x30, 0x31, 0x30, 0x31,
+        ];
         if self.year != 0 && self.year & 3 == 0 {
             days[1] = 0x29;
         }
